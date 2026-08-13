@@ -50,7 +50,7 @@ void test_registry() {
   };
   CHECK_THROWS(meta.column_name(make_member_key(&Other::x)), mapping_error);
 
-  auto names = std::make_shared<std::vector<std::string>>(
+  auto names = std::make_shared<column_names>(
     std::vector<std::string>{ "id", "owner", "nickname", "balance" });
   {
     row r(
@@ -86,7 +86,7 @@ void test_registry() {
     CHECK(acc.nickname.has_value() && *acc.nickname == "bobby");
   }
   {
-    auto short_names = std::make_shared<std::vector<std::string>>(
+    auto short_names = std::make_shared<column_names>(
       std::vector<std::string>{ "id", "owner", "balance" });
     row r(
       short_names, { sql_value(std::int64_t{ 1 }), sql_value(std::string("x")),

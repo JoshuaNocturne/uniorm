@@ -6,6 +6,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 #include "detail/traits.hpp"
@@ -109,12 +110,27 @@ T value_cast(sql_value const& v) {
   }
 }
 
-// A materialized row: owned values plus a shared column-name list.
+// Shared by every row of one result set: the column names plus a
+// name->index map built once at describe time.
+struct UNIORM_API column_names {
+  std::vector<std::string> names;
+  std::unordered_map<std::string, std::size_t> index;
+
+  column_names() = default;
+
+  explicit column_names(std::vector<std::string> column_list)
+    : names(std::move(column_list)) {
+    for (std::size_t i = 0; i < names.size(); ++i) {
+      index.emplace(names[i], i);
+    }
+  }
+};
+
+// A materialized row: owned values plus a shared column-name table.
 class UNIORM_API row {
 public:
   row() = default;
-  row(std::shared_ptr<std::vector<std::string>> names,
-    std::vector<sql_value> values);
+  row(std::shared_ptr<column_names> names, std::vector<sql_value> values);
 
   sql_value const& at(std::string_view name) const;
   sql_value const& at(std::size_t index) const;
@@ -138,8 +154,8 @@ public:
   std::size_t size() const noexcept {
     return values_.size();
   }
-  std::vector<std::string> const& column_names() const noexcept {
-    return *names_;
+  std::vector<std::string> const& names() const noexcept {
+    return names_->names;
   }
 
 private:
@@ -147,8 +163,7 @@ private:
     return uniorm::is_null(v);
   }
 
-  std::shared_ptr<std::vector<std::string>> names_ =
-    std::make_shared<std::vector<std::string>>();
+  std::shared_ptr<column_names> names_ = std::make_shared<column_names>();
   std::vector<sql_value> values_;
 };
 

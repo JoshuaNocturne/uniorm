@@ -120,7 +120,7 @@ std::vector<std::byte> get_data_binary(
 struct result_set::impl {
   odbc::statement stmt;
   std::vector<column_slot> slots;
-  std::shared_ptr<std::vector<std::string>> names;
+  std::shared_ptr<column_names> names;
 
   explicit impl(odbc::statement s) : stmt(std::move(s)) {
     describe_and_bind();
@@ -129,8 +129,8 @@ struct result_set::impl {
   void describe_and_bind() {
     SQLSMALLINT count = static_cast<SQLSMALLINT>(stmt.column_count());
     slots.resize(static_cast<std::size_t>(count));
-    names = std::make_shared<std::vector<std::string>>();
-    names->reserve(count);
+    std::vector<std::string> collected;
+    collected.reserve(count);
 
     for (SQLSMALLINT i = 0; i < count; ++i) {
       SQLCHAR name_buf[512];
@@ -211,8 +211,10 @@ struct result_set::impl {
           buffer, buffer_length, &s.indicator);
       odbc::throw_if_error(
         brc, SQL_HANDLE_STMT, stmt.native(), "bind result column");
-      names->push_back(s.info.name);
+      collected.push_back(s.info.name);
     }
+
+    names = std::make_shared<column_names>(std::move(collected));
   }
 
   sql_value value_of(std::size_t i) {

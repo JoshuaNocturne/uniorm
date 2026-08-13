@@ -290,11 +290,14 @@ public:
     });
   }
 
+  // Moves the assembled row out. Call exactly once per successful fetch():
+  // proto_ is left moved-from and every field is rewritten by finalize() on
+  // the next fetch, so the moved-from state is never observed by bindings.
   T take() {
     for (auto& binding : bindings_) {
       binding->finalize();
     }
-    return proto_;
+    return std::move(proto_);
   }
 
 private:

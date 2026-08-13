@@ -11,7 +11,7 @@ using namespace uniorm;
 namespace {
 
 row make_row() {
-  auto names = std::make_shared<std::vector<std::string>>(
+  auto names = std::make_shared<column_names>(
     std::vector<std::string>{ "id", "name", "age", "data" });
   std::vector<sql_value> values;
   values.push_back(std::int64_t{ 42 });
@@ -44,8 +44,8 @@ void test_row() {
 
   // out-of-range narrowing must throw
   std::vector<sql_value> values{ std::int64_t{ 5'000'000'000LL } };
-  auto names = std::make_shared<std::vector<std::string>>(
-    std::vector<std::string>{ "big" });
+  auto names =
+    std::make_shared<column_names>(std::vector<std::string>{ "big" });
   row big(std::move(names), std::move(values));
   CHECK_THROWS(big.get<std::int32_t>("big"), type_mismatch);
 }

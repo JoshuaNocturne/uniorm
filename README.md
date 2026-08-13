@@ -11,6 +11,8 @@ ODBC 接口访问任意提供 ODBC 驱动的数据库（当前以 MariaDB 做集
 - **同步 API + 异常错误体系**：所有失败以异常抛出（`uniorm_error` 派生树）
 - **内部统一 UTF-8**：宽字符接口自动转换，驱动层处理 UTF-16
 - **预编译 + 绑定变量**：用户值一律经 `SQLBindParameter`，杜绝拼接注入
+- **语句缓存**：按 SQL 文本的透明 LRU 缓存，重复执行免 prepare
+  （观测：`statement_cache_hits()/misses()`）
 - **三种使用层次**：
   - 裸 SQL：`execute` / `execute_update` + `params`
   - 聚合投影：`conn.query<Row>(sql)` 零注册按列序映射到 struct
@@ -153,6 +155,11 @@ ctest --test-dir build --output-on-failure
 - **integration_tests**：需要可达的 ODBC DSN，默认读取环境变量
   `UNIORM_IT_DSN`（默认 `docker_maria`）、`UNIORM_IT_USER`、`UNIORM_IT_PWD`，
   凭据以 `UID`/`PWD` 拼入连接串；连不上时以 ctest SKIP 处理
+- **perf_tests**（ctest 标签 `perf`）：批量插入与三条查询物化路径
+  （实体直绑 / 聚合投影 / 动态行）的吞吐对比，并附调用形式与 uniorm
+  一一对应的纯 ODBC 基线（多行 VALUES 批量插入、SQLBindCol 扫描、
+  单行 LIMIT 1）作为抽象开销参照；行数由 `UNIORM_PERF_ROWS` 指定
+  （默认 10000），可用 `ctest -LE perf` 跳过
 
 ## 目录结构
 
@@ -165,6 +172,7 @@ include/uniorm/       公共头文件
 src/                  实现（构建为 libuniorm.so）
 tests/unit            单元测试
 tests/integration     数据库集成测试
+tests/perf            性能基准测试
 docs/design.md        设计文档（权威 API 参考）
 ```
 

@@ -278,17 +278,24 @@ class result_set {
 // 支持 std::optional<U>；失败抛 type_mismatch
 template <class T> T value_cast(sql_value const& v);
 
+// 每个结果集共享一份列名表：列名 + 名字→下标索引（describe 时构建一次）
+struct column_names {
+    std::vector<std::string> names;
+    std::unordered_map<std::string, std::size_t> index;
+    explicit column_names(std::vector<std::string> column_list);
+};
+
 class row {
-    row(std::shared_ptr<std::vector<std::string>> names,
+    row(std::shared_ptr<column_names> names,
         std::vector<sql_value> values);
-    sql_value const& at(std::string_view name) const;   // 不存在抛 column_not_found
+    sql_value const& at(std::string_view name) const;   // O(1) 查 index；不存在抛 column_not_found
     sql_value const& at(std::size_t index) const;
     template <class T> T get(std::string_view name) const;
     template <class T> T get(std::size_t index) const;
     bool is_null(std::string_view name) const;
     bool is_null(std::size_t index) const;
     std::size_t size() const noexcept;
-    std::vector<std::string> const& column_names() const noexcept;
+    std::vector<std::string> const& names() const noexcept;
 };
 
 // 有序参数容器；值经 detail::make_sql_value 归一化：
@@ -312,7 +319,7 @@ class connection {
     result_set execute(std::string_view sql, params const& p = {});
     std::size_t execute_update(std::string_view sql, params const& p = {});
 
-    // 批量插入（见 4.5.1）：多行 VALUES + 事务包裹，返回插入行数
+    // 批量插入（见 4.5.2）：多行 VALUES + 事务包裹，返回插入行数
     std::size_t insert_batch(std::string_view table,
                              std::vector<std::string> const& columns,
                              std::vector<params> const& rows);
@@ -326,6 +333,12 @@ class connection {
     query_gateway query(orm& registry);   // 实体查询入口，见 4.8
     transaction begin();                  // 见 4.9
     std::string dbms_name() const;        // SQL_DBMS_NAME，方言推断输入
+
+    // 预编译语句缓存观测（见 4.5.1）
+    unsigned long long statement_cache_hits() const;
+    unsigned long long statement_cache_misses() const;
+    std::size_t statement_cache_size() const;
+    void clear_statement_cache();
 };
 
 } // namespace uniorm
@@ -337,7 +350,27 @@ class connection {
 
 v1 采用**行式绑定**（每列 `SQLBindCol`，逐行 `SQLFetch`）；列式绑定留给批量操作（v2）。
 
-#### 4.5.1 批量插入
+#### 4.5.1 预编译语句缓存
+
+`connection` 内置按 SQL 文本为键的 LRU 语句缓存（`detail::statement_cache`，
+容量 64），对调用方完全透明：`execute` / `execute_update` / 聚合投影
+`query<T>` / 实体查询（`execute_with`）全部走 checkout/check-in 模型：
+
+- 缓存**只存空闲句柄**：执行前取出（命中则 `statement::reset()`——
+  `SQLFreeStmt` 关游标/清参数/解列绑定——后直接复用），用完归还；
+  使用中的句柄不在缓存内，同一 SQL 并发执行互不干扰（各自新建）
+- `execute_update` 执行完立即归还；`execute` 的 `result_set` 携带
+  check-in 闭包（`weak_ptr` 引用缓存状态），析构时归还——缓存先于
+  连接句柄销毁，闭包在连接已销毁时静默丢弃句柄
+- 归还时该 SQL 已有条目（并发 checkout 期间产生过新建）则丢弃；
+  超容量从 LRU 尾部淘汰
+- `close()` 先清空缓存再断开，保证语句句柄先于 DBC 释放
+
+边界：DDL（DROP/CREATE）会使同表旧 prepare 失效，驱动报错后句柄即弃用，
+重试自然走 miss 路径；需要立即失效可调用 `clear_statement_cache()`。
+`hits()/misses()` 计数器供测试与观测。
+
+#### 4.5.2 批量插入
 
 两个入口：
 
@@ -360,7 +393,8 @@ conn.insert_batch("user", {"name", "age"},
   `uniorm_error`）；类型一致性交给驱动/服务器判断
 - 实体版结构免验证：容器元素同类型，列集合在注册期固定；
   `std::optional` 空值经 read 闭包转为 `monostate`（NULL），走现有参数绑定通道
-- `column_meta` 同时持有 `write`（populate 用）与 `read`（insert 用）两个闭包
+- `column_meta` 持有三类闭包：`write`（populate 用）、`read`（insert 用）、
+  `make_binding`（查询直绑工厂，见 §4.8）
 
 ### 4.6 聚合 struct 投影（零注册路径）
 
@@ -406,7 +440,10 @@ struct column_meta {
     bool is_primary_key = false;
     bool nullable = false;       // 成员是 std::optional
     member_key key;
-    std::function<void(void*, sql_value const&)> write;  // 类型擦除写闭包
+    std::function<void(void*, sql_value const&)> write;  // populate 用写闭包
+    std::function<sql_value(void const*)> read;          // insert 用读闭包
+    // 查询物化：把该列直接 SQLBindCol 到 obj 的成员上（见 §4.8）
+    std::function<std::unique_ptr<detail::field_binding>(void*)> make_binding;
 };
 
 struct entity_meta {
@@ -477,6 +514,18 @@ auto opt = conn.query(orm).of<User>()
 连接前置是刻意为之：让调用方始终明确"操作发生在哪条连接上"，`orm` 只作为元数据注册表传入。
 `conn.query(orm)` 返回轻量网关（持有连接与注册表的引用），`.of<T>()` 产出 `query<T>` 构建器；
 事务语义自然跟随连接（在 `transaction` 作用域内执行的查询即处于该事务中）。
+
+物化路径：`all()`/`one()` 不经过 `result_set`/`row`/`sql_value`，而是把结果列
+**直接 `SQLBindCol` 到实体字段上**。注册时 `column_meta` 除 `write`/`read` 闭包外
+再生成 `make_binding` 工厂（`detail::make_field_binding` 按成员类型选择数值直绑、
+字符串/二进制定长缓冲 + 截断重读、时间戳暂存、`std::optional` 空值复位等绑定策略）。
+`render_select` 保证 SELECT 列序与 `meta.columns` 注册序一致，`entity_binding<T>`
+按序号绑定到一个原型对象；每次 `SQLFetch` 后 `finalize()` + `std::move(proto_)`
+产出一行（与聚合投影 `projection<T>::take()` 同一机制）。
+`connection` 提供私有逃生舱 `execute_with(sql, params, fn)`：
+prepare → 绑定参数 → execute，随后把活动语句交给 `fn`（`query<T>` 为友元）。
+相比经 `row` 物化，每行省去 `sql_value` 构造与按名查找，数值列零拷贝、
+变长列少一次中转拷贝；`count()` 仍走 `result_set` 单值路径。
 
 表达式模板（`expression.hpp`）最终 API：
 
@@ -749,7 +798,18 @@ odbc::odbc_error : uniorm_error      // ODBC 层（odbc/error.hpp），携带 di
 ## 8. 测试策略
 
 - **单元测试**（无数据库，已实现）：`test_unicode`（UTF-8/16 往返与非法输入）、`test_odbc_handles`（句柄 RAII）、`test_pfr`（字段数探测/展开/concept 负例）、`test_row`（value_cast/收窄/optional）、`test_params`（值归一化）、`test_expression`（谓词 SQL 生成、方言、分页）、`test_registry`（映射注册/populate/read 闭包/错误路径）；TOML 配置解析与生成器快照测试随 `uniorm-gen` 补充；
-- **集成测试**（已实现，DSN/凭据由 `UNIORM_IT_DSN` / `UNIORM_IT_USER` / `UNIORM_IT_PWD` 指定，凭据以 `UID`/`PWD` 写进连接串；连不上时 ctest SKIP）：execute/params 往返、动态行、聚合投影（含长字符串与 timestamp）、orm validate（含 strict 失败路径）、查询构建器全谓词与分页、事务 commit/rollback/析构回滚、批量插入（实体版含 NULL/超批分批、动态版、参数个数校验）、连接池借还与超时、连接池维护（心跳保活计数、空闲超时驱逐、失败心跳丢弃）；后续按库加条件标签覆盖方言与类型怪癖；
+- **集成测试**（已实现，DSN/凭据由 `UNIORM_IT_DSN` / `UNIORM_IT_USER` / `UNIORM_IT_PWD` 指定，凭据以 `UID`/`PWD` 写进连接串；连不上时 ctest SKIP）：execute/params 往返、动态行、聚合投影（含长字符串与 timestamp）、orm validate（含 strict 失败路径）、查询构建器全谓词与分页、事务 commit/rollback/析构回滚、批量插入（实体版含 NULL/超批分批、动态版、参数个数校验）、语句缓存（hit/miss 计数、流式 result_set 借出期间并发 miss、清空）、连接池借还与超时、连接池维护（心跳保活计数、空闲超时驱逐、失败心跳丢弃）；后续按库加条件标签覆盖方言与类型怪癖；
+- **性能基准**（已实现，ctest 标签 `perf`，`tests/perf/test_perf.cpp`）：
+  连不上库时 SKIP；行数由 `UNIORM_PERF_ROWS` 指定（默认 10000）。
+  覆盖批量插入吞吐，以及三条查询物化路径的对比：实体直绑
+  （`query<T>::all()`）、聚合投影（`conn.query<Row>`）、动态行
+  （`result_set`/`row`/`sql_value`），另含 `one()`/`count()` 单行延迟；
+  每项取 best-of-3，输出耗时与 krows/s。
+  另含**纯 ODBC 基线**（不经 uniorm，直接操作句柄，仅保留与 uniorm
+  相同调用形式的项目）：与 `insert_batch` 逐调用对齐的多行 VALUES
+  批量插入（同样 4096 占位符分批、逐值 `SQLBindParameter`、单事务）、
+  `SQLBindCol` + `SQLFetch` 全表扫描（对应实体直绑与动态行路径）、
+  单行 LIMIT 1（对应 `one()`），用于衡量 uniorm 抽象层的额外开销
 - `uniorm-gen` 用真实测试库做端到端测试：生成 → 编译 → 注册 → validate(strict) 通过。
 
 ## 9. v2 路线图（不在本次范围）

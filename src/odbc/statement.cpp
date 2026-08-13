@@ -67,7 +67,11 @@ void statement::close_cursor() {
 }
 
 void statement::reset() {
-  SQLRETURN rc = SQLFreeStmt(native(), SQL_RESET_PARAMS);
+  // SQL_CLOSE (unlike SQLCloseCursor) is a no-op when no cursor is open,
+  // which makes reset() safe on statements reused from the cache.
+  SQLRETURN rc = SQLFreeStmt(native(), SQL_CLOSE);
+  throw_if_error(rc, SQL_HANDLE_STMT, native(), "close statement cursor");
+  rc = SQLFreeStmt(native(), SQL_RESET_PARAMS);
   throw_if_error(rc, SQL_HANDLE_STMT, native(), "reset statement parameters");
   rc = SQLFreeStmt(native(), SQL_UNBIND);
   throw_if_error(rc, SQL_HANDLE_STMT, native(), "unbind statement columns");

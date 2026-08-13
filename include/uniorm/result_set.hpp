@@ -1,18 +1,16 @@
 #pragma once
 
 #include <cstddef>
+#include <functional>
 #include <memory>
 #include <string>
 
 #include "export.hpp"
+#include "odbc/statement.hpp"
 #include "row.hpp"
 #include "types.hpp"
 
 namespace uniorm {
-
-namespace odbc {
-class statement;
-}
 
 struct column_info {
   std::string name;
@@ -42,7 +40,10 @@ private:
   struct impl;
   explicit result_set(std::unique_ptr<impl> i);
 
-  static result_set from_statement(odbc::statement stmt);
+  // release receives the statement when this result_set is destroyed
+  // (statement cache check-in); it must not throw. May be empty.
+  static result_set from_statement(
+    odbc::statement stmt, std::function<void(odbc::statement)> release);
 
   std::unique_ptr<impl> impl_;
 };

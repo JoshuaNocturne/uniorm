@@ -12,7 +12,8 @@
 namespace uniorm {
 
 connection::connection(std::string_view connection_string)
-  : conn_(odbc::shared_environment()) {
+  : conn_(odbc::shared_environment()),
+    stmt_cache_(std::make_shared<detail::statement_cache>()) {
   conn_.open(connection_string);
 }
 
@@ -23,6 +24,7 @@ connection::connection(connection&&) noexcept = default;
 connection& connection::operator=(connection&&) noexcept = default;
 
 void connection::close() {
+  clear_statement_cache();
   conn_.close();
 }
 
@@ -31,19 +33,48 @@ bool connection::is_open() const noexcept {
 }
 
 result_set connection::execute(std::string_view sql, params const& p) {
-  odbc::statement stmt(conn_);
-  stmt.prepare(sql);
+  std::string key(sql);
+  odbc::statement stmt = acquire_cached(key);
   auto staging = p.bind(stmt);
   stmt.execute();
-  return result_set::from_statement(std::move(stmt));
+  return result_set::from_statement(std::move(stmt), make_releaser(key));
 }
 
 std::size_t connection::execute_update(std::string_view sql, params const& p) {
-  odbc::statement stmt(conn_);
-  stmt.prepare(sql);
+  std::string key(sql);
+  odbc::statement stmt = acquire_cached(key);
   auto staging = p.bind(stmt);
   stmt.execute();
-  return stmt.affected_rows();
+  std::size_t affected = stmt.affected_rows();
+  stmt_cache_->release(key, std::move(stmt));
+  return affected;
+}
+
+std::function<void(odbc::statement)> connection::make_releaser(
+  std::string key) {
+  std::weak_ptr<detail::statement_cache> weak = stmt_cache_;
+  return [weak, key = std::move(key)](odbc::statement stmt) noexcept {
+    if (auto cache = weak.lock()) {
+      cache->release(key, std::move(stmt));
+    }
+  };
+}
+
+unsigned long long connection::statement_cache_hits() const {
+  return stmt_cache_->hits;
+}
+
+unsigned long long connection::statement_cache_misses() const {
+  return stmt_cache_->misses;
+}
+
+std::size_t connection::statement_cache_size() const {
+  return stmt_cache_->entries.size();
+}
+
+void connection::clear_statement_cache() {
+  stmt_cache_->entries.clear();
+  stmt_cache_->lru.clear();
 }
 
 namespace {

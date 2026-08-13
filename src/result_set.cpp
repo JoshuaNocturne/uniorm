@@ -121,9 +121,17 @@ struct result_set::impl {
   odbc::statement stmt;
   std::vector<column_slot> slots;
   std::shared_ptr<column_names> names;
+  std::function<void(odbc::statement)> release;
 
-  explicit impl(odbc::statement s) : stmt(std::move(s)) {
+  impl(odbc::statement s, std::function<void(odbc::statement)> r)
+    : stmt(std::move(s)), release(std::move(r)) {
     describe_and_bind();
+  }
+
+  ~impl() {
+    if (release) {
+      release(std::move(stmt));
+    }
   }
 
   void describe_and_bind() {
@@ -268,8 +276,10 @@ result_set::result_set(result_set&&) noexcept = default;
 
 result_set& result_set::operator=(result_set&&) noexcept = default;
 
-result_set result_set::from_statement(odbc::statement stmt) {
-  return result_set(std::make_unique<impl>(std::move(stmt)));
+result_set result_set::from_statement(
+  odbc::statement stmt, std::function<void(odbc::statement)> release) {
+  return result_set(
+    std::make_unique<impl>(std::move(stmt), std::move(release)));
 }
 
 bool result_set::next() {

@@ -319,6 +319,51 @@ void test_insert(connection& conn, orm& registry) {
   CHECK(conn.query(registry).of<User>().count() == 3);
 }
 
+void test_statement_cache(connection& conn, orm& registry) {
+  char const* select_sql = "SELECT id, name FROM uniorm_it_user ORDER BY id";
+
+  // Streaming result_set: checked out until destroyed, so a second
+  // execute of the same SQL while the first is open is a miss.
+  unsigned long long hits = conn.statement_cache_hits();
+  unsigned long long misses = conn.statement_cache_misses();
+  {
+    result_set rs1 = conn.execute(select_sql);
+    result_set rs2 = conn.execute(select_sql);
+    CHECK(conn.statement_cache_hits() == hits);
+    CHECK(conn.statement_cache_misses() == misses + 2);
+    CHECK(rs1.next() && rs2.next());
+  }  // both returned to the cache here
+
+  // Same SQL again: reuse the prepared statement, identical rows.
+  {
+    result_set rs = conn.execute(select_sql);
+    CHECK(conn.statement_cache_hits() == hits + 1);
+    std::vector<std::string> names;
+    while (rs.next()) {
+      names.push_back(rs.current().get<std::string>("name"));
+    }
+    CHECK(names.size() == 3);
+    CHECK(names[0] == "alice" && names[1] == "bob" && names[2] == "carol");
+  }
+
+  // execute_update path returns the statement immediately.
+  char const* noop_update = "DELETE FROM uniorm_it_user WHERE id < ?";
+  conn.execute_update(noop_update, params{ std::int64_t{ 0 } });
+  hits = conn.statement_cache_hits();
+  CHECK(conn.execute_update(noop_update, params{ std::int64_t{ 0 } }) == 0);
+  CHECK(conn.statement_cache_hits() == hits + 1);
+
+  // Entity queries participate too. Clear the cache first so the first
+  // call below is a guaranteed miss.
+  conn.clear_statement_cache();
+  CHECK(conn.statement_cache_size() == 0);
+  hits = conn.statement_cache_hits();
+  CHECK(conn.query(registry).of<User>().all().size() == 3);
+  CHECK(conn.query(registry).of<User>().all().size() == 3);
+  CHECK(conn.statement_cache_hits() == hits + 1);
+  CHECK(conn.statement_cache_size() > 0);
+}
+
 void test_pool(std::string const& conn_string) {
   pool_options opts;
   opts.connection_string = conn_string;
@@ -441,6 +486,7 @@ int main() {
     test_query_builder(conn, registry);
     test_transaction(conn, registry);
     test_insert(conn, registry);
+    test_statement_cache(conn, registry);
     test_pool(conn_string);
     test_pool_maintenance(conn_string);
 

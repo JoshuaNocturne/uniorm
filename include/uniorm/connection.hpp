@@ -1,12 +1,15 @@
 #pragma once
 
 #include <cstddef>
+#include <functional>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
 
 #include "detail/pfr.hpp"
 #include "detail/projection.hpp"
+#include "detail/statement_cache.hpp"
 #include "export.hpp"
 #include "mapping/registry.hpp"
 #include "odbc/connection.hpp"
@@ -68,8 +71,8 @@ public:
 
   template <detail::aggregate_projection T>
   std::vector<T> query(std::string_view sql, params const& p = {}) {
-    odbc::statement stmt(conn_);
-    stmt.prepare(sql);
+    std::string key(sql);
+    odbc::statement stmt = acquire_cached(key);
     auto staging = p.bind(stmt);
     stmt.execute();
     detail::projection<T> proj;
@@ -78,6 +81,7 @@ public:
     while (stmt.fetch()) {
       out.push_back(proj.take());
     }
+    stmt_cache_->release(key, std::move(stmt));
     return out;
   }
 
@@ -89,9 +93,25 @@ public:
   // Database product name reported by the driver (SQL_DBMS_NAME).
   std::string dbms_name() const;
 
+  // Prepared-statement cache observability (keyed by SQL text, LRU).
+  unsigned long long statement_cache_hits() const;
+  unsigned long long statement_cache_misses() const;
+  std::size_t statement_cache_size() const;
+  void clear_statement_cache();
+
 private:
   friend class orm;
   friend class transaction;
+
+  odbc::statement acquire_cached(std::string const& key) {
+    return stmt_cache_->acquire(key, [this](std::string const& s) {
+      odbc::statement stmt(conn_);
+      stmt.prepare(s);
+      return stmt;
+    });
+  }
+
+  std::function<void(odbc::statement)> make_releaser(std::string key);
 
   void set_autocommit(bool enabled);
   void commit_txn();
@@ -101,6 +121,10 @@ private:
   }
 
   odbc::connection conn_;
+  // Shared so result_set check-in closures can hold weak references that
+  // survive even if the connection is moved; destroyed with the connection
+  // (declared after conn_, so cached statements are freed first).
+  std::shared_ptr<detail::statement_cache> stmt_cache_;
 };
 
 }  // namespace uniorm

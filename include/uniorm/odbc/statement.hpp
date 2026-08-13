@@ -37,7 +37,9 @@ public:
     SQLLEN buffer_length, SQLLEN* indicator);
 
   void close_cursor();
-  void reset();  // unbind columns and reset parameters
+  // Return the statement to a fresh state for reuse: close any open
+  // cursor, unbind columns, reset parameters.
+  void reset();
 
   SQLHSTMT native() const noexcept {
     return static_cast<SQLHSTMT>(handle_.get());

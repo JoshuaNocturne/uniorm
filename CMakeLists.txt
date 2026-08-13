@@ -51,7 +51,9 @@ target_include_directories(uniorm PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
 )
-target_link_libraries(uniorm PRIVATE ODBC::ODBC Threads::Threads)
+# ODBC is PUBLIC because the header-only binding layer (registry.hpp ->
+# projection.hpp) references ODBC symbols in consumer translation units.
+target_link_libraries(uniorm PUBLIC ODBC::ODBC PRIVATE Threads::Threads)
 target_compile_definitions(uniorm PRIVATE UNIORM_BUILDING_DLL)
 if(UNIORM_DECIMAL_DEFAULT STREQUAL "string")
     target_compile_definitions(uniorm PUBLIC UNIORM_DECIMAL_AS_STRING)

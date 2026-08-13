@@ -4,13 +4,17 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
 
+#include <sql.h>
+
 #include "../connection.hpp"
 #include "../dialect.hpp"
 #include "../mapping/registry.hpp"
+#include "../odbc/statement.hpp"
 #include "../params.hpp"
 #include "../result_set.hpp"
 #include "../row.hpp"
@@ -19,6 +23,40 @@
 namespace uniorm {
 
 enum class direction { asc, desc };
+
+namespace detail {
+
+// Binds all mapped columns directly onto the fields of one entity instance.
+// Relies on the SELECT projecting columns in meta.columns registration order.
+template <class T>
+class entity_binding {
+public:
+  explicit entity_binding(entity_meta const& meta) {
+    bindings_.reserve(meta.columns.size());
+    for (auto const& c : meta.columns) {
+      bindings_.push_back(c.make_binding(&proto_));
+    }
+  }
+
+  void bind(odbc::statement& stmt) {
+    for (std::size_t i = 0; i < bindings_.size(); ++i) {
+      bindings_[i]->bind(stmt, static_cast<SQLUSMALLINT>(i + 1));
+    }
+  }
+
+  T take() {
+    for (auto& binding : bindings_) {
+      binding->finalize();
+    }
+    return std::move(proto_);
+  }
+
+private:
+  T proto_{};
+  std::vector<std::unique_ptr<field_binding>> bindings_;
+};
+
+}  // namespace detail
 
 template <class T>
 class query;
@@ -83,28 +121,30 @@ public:
   std::vector<T> all() {
     std::vector<sql_value> bound;
     std::string sql = render_select(limit_, bound);
-    result_set rs = gw_->conn().execute(sql, params(std::move(bound)));
-    std::vector<T> out;
-    while (rs.next()) {
-      row r = rs.current();
-      T obj{};
-      meta_->populate(&obj, r);
-      out.push_back(std::move(obj));
-    }
-    return out;
+    return gw_->conn().execute_with(
+      sql, params(std::move(bound)), [this](odbc::statement& stmt) {
+        detail::entity_binding<T> binding(*meta_);
+        binding.bind(stmt);
+        std::vector<T> out;
+        while (stmt.fetch()) {
+          out.push_back(binding.take());
+        }
+        return out;
+      });
   }
 
   std::optional<T> one() {
     std::vector<sql_value> bound;
     std::string sql = render_select(std::size_t{ 1 }, bound);
-    result_set rs = gw_->conn().execute(sql, params(std::move(bound)));
-    if (!rs.next()) {
-      return std::nullopt;
-    }
-    row r = rs.current();
-    T obj{};
-    meta_->populate(&obj, r);
-    return obj;
+    return gw_->conn().execute_with(sql, params(std::move(bound)),
+      [this](odbc::statement& stmt) -> std::optional<T> {
+        detail::entity_binding<T> binding(*meta_);
+        binding.bind(stmt);
+        if (!stmt.fetch()) {
+          return std::nullopt;
+        }
+        return binding.take();
+      });
   }
 
   std::int64_t count() {

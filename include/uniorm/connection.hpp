@@ -20,6 +20,8 @@ namespace uniorm {
 
 class query_gateway;
 class transaction;
+template <class T>
+class query;
 
 // High-level connection: owns an ODBC connection and offers statement
 // execution plus typed aggregate projection queries.
@@ -102,6 +104,21 @@ public:
 private:
   friend class orm;
   friend class transaction;
+  template <class T>
+  friend class query;
+
+  // Prepare, bind parameters, execute, then hand the live statement to fn
+  // so entity queries can SQLBindCol directly onto entity fields.
+  template <class Fn>
+  auto execute_with(std::string_view sql, params const& p, Fn&& fn) {
+    std::string key(sql);
+    odbc::statement stmt = acquire_cached(key);
+    auto staging = p.bind(stmt);
+    stmt.execute();
+    auto result = fn(stmt);
+    stmt_cache_->release(key, std::move(stmt));
+    return result;
+  }
 
   odbc::statement acquire_cached(std::string const& key) {
     return stmt_cache_->acquire(key, [this](std::string const& s) {

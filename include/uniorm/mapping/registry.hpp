@@ -5,6 +5,7 @@
 // time; runtime query materialization needs no templates.
 
 #include <functional>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <typeindex>
@@ -12,6 +13,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "../detail/projection.hpp"
 #include "../detail/traits.hpp"
 #include "../error.hpp"
 #include "../export.hpp"
@@ -33,6 +35,8 @@ struct column_meta {
   member_key key{ std::type_index(typeid(void)), {} };
   std::function<void(void*, sql_value const&)> write;
   std::function<sql_value(void const*)> read;
+  // Direct ODBC binding onto the member of obj (query materialization).
+  std::function<std::unique_ptr<detail::field_binding>(void*)> make_binding;
 };
 
 struct UNIORM_API entity_meta {
@@ -87,6 +91,9 @@ column_meta make_column_meta(
     } else {
       return make_sql_value(v);
     }
+  };
+  c.make_binding = [member](void* obj) {
+    return make_field_binding(static_cast<T*>(obj)->*member);
   };
   return c;
 }

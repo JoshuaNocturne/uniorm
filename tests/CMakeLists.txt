@@ -17,3 +17,10 @@ add_executable(uniorm_integration_tests
 target_link_libraries(uniorm_integration_tests PRIVATE uniorm::uniorm ODBC::ODBC)
 add_test(NAME integration_tests COMMAND uniorm_integration_tests)
 set_tests_properties(integration_tests PROPERTIES SKIP_RETURN_CODE 77)
+
+add_executable(uniorm_perf_tests
+    perf/test_perf.cpp
+)
+target_link_libraries(uniorm_perf_tests PRIVATE uniorm::uniorm ODBC::ODBC)
+add_test(NAME perf_tests COMMAND uniorm_perf_tests)
+set_tests_properties(perf_tests PROPERTIES SKIP_RETURN_CODE 77 LABELS perf)

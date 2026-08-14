@@ -9,6 +9,14 @@ add_executable(uniorm_unit_tests
     unit/test_registry.cpp
 )
 target_link_libraries(uniorm_unit_tests PRIVATE uniorm::uniorm)
+if(UNIORM_BUILD_TOOLS)
+    target_sources(uniorm_unit_tests PRIVATE
+        unit/test_gen_config.cpp
+        unit/test_gen_output.cpp
+    )
+    target_link_libraries(uniorm_unit_tests PRIVATE uniorm_gen_core)
+    target_compile_definitions(uniorm_unit_tests PRIVATE UNIORM_TEST_GEN)
+endif()
 add_test(NAME unit_tests COMMAND uniorm_unit_tests)
 
 add_executable(uniorm_integration_tests

@@ -32,3 +32,18 @@ add_executable(uniorm_perf_tests
 target_link_libraries(uniorm_perf_tests PRIVATE uniorm::uniorm ODBC::ODBC)
 add_test(NAME perf_tests COMMAND uniorm_perf_tests)
 set_tests_properties(perf_tests PROPERTIES SKIP_RETURN_CODE 77 LABELS perf)
+
+if(UNIORM_BUILD_TOOLS)
+    add_executable(uniorm_gen_e2e_tests
+        integration/test_gen_e2e.cpp
+    )
+    target_link_libraries(uniorm_gen_e2e_tests PRIVATE uniorm::uniorm ODBC::ODBC)
+    add_dependencies(uniorm_gen_e2e_tests uniorm-gen)
+    target_compile_definitions(uniorm_gen_e2e_tests PRIVATE
+        UNIORM_GEN_PATH="$<TARGET_FILE:uniorm-gen>"
+        UNIORM_GEN_OUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/gen_out"
+        UNIORM_GEN_GOLDEN="${CMAKE_CURRENT_SOURCE_DIR}/integration/golden/gen_it_schema.hpp"
+    )
+    add_test(NAME gen_e2e_tests COMMAND uniorm_gen_e2e_tests)
+    set_tests_properties(gen_e2e_tests PROPERTIES SKIP_RETURN_CODE 77)
+endif()

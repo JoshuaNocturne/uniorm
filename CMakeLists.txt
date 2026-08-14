@@ -23,6 +23,7 @@ if(NOT UNIORM_DECIMAL_DEFAULT MATCHES "^(string|double)$")
 endif()
 
 option(UNIORM_BUILD_TESTS "Build uniorm tests" ON)
+option(UNIORM_BUILD_TOOLS "Build uniorm tools (uniorm-gen)" ON)
 
 find_package(ODBC REQUIRED)
 find_package(Threads REQUIRED)
@@ -59,6 +60,10 @@ if(UNIORM_DECIMAL_DEFAULT STREQUAL "string")
     target_compile_definitions(uniorm PUBLIC UNIORM_DECIMAL_AS_STRING)
 else()
     target_compile_definitions(uniorm PUBLIC UNIORM_DECIMAL_AS_DOUBLE)
+endif()
+
+if(UNIORM_BUILD_TOOLS)
+    add_subdirectory(tools/uniorm-gen)
 endif()
 
 if(UNIORM_BUILD_TESTS)

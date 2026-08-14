@@ -2,7 +2,7 @@
 
 #include <stdexcept>
 
-#include "export.hpp"
+#include <uniorm/export.hpp>
 
 namespace uniorm {
 

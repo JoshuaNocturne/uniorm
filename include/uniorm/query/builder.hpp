@@ -11,14 +11,14 @@
 
 #include <sql.h>
 
-#include "../connection.hpp"
-#include "../dialect.hpp"
-#include "../mapping/registry.hpp"
-#include "../odbc/statement.hpp"
-#include "../params.hpp"
-#include "../result_set.hpp"
-#include "../row.hpp"
-#include "expression.hpp"
+#include <uniorm/connection.hpp>
+#include <uniorm/dialect.hpp>
+#include <uniorm/mapping/registry.hpp>
+#include <uniorm/odbc/statement.hpp>
+#include <uniorm/params.hpp>
+#include <uniorm/result_set.hpp>
+#include <uniorm/row.hpp>
+#include <uniorm/query/expression.hpp>
 
 namespace uniorm {
 

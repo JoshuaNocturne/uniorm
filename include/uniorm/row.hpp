@@ -9,10 +9,10 @@
 #include <unordered_map>
 #include <vector>
 
-#include "detail/traits.hpp"
-#include "error.hpp"
-#include "export.hpp"
-#include "value.hpp"
+#include <uniorm/detail/traits.hpp>
+#include <uniorm/error.hpp>
+#include <uniorm/export.hpp>
+#include <uniorm/value.hpp>
 
 namespace uniorm {
 

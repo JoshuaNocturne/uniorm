@@ -11,7 +11,7 @@
 #include <unordered_map>
 #include <utility>
 
-#include "../odbc/statement.hpp"
+#include <uniorm/odbc/statement.hpp>
 
 namespace uniorm::detail {
 

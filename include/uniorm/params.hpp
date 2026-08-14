@@ -7,10 +7,10 @@
 #include <utility>
 #include <vector>
 
-#include "detail/param_staging.hpp"
-#include "error.hpp"
-#include "export.hpp"
-#include "value.hpp"
+#include <uniorm/detail/param_staging.hpp>
+#include <uniorm/error.hpp>
+#include <uniorm/export.hpp>
+#include <uniorm/value.hpp>
 
 namespace uniorm {
 

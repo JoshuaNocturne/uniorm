@@ -2,7 +2,7 @@
 
 #include <chrono>
 
-#include "../value.hpp"
+#include <uniorm/value.hpp>
 
 namespace uniorm::detail {
 

@@ -13,9 +13,9 @@
 #include <memory>
 #include <string>
 
-#include "connection.hpp"
-#include "error.hpp"
-#include "export.hpp"
+#include <uniorm/connection.hpp>
+#include <uniorm/error.hpp>
+#include <uniorm/export.hpp>
 
 namespace uniorm {
 

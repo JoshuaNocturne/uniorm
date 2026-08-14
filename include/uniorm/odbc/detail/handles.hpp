@@ -5,7 +5,7 @@
 #include <sql.h>
 #include <sqlext.h>
 
-#include "../error.hpp"
+#include <uniorm/odbc/error.hpp>
 
 namespace uniorm::odbc::detail {
 

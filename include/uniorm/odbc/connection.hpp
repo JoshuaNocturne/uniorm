@@ -2,9 +2,9 @@
 
 #include <string_view>
 
-#include "detail/handles.hpp"
-#include "environment.hpp"
-#include "error.hpp"
+#include <uniorm/odbc/detail/handles.hpp>
+#include <uniorm/odbc/environment.hpp>
+#include <uniorm/odbc/error.hpp>
 
 namespace uniorm::odbc {
 

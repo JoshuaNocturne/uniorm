@@ -1,7 +1,7 @@
 #pragma once
 
-#include "detail/handles.hpp"
-#include "error.hpp"
+#include <uniorm/odbc/detail/handles.hpp>
+#include <uniorm/odbc/error.hpp>
 
 namespace uniorm::odbc {
 

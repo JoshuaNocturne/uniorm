@@ -7,14 +7,14 @@
 #include <string_view>
 #include <vector>
 
-#include "detail/pfr.hpp"
-#include "detail/projection.hpp"
-#include "detail/statement_cache.hpp"
-#include "export.hpp"
-#include "mapping/registry.hpp"
-#include "odbc/connection.hpp"
-#include "params.hpp"
-#include "result_set.hpp"
+#include <uniorm/detail/pfr.hpp>
+#include <uniorm/detail/projection.hpp>
+#include <uniorm/detail/statement_cache.hpp>
+#include <uniorm/export.hpp>
+#include <uniorm/mapping/registry.hpp>
+#include <uniorm/odbc/connection.hpp>
+#include <uniorm/params.hpp>
+#include <uniorm/result_set.hpp>
 
 namespace uniorm {
 

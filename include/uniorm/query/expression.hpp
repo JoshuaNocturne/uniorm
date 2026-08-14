@@ -13,9 +13,9 @@
 #include <typeindex>
 #include <vector>
 
-#include "../export.hpp"
-#include "../params.hpp"
-#include "../value.hpp"
+#include <uniorm/export.hpp>
+#include <uniorm/params.hpp>
+#include <uniorm/value.hpp>
 
 namespace uniorm {
 

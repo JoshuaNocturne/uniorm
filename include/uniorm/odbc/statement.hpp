@@ -3,9 +3,9 @@
 #include <cstddef>
 #include <string_view>
 
-#include "connection.hpp"
-#include "detail/handles.hpp"
-#include "error.hpp"
+#include <uniorm/odbc/connection.hpp>
+#include <uniorm/odbc/detail/handles.hpp>
+#include <uniorm/odbc/error.hpp>
 
 namespace uniorm::odbc {
 

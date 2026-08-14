@@ -5,10 +5,10 @@
 #include <memory>
 #include <string>
 
-#include "export.hpp"
-#include "odbc/statement.hpp"
-#include "row.hpp"
-#include "types.hpp"
+#include <uniorm/export.hpp>
+#include <uniorm/odbc/statement.hpp>
+#include <uniorm/row.hpp>
+#include <uniorm/types.hpp>
 
 namespace uniorm {
 

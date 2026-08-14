@@ -13,14 +13,14 @@
 #include <unordered_map>
 #include <vector>
 
-#include "../detail/projection.hpp"
-#include "../detail/traits.hpp"
-#include "../error.hpp"
-#include "../export.hpp"
-#include "../params.hpp"
-#include "../query/expression.hpp"
-#include "../row.hpp"
-#include "../value.hpp"
+#include <uniorm/detail/projection.hpp>
+#include <uniorm/detail/traits.hpp>
+#include <uniorm/error.hpp>
+#include <uniorm/export.hpp>
+#include <uniorm/params.hpp>
+#include <uniorm/query/expression.hpp>
+#include <uniorm/row.hpp>
+#include <uniorm/value.hpp>
 
 namespace uniorm {
 

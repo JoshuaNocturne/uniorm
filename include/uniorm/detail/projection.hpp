@@ -13,13 +13,13 @@
 #include <sql.h>
 #include <sqlext.h>
 
-#include "../error.hpp"
-#include "../odbc/error.hpp"
-#include "../odbc/statement.hpp"
-#include "../value.hpp"
-#include "pfr.hpp"
-#include "time.hpp"
-#include "traits.hpp"
+#include <uniorm/error.hpp>
+#include <uniorm/odbc/error.hpp>
+#include <uniorm/odbc/statement.hpp>
+#include <uniorm/value.hpp>
+#include <uniorm/detail/pfr.hpp>
+#include <uniorm/detail/time.hpp>
+#include <uniorm/detail/traits.hpp>
 
 namespace uniorm::detail {
 

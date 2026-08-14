@@ -3,8 +3,8 @@
 #include <string>
 #include <string_view>
 
-#include "error.hpp"
-#include "export.hpp"
+#include <uniorm/error.hpp>
+#include <uniorm/export.hpp>
 
 namespace uniorm::unicode {
 

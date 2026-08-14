@@ -5,7 +5,7 @@
 #include <string>
 #include <string_view>
 
-#include "export.hpp"
+#include <uniorm/export.hpp>
 
 namespace uniorm {
 

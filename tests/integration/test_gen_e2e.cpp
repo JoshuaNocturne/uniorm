@@ -108,9 +108,16 @@ int main() {
   char const* dsn_env = std::getenv("UNIORM_IT_DSN");
   char const* user_env = std::getenv("UNIORM_IT_USER");
   char const* pwd_env = std::getenv("UNIORM_IT_PWD");
-  std::string dsn = dsn_env && *dsn_env ? dsn_env : "docker_maria";
-  std::string user = user_env && *user_env ? user_env : "Joshua";
-  std::string pwd = pwd_env && *pwd_env ? pwd_env : "joshua";
+  if (!dsn_env || !*dsn_env || !user_env || !*user_env || !pwd_env ||
+      !*pwd_env) {
+    std::printf(
+      "skip: set UNIORM_IT_DSN / UNIORM_IT_USER / UNIORM_IT_PWD to run "
+      "gen e2e tests\n");
+    return 77;
+  }
+  std::string dsn = dsn_env;
+  std::string user = user_env;
+  std::string pwd = pwd_env;
   std::string conn_string = "DSN=" + dsn + ";UID=" + user + ";PWD=" + pwd;
 
   try {

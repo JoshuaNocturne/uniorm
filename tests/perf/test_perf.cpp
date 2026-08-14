@@ -1,7 +1,8 @@
 // Performance benchmarks against a live database via ODBC DSN.
-// DSN comes from UNIORM_IT_DSN (default: docker_maria); row count from
-// UNIORM_PERF_ROWS (default: 10000). Returns 77 (ctest SKIP) when the
-// database is unreachable. Compares the query materialization paths:
+// DSN, user and password come from UNIORM_IT_DSN / UNIORM_IT_USER /
+// UNIORM_IT_PWD; row count from UNIORM_PERF_ROWS (default: 10000).
+// Returns 77 (ctest SKIP) when any of them is unset or the database is
+// unreachable. Compares the query materialization paths:
 // entity direct binding, aggregate projection, and dynamic rows, plus a
 // raw ODBC baseline that mirrors uniorm's ODBC call patterns (multi-row
 // VALUES batch insert, SQLBindCol scans) for overhead comparison.
@@ -414,9 +415,16 @@ int main() {
   char const* user_env = std::getenv("UNIORM_IT_USER");
   char const* pwd_env = std::getenv("UNIORM_IT_PWD");
   char const* rows_env = std::getenv("UNIORM_PERF_ROWS");
-  std::string dsn = dsn_env && *dsn_env ? dsn_env : "docker_maria";
-  std::string user = user_env && *user_env ? user_env : "Joshua";
-  std::string pwd = pwd_env && *pwd_env ? pwd_env : "joshua";
+  if (!dsn_env || !*dsn_env || !user_env || !*user_env || !pwd_env ||
+      !*pwd_env) {
+    std::printf(
+      "skip: set UNIORM_IT_DSN / UNIORM_IT_USER / UNIORM_IT_PWD to run "
+      "perf tests\n");
+    return 77;
+  }
+  std::string dsn = dsn_env;
+  std::string user = user_env;
+  std::string pwd = pwd_env;
   std::string conn_string = "DSN=" + dsn + ";UID=" + user + ";PWD=" + pwd;
   std::size_t n =
     rows_env && *rows_env ? std::strtoul(rows_env, nullptr, 10) : 10000;

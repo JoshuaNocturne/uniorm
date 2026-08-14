@@ -23,6 +23,8 @@ ODBC 接口访问任意提供 ODBC 驱动的数据库（当前以 MariaDB 做集
 - **连接池**：懒创建、借还超时；全局单线程心跳维护 + 空闲超时回收
 - **方言自适应**：标识符引号与分页语法按 `SQL_DBMS_NAME` 推断
   （MySQL/MariaDB 用反引号 + LIMIT/OFFSET，其余 ANSI）
+- **代码生成**：`uniorm-gen` 连活库经 ODBC 元数据提取 schema，生成实体
+  struct + 注册函数头文件（TOML 覆写类型/类名/跳过表）
 
 ## 要求
 
@@ -44,6 +46,7 @@ cmake --build build -j
 | `CMAKE_BUILD_TYPE` | `Debug` | Debug / Release / RelWithDebInfo / MinSizeRel |
 | `UNIORM_DECIMAL_DEFAULT` | `string` | DECIMAL/NUMERIC 的默认 C++ 映射（`string` 或 `double`） |
 | `UNIORM_BUILD_TESTS` | `ON` | 构建单元/集成测试 |
+| `UNIORM_BUILD_TOOLS` | `ON` | 构建工具（`uniorm-gen`） |
 
 产物为动态库 `libuniorm.so`（头文件在 `include/uniorm/`）。
 
@@ -145,6 +148,18 @@ uniorm::connection_pool pool(std::move(opts));
 连接池自带全局单线程维护：周期性对空闲连接执行心跳（默认 `SELECT 1`），
 心跳失败即丢弃；空闲超过 `max_idle_time`（默认 10 分钟）的连接彻底释放。
 
+### 代码生成（uniorm-gen）
+
+```sh
+uniorm-gen --dsn=docker_maria --user=u --password=p \
+           --config=uniorm.toml --out=build/gen [--tables=a,b]
+```
+
+输出 `build/gen/<name>_schema.hpp`：每表一个 struct（可空列自动
+`std::optional`）与 `register_<name>_schema(uniorm::orm&)` 注册函数，
+`<name>` 默认取数据库名。TOML 配置支持全局/单列类型覆写、类名覆写与
+跳表，见设计文档 §6.4。
+
 ## 测试
 
 ```sh
@@ -160,6 +175,8 @@ ctest --test-dir build --output-on-failure
   一一对应的纯 ODBC 基线（多行 VALUES 批量插入、SQLBindCol 扫描、
   单行 LIMIT 1）作为抽象开销参照；行数由 `UNIORM_PERF_ROWS` 指定
   （默认 10000），可用 `ctest -LE perf` 跳过
+- **gen_e2e_tests**：`uniorm-gen` 端到端——生成物与检入的 golden 头文件
+  逐字节比对，golden 本身经编译、注册并 `validate(strict)`；需可达 DSN
 
 ## 目录结构
 
@@ -170,6 +187,7 @@ include/uniorm/       公共头文件
   mapping/            实体映射注册表
   query/              谓词表达式与查询构建器
 src/                  实现（构建为 libuniorm.so）
+tools/uniorm-gen      代码生成 CLI（schema 提取 + TOML 配置 + 生成器）
 tests/unit            单元测试
 tests/integration     数据库集成测试
 tests/perf            性能基准测试
@@ -178,5 +196,6 @@ docs/design.md        设计文档（权威 API 参考）
 
 ## 状态
 
-v1 已完成并通过 MariaDB 集成测试。v2 规划：backend 抽象（libpq / Oracle OCI
-原生通道）、代码生成工具 `uniorm-gen`、数组绑定批量操作等，见设计文档 §9。
+v1 已完成并通过 MariaDB 集成测试（含 `uniorm-gen` 端到端）。v2 规划：
+backend 抽象（libpq / Oracle OCI 原生通道）、数组绑定批量操作等，
+见设计文档 §9。

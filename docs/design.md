@@ -96,11 +96,12 @@ uniorm/
 │       ├── builder.hpp          # query_gateway / query<T>
 │       └── expression.hpp       # member_key / predicate / 谓词构造器
 ├── src/                         # 对应实现（编译进 libuniorm）
-├── tools/uniorm-gen/            # 代码生成 CLI（待实现）
-│   ├── main.cpp
+├── tools/uniorm-gen/            # 代码生成 CLI
+│   ├── main.cpp                 # 参数解析与编排
 │   ├── schema_reader.cpp        # ODBC 元数据提取
-│   ├── generator.cpp
-│   └── config.cpp               # TOML 配置
+│   ├── generator.cpp            # model + 配置 → 头文件文本
+│   ├── config.cpp               # TOML 子集解析
+│   └── naming.cpp               # PascalCase/camelCase 标识符转换
 ├── tests/unit/                  # 无数据库依赖的单测（unicode/odbc_handles/pfr/
 │                                # row/params/expression/registry）
 └── docs/design.md
@@ -797,7 +798,9 @@ odbc::odbc_error : uniorm_error      // ODBC 层（odbc/error.hpp），携带 di
 
 ## 8. 测试策略
 
-- **单元测试**（无数据库，已实现）：`test_unicode`（UTF-8/16 往返与非法输入）、`test_odbc_handles`（句柄 RAII）、`test_pfr`（字段数探测/展开/concept 负例）、`test_row`（value_cast/收窄/optional）、`test_params`（值归一化）、`test_expression`（谓词 SQL 生成、方言、分页）、`test_registry`（映射注册/populate/read 闭包/错误路径）；TOML 配置解析与生成器快照测试随 `uniorm-gen` 补充；
+- **单元测试**（无数据库，已实现）：`test_unicode`（UTF-8/16 往返与非法输入）、`test_odbc_handles`（句柄 RAII）、`test_pfr`（字段数探测/展开/concept 负例）、`test_row`（value_cast/收窄/optional）、`test_params`（值归一化）、`test_expression`（谓词 SQL 生成、方言、分页）、`test_registry`（映射注册/populate/read 闭包/错误路径）、`test_gen_config`
+  （TOML 子集解析正例/错误行号/非法键）、`test_gen_output`（命名转换边界
+  + 生成器快照与覆写/跳表/错误路径）；
 - **集成测试**（已实现，DSN/凭据由 `UNIORM_IT_DSN` / `UNIORM_IT_USER` / `UNIORM_IT_PWD` 指定，凭据以 `UID`/`PWD` 写进连接串；连不上时 ctest SKIP）：execute/params 往返、动态行、聚合投影（含长字符串与 timestamp）、orm validate（含 strict 失败路径）、查询构建器全谓词与分页、事务 commit/rollback/析构回滚、批量插入（实体版含 NULL/超批分批、动态版、参数个数校验）、语句缓存（hit/miss 计数、流式 result_set 借出期间并发 miss、清空）、连接池借还与超时、连接池维护（心跳保活计数、空闲超时驱逐、失败心跳丢弃）；后续按库加条件标签覆盖方言与类型怪癖；
 - **性能基准**（已实现，ctest 标签 `perf`，`tests/perf/test_perf.cpp`）：
   连不上库时 SKIP；行数由 `UNIORM_PERF_ROWS` 指定（默认 10000）。
@@ -810,7 +813,11 @@ odbc::odbc_error : uniorm_error      // ODBC 层（odbc/error.hpp），携带 di
   批量插入（同样 4096 占位符分批、逐值 `SQLBindParameter`、单事务）、
   `SQLBindCol` + `SQLFetch` 全表扫描（对应实体直绑与动态行路径）、
   单行 LIMIT 1（对应 `one()`），用于衡量 uniorm 抽象层的额外开销
-- `uniorm-gen` 用真实测试库做端到端测试：生成 → 编译 → 注册 → validate(strict) 通过。
+- **`uniorm-gen` 端到端**（已实现，`gen_e2e_tests`，连不上库时 SKIP）：
+  夹具表（含 PK/FK/索引/DECIMAL/DATETIME）→ 工具生成 → 与检入 golden
+  头文件逐字节比对；golden 本身被编译进测试，执行注册 +
+  `validate(strict)` + 构建器 `count()`，覆盖"生成 → 编译 → 注册 →
+  校验"全链路。golden 假定默认 `UNIORM_DECIMAL_DEFAULT=string`。
 
 ## 9. v2 路线图（不在本次范围）
 

@@ -7,6 +7,7 @@ add_executable(uniorm_unit_tests
     unit/test_expression.cpp
     unit/test_registry.cpp
     unit/test_backend_registry.cpp
+    unit/test_fake_backend.cpp
 )
 # Deliberately links no ODBC: any driver-type leak into the public
 # headers above the statement layer fails this target's compile.

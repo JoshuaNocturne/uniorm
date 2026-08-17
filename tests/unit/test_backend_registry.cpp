@@ -48,19 +48,25 @@ void test_parse_scheme() {
 struct dummy_connection : uniorm::backend::connection_iface {
   void open(std::string_view) override {}
   void close() override {}
-  bool is_open() const noexcept override { return false; }
+  bool is_open() const noexcept override {
+    return false;
+  }
   void set_autocommit(bool) override {}
   void commit() override {}
   void rollback() override {}
   uniorm::backend::capabilities caps() const noexcept override {
     return {};
   }
-  std::string dbms_name() const override { return "dummy"; }
-  std::unique_ptr<uniorm::backend::statement_iface> create_statement()
-    override {
+  std::string dbms_name() const override {
+    return "dummy";
+  }
+  std::unique_ptr<uniorm::backend::statement_iface>
+  create_statement() override {
     return nullptr;
   }
-  void* native_handle() noexcept override { return nullptr; }
+  void* native_handle() noexcept override {
+    return nullptr;
+  }
 };
 
 void test_registry() {
@@ -71,29 +77,27 @@ void test_registry() {
   CHECK(reg.contains("odbc"));
 #endif
 
-  CHECK(!reg.contains("fake"));
+  CHECK(!reg.contains("dummy"));
   reg.register_backend(
-    "fake", [] { return std::make_unique<dummy_connection>(); });
-  CHECK(reg.contains("fake"));
+    "dummy", [] { return std::make_unique<dummy_connection>(); });
+  CHECK(reg.contains("dummy"));
 
   std::string tail;
-  auto conn = reg.create("fake://abc=1", &tail);
+  auto conn = reg.create("dummy://abc=1", &tail);
   CHECK(conn != nullptr);
   CHECK(tail == "abc=1");
 
   // Duplicate registration is rejected.
-  CHECK_THROWS(reg.register_backend("fake", [] {
-                 return std::make_unique<dummy_connection>();
-               }),
+  CHECK_THROWS(reg.register_backend(
+                 "dummy", [] { return std::make_unique<dummy_connection>(); }),
     uniorm::backend::backend_error);
 
   // Unknown schemes throw and list what is registered.
-  CHECK_THROWS(reg.create("nosuch://x", nullptr),
-    uniorm::backend::unknown_scheme);
+  CHECK_THROWS(
+    reg.create("nosuch://x", nullptr), uniorm::backend::unknown_scheme);
 
   auto schemes = reg.schemes();
-  CHECK(std::find(schemes.begin(), schemes.end(), "fake") !=
-        schemes.end());
+  CHECK(std::find(schemes.begin(), schemes.end(), "dummy") != schemes.end());
 }
 
 }  // namespace

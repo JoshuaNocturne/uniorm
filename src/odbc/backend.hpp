@@ -3,6 +3,7 @@
 // Private header: the ODBC implementation of the backend contract.
 // Not installed; consumers interact with uniorm::backend interfaces only.
 
+#include <deque>
 #include <memory>
 #include <string>
 #include <vector>
@@ -32,7 +33,9 @@ public:
 private:
   odbc::statement stmt_;
   struct param_slot;
-  std::vector<param_slot> slots_;
+  // deque, not vector: bind_parameter hands the driver pointers into
+  // existing slots, and appending further slots must not relocate them.
+  std::deque<param_slot> slots_;
 };
 
 class backend_connection : public backend::connection_iface {

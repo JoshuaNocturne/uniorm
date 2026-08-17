@@ -47,6 +47,7 @@ add_library(uniorm SHARED
     src/odbc/environment.cpp
     src/odbc/connection.cpp
     src/odbc/statement.cpp
+    src/odbc/backend.cpp
 )
 add_library(uniorm::uniorm ALIAS uniorm)
 

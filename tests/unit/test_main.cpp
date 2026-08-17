@@ -7,6 +7,7 @@ void test_row();
 void test_params();
 void test_expression();
 void test_registry();
+void test_backend_registry();
 #ifdef UNIORM_TEST_GEN
 void test_gen_config();
 void test_gen_output();
@@ -20,6 +21,7 @@ int main() {
   test_params();
   test_expression();
   test_registry();
+  test_backend_registry();
 #ifdef UNIORM_TEST_GEN
   test_gen_config();
   test_gen_output();

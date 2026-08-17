@@ -38,6 +38,8 @@ add_library(uniorm SHARED
     src/dialect.cpp
     src/transaction.cpp
     src/pool.cpp
+    src/backend/error.cpp
+    src/backend/registry.cpp
     src/query/expression.cpp
     src/query/builder.cpp
     src/mapping/registry.cpp

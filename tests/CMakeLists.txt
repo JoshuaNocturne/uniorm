@@ -7,6 +7,7 @@ add_executable(uniorm_unit_tests
     unit/test_params.cpp
     unit/test_expression.cpp
     unit/test_registry.cpp
+    unit/test_backend_registry.cpp
 )
 target_link_libraries(uniorm_unit_tests PRIVATE uniorm::uniorm)
 if(UNIORM_BUILD_TOOLS)

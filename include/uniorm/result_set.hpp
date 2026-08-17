@@ -12,13 +12,6 @@
 
 namespace uniorm {
 
-struct column_info {
-  std::string name;
-  sql_type type;
-  std::size_t display_size;
-  bool nullable;
-};
-
 // Row-wise bound result set. Move-only. Created by connection::execute.
 class UNIORM_API result_set {
 public:

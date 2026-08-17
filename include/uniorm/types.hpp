@@ -1,5 +1,8 @@
 #pragma once
 
+#include <cstddef>
+#include <string>
+
 #include <uniorm/export.hpp>
 
 namespace uniorm {
@@ -30,5 +33,14 @@ enum class sql_type {
 };
 
 UNIORM_API sql_type sql_type_from_native(int native_type);
+
+// Metadata describing one result column; backend-neutral so the backend
+// contract can expose it without depending on result_set.
+struct column_info {
+  std::string name;
+  sql_type type;
+  std::size_t display_size;
+  bool nullable;
+};
 
 }  // namespace uniorm

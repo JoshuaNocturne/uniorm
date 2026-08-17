@@ -35,7 +35,7 @@ struct column_meta {
   member_key key{ std::type_index(typeid(void)), {} };
   std::function<void(void*, sql_value const&)> write;
   std::function<sql_value(void const*)> read;
-  // Direct ODBC binding onto the member of obj (query materialization).
+  // Direct backend binding onto the member of obj (query materialization).
   std::function<std::unique_ptr<detail::field_binding>(void*)> make_binding;
 };
 
@@ -172,8 +172,9 @@ public:
     return entities_.size();
   }
 
-  // Reconcile all registered mappings against the live schema via ODBC
-  // metadata. Throws mapping_error on the first mismatch.
+  // Reconcile all registered mappings against the live schema via the
+  // backend's schema metadata extension. Throws mapping_error on the first
+  // mismatch or when the backend offers no schema metadata.
   void validate(
     connection& conn, validation_mode mode = validation_mode::strict);
 

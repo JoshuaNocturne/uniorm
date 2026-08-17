@@ -40,6 +40,11 @@ See [docs/design.md](docs/design.md) for the full design.
   the schema through ODBC metadata, and generates entity structs plus
   registration functions (TOML overrides for types/class names/skipped
   tables)
+- **Pluggable backends** — the core API sits on a driver-neutral backend
+  interface; the connection-string scheme selects the backend
+  (`odbc://...`, or a bare ODBC connection string for backward
+  compatibility), and missing capabilities throw instead of silently
+  degrading
 
 ## Requirements
 
@@ -62,6 +67,7 @@ Options:
 | `UNIORM_DECIMAL_DEFAULT` | `string` | Default C++ mapping for DECIMAL/NUMERIC (`string` or `double`) |
 | `UNIORM_BUILD_TESTS` | `ON` | Build unit/integration/perf tests |
 | `UNIORM_BUILD_TOOLS` | `ON` | Build tools (`uniorm-gen`) |
+| `UNIORM_BACKEND_ODBC` | `ON` | Build the ODBC backend into `libuniorm`; off builds are core-only (`UNIORM_BUILD_TOOLS` must be off too) |
 
 The product is a shared library, `libuniorm.so` (headers in
 `include/uniorm/`).
@@ -74,6 +80,9 @@ The product is a shared library, `libuniorm.so` (headers in
 #include <uniorm/connection.hpp>
 
 uniorm::connection conn("DSN=mydb;UID=user;PWD=secret");
+// Equivalent explicit form: "odbc://DSN=mydb;UID=user;PWD=secret".
+// The scheme before :// selects the backend; strings without a scheme
+// are treated as ODBC connection strings.
 
 auto rs = conn.execute("SELECT id, name FROM users WHERE age > ?",
                        uniorm::params{18});
@@ -200,7 +209,11 @@ for the full specification.
 ctest --test-dir build --output-on-failure
 ```
 
-- **unit_tests**: pure in-memory tests, no external dependencies
+- **unit_tests**: pure in-memory tests, no external dependencies; they run
+  against a fake backend and link no ODBC, so any driver-type leak into the
+  public API fails to compile
+- **odbc_unit_tests**: ODBC handle and `uniorm-gen` unit tests
+  (driver manager only, no DSN required)
 - **integration_tests**: needs a reachable ODBC DSN; reads `UNIORM_IT_DSN`,
   `UNIORM_IT_USER`, `UNIORM_IT_PWD` (all required); credentials
   are folded into the connection string as `UID`/`PWD`; ctest SKIPs when
@@ -219,11 +232,14 @@ ctest --test-dir build --output-on-failure
 
 ```
 include/uniorm/       public headers
+  backend/            driver-neutral backend interface, registry, errors
   odbc/               RAII wrappers for ODBC handles (environment/connection/statement)
-  detail/             pfr-lite, projection bindings, parameter staging, chrono helpers
+  detail/             pfr-lite, projection bindings, statement cache, chrono helpers
   mapping/            entity mapping registry
   query/              predicate expressions and the query builder
 src/                  implementation (built into libuniorm.so)
+  backend/            scheme parsing and the backend registry
+  odbc/               ODBC backend (adapter, handle wrappers, errors)
 tools/uniorm-gen      code-generation CLI (schema extraction + TOML config + generator)
 tests/unit            unit tests
 tests/integration     database integration tests (+ golden header for uniorm-gen)
@@ -234,5 +250,8 @@ docs/design.md        design document (authoritative API reference)
 ## Status
 
 v1 is complete and verified against MariaDB, including the `uniorm-gen`
-end-to-end flow. v2 roadmap: backend abstraction (native libpq / Oracle OCI
-channels), array-binding batch operations, and more — see design doc §9.
+end-to-end flow. v2 is underway: the backend abstraction is in place
+(neutral interface + scheme-based registry, ODBC migrated behind it,
+ODBC linked privately, core unit tests compile and run without ODBC);
+native libpq / Oracle OCI backends, array-binding batch operations, and
+more follow — see design doc §5 and §9.

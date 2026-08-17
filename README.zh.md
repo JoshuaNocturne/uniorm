@@ -31,6 +31,9 @@ ODBC 接口访问任意提供 ODBC 驱动的数据库，在通用层之上提供
   （MySQL/MariaDB 用反引号 + LIMIT/OFFSET，其余 ANSI）
 - **代码生成**：`uniorm-gen` 连活库经 ODBC 元数据提取 schema，生成实体
   struct + 注册函数（TOML 覆写类型/类名/跳过表）
+- **可插拔 backend**：核心 API 构建在驱动中立的 backend 接口之上，连接串
+  scheme 选择后端（`odbc://...`；裸 ODBC 连接串保持向后兼容），能力缺失
+  时明确抛错而非静默降级
 
 ## 要求
 
@@ -53,6 +56,7 @@ cmake --build build -j
 | `UNIORM_DECIMAL_DEFAULT` | `string` | DECIMAL/NUMERIC 的默认 C++ 映射（`string` 或 `double`） |
 | `UNIORM_BUILD_TESTS` | `ON` | 构建单元/集成/性能测试 |
 | `UNIORM_BUILD_TOOLS` | `ON` | 构建工具（`uniorm-gen`） |
+| `UNIORM_BACKEND_ODBC` | `ON` | 将 ODBC backend 编入 `libuniorm`；关闭后为纯核心构建（须同时关闭 `UNIORM_BUILD_TOOLS`） |
 
 产物为动态库 `libuniorm.so`（头文件在 `include/uniorm/`）。
 
@@ -64,6 +68,8 @@ cmake --build build -j
 #include <uniorm/connection.hpp>
 
 uniorm::connection conn("DSN=mydb;UID=user;PWD=secret");
+// 等价的显式写法："odbc://DSN=mydb;UID=user;PWD=secret"。
+// :// 之前的 scheme 选择 backend；无 scheme 的串按 ODBC 连接串处理。
 
 auto rs = conn.execute("SELECT id, name FROM users WHERE age > ?",
                        uniorm::params{18});
@@ -186,7 +192,10 @@ cpp_type = "std::string"       # 单列类型覆写
 ctest --test-dir build --output-on-failure
 ```
 
-- **unit_tests**：纯内存测试，无外部依赖
+- **unit_tests**：纯内存测试，无外部依赖；基于 fake backend 运行且不链接
+  ODBC，公共 API 一旦泄漏驱动类型即编译失败
+- **odbc_unit_tests**：ODBC 句柄与 `uniorm-gen` 单元测试
+  （仅驱动管理器，无需 DSN）
 - **integration_tests**：需要可达的 ODBC DSN，读取环境变量
   `UNIORM_IT_DSN`、`UNIORM_IT_USER`、`UNIORM_IT_PWD`（三者均须设置），
   凭据以 `UID`/`PWD` 拼入连接串；任一未设置或连不上时以 ctest SKIP 处理
@@ -201,11 +210,14 @@ ctest --test-dir build --output-on-failure
 
 ```
 include/uniorm/       公共头文件
+  backend/            驱动中立的 backend 接口、注册表、错误体系
   odbc/               ODBC 句柄 RAII 封装（environment/connection/statement）
-  detail/             pfr-lite、投影绑定、参数暂存、chrono 工具
+  detail/             pfr-lite、投影绑定、语句缓存、chrono 工具
   mapping/            实体映射注册表
   query/              谓词表达式与查询构建器
 src/                  实现（构建为 libuniorm.so）
+  backend/            scheme 解析与 backend 注册表
+  odbc/               ODBC backend（适配器、句柄封装、错误）
 tools/uniorm-gen      代码生成 CLI（schema 提取 + TOML 配置 + 生成器）
 tests/unit            单元测试
 tests/integration     数据库集成测试（含 uniorm-gen 的 golden 头文件）
@@ -215,6 +227,7 @@ docs/design.md        设计文档（权威 API 参考）
 
 ## 状态
 
-v1 已完成并通过 MariaDB 集成验证（含 `uniorm-gen` 端到端）。v2 规划：
-backend 抽象（libpq / Oracle OCI 原生通道）、数组绑定批量操作等，
-见设计文档 §9。
+v1 已完成并通过 MariaDB 集成验证（含 `uniorm-gen` 端到端）。v2 进行中：
+backend 抽象已落地（中立接口 + scheme 注册表，ODBC 迁移至接口之后、
+改为 PRIVATE 链接，核心单测在不链接 ODBC 的情况下编译运行）；后续为
+libpq / Oracle OCI 原生 backend、数组绑定批量操作等，见设计文档 §5 与 §9。

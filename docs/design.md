@@ -52,13 +52,15 @@ uniorm 是一个基于 **ODBC**（而非各数据库专有 C 客户端）的现�
 ├────────────────────────────────────────────────┤
 │ statement：参数绑定 / 执行 / result_set 迭代     │  语句层
 ├────────────────────────────────────────────────┤
-│ environment / connection / statement 句柄 RAII   │  ODBC 封装层
-│ odbc_error / diagnostics                        │  （v1 唯一 backend 实现）
+│ backend::statement_iface / connection_iface     │  backend 抽象（v2 M1，见 §5）
+│ scheme 注册表 / capabilities / 中立列缓冲        │
+├────────────────────────────────────────────────┤
+│ environment / connection / statement 句柄 RAII   │  ODBC backend
+│ odbc_error / diagnostics                        │  （当前唯一内置实现）
 └────────────────────────────────────────────────┘
-        ⇡ v2 在此处之上插入 backend 抽象接口（见 §5）
 ```
 
-依赖方向严格向下；高层不直接触碰 `SQLH*` 句柄类型。ODBC 专有概念（`SQLLEN` / indicator / SQLSTATE / `?` 占位符细节）禁止上浮到语句层公共 API 之上——这条纪律是 v2 多 backend 抽象（§5）的前提。
+依赖方向严格向下；高层不直接触碰 `SQLH*` 句柄类型。ODBC 专有概念（`SQLLEN` / indicator / SQLSTATE / `?` 占位符细节）禁止上浮到语句层公共 API 之上——该纪律自 v2 里程碑 1 起由不链接 ODBC 的核心单测目标编译强制（§5.1）。
 
 ## 3. 目录结构
 
@@ -79,7 +81,11 @@ uniorm/
 │   ├── transaction.hpp
 │   ├── pool.hpp                 # connection_pool / pooled_connection
 │   ├── dialect.hpp              # 方言特性（引用符、分页）
-│   ├── odbc/                    # ODBC 封装层
+│   ├── backend/                 # 驱动中立的 backend 契约（见 §5.2）
+│   │   ├── backend.hpp          # column_buffer / capabilities / statement_iface / connection_iface
+│   │   ├── registry.hpp         # scheme 解析 + backend 注册表
+│   │   └── error.hpp            # backend_error / capability_not_supported / unknown_scheme
+│   ├── odbc/                    # ODBC 封装层（ODBC backend 的实现基座）
 │   │   ├── environment.hpp
 │   │   ├── connection.hpp
 │   │   ├── statement.hpp
@@ -88,22 +94,25 @@ uniorm/
 │   ├── detail/
 │   │   ├── pfr.hpp              # 自实现聚合体反射（字段数探测 + 展开，上限 64）
 │   │   ├── projection.hpp       # 聚合 struct 投影绑定（field_binding 体系）
+│   │   ├── statement_cache.hpp  # LRU 预编译语句缓存（存 statement_iface）
 │   │   ├── traits.hpp           # is_optional_v 等共享 traits
-│   │   ├── time.hpp             # chrono ↔ 日历拆分/组装
-│   │   └── param_staging.hpp    # 参数绑定的指示器/缓冲暂存
+│   │   └── time.hpp             # chrono ↔ 日历拆分/组装
 │   ├── mapping/registry.hpp     # 实体映射注册表（含 mapping_builder）
 │   └── query/
 │       ├── builder.hpp          # query_gateway / query<T>
 │       └── expression.hpp       # member_key / predicate / 谓词构造器
 ├── src/                         # 对应实现（编译进 libuniorm）
+│   ├── backend/                 # scheme 解析与注册表实现
+│   └── odbc/                    # ODBC backend（backend.cpp 适配器，自注册 "odbc"）
 ├── tools/uniorm-gen/            # 代码生成 CLI
 │   ├── main.cpp                 # 参数解析与编排
 │   ├── schema_reader.cpp        # ODBC 元数据提取
 │   ├── generator.cpp            # model + 配置 → 头文件文本
 │   ├── config.cpp               # TOML 子集解析
 │   └── naming.cpp               # PascalCase/camelCase 标识符转换
-├── tests/unit/                  # 无数据库依赖的单测（unicode/odbc_handles/pfr/
-│                                # row/params/expression/registry）
+├── tests/unit/                  # 无数据库依赖的单测；uniorm_unit_tests 不链 ODBC
+│                                # （含 fake backend 证明测试），odbc_unit_tests
+│                                # 覆盖句柄 RAII 与 uniorm-gen
 └── docs/design.md
 ```
 
@@ -674,7 +683,7 @@ v1 不做：动态伸缩。池须比所有借出的连接长寿。
 
 背景：libpq 与 Oracle OCI 在实际项目中都存在必须独立使用原生 API 的场景（PG：COPY、LISTEN/NOTIFY、异步 I/O；Oracle：OCI 数组绑定、高级特性等），这些是 ODBC 无法覆盖的。因此 uniorm 采用"通用层打底 + 原生特性逃生舱口"策略，而非试图把各库特性塞进统一 API。
 
-### 5.1 v1 边界纪律（立即生效）
+### 5.1 边界纪律（已由编译强制）
 
 v1 不实现 backend 抽象接口（单一实现下抽象必然抽错），但执行以下纪律，保证 v2 提取接口是可控重构而非重写：
 
@@ -683,35 +692,87 @@ v1 不实现 backend 抽象接口（单一实现下抽象必然抽错），但�
 - `transaction`、`connection_pool`、`result_set` 只依赖通用语义（open / prepare / bind / execute / fetch / 列元数据）；
 - 单元测试中对语句层以上的测试不得链接 ODBC 头文件。
 
-### 5.2 v2 backend 接口（方向性设计，不在 v1 实现）
+v2 里程碑 1 完成后，以上纪律从约定升级为编译强制：核心单测目标
+`uniorm_unit_tests` 不链接任何 ODBC 库，全部高层 API（execute /
+result_set / 聚合投影 / 实体查询 / 批量插入 / 事务 / 语句缓存）经内存
+fake backend 驱动（见 §8）；任何驱动类型上浮都会在编译期失败。
+
+### 5.2 backend 接口（v2 里程碑 1，已实现）
+
+接口位于 `include/uniorm/backend/backend.hpp`，ODBC 是唯一内置实现
+（`src/odbc/backend.cpp`）。核心 API（查询构建器、映射、池、事务）只依赖
+接口；能力不足时抛清晰错误，不静默降级。
+
+**中立列缓冲契约**——三条物化路径（result_set / 聚合投影 / 实体直绑）
+统一为"调用方缓冲 + indicator"：
 
 ```cpp
 namespace uniorm::backend {
 
-struct capabilities {
-    bool streaming;          // 流式/大结果集分批读取
-    bool async_io;           // 原生异步
-    bool copy_protocol;      // PG COPY 类批量协议
-    bool notifications;      // PG LISTEN/NOTIFY 类事件
-    bool array_binding;      // OCI 数组绑定类批量操作
-};
+inline constexpr std::int64_t null_indicator = -1;  // == SQL_NULL_DATA
+inline constexpr std::int64_t no_total       = -4;  // == SQL_NO_TOTAL
 
-struct statement_iface { /* prepare / bind / execute / fetch / column_meta */ };
-struct connection_iface { /* open / close / begin / commit / rollback /
-                             capabilities() / native_handle() / extension() */ };
-
-} // namespace uniorm::backend
+enum class buffer_type { bit, int8, int16, int32, int64, float32, float64,
+                         chars, bytes, timestamp_parts, date_parts, time_parts };
+struct column_buffer { buffer_type type; void* data; std::size_t capacity;
+                       std::int64_t* indicator; };
 ```
 
-核心 API（查询构建器、映射、池、事务）只依赖接口；能力不足时抛清晰错误，不静默降级。
+`timestamp_parts` / `date_parts` / `time_parts` 为定宽结构，布局钉死对应
+`SQL_*_STRUCT`（ODBC adapter 内 `static_assert` sizeof 相等）。ODBC 实现
+`bind_column` 即一次 `SQLBindCol`，indicator 直接复用调用方 `int64` 存储
+（`sizeof(std::int64_t) == sizeof(SQLLEN)` static_assert），直绑零拷贝的
+性能特性不损失，每行仅一次虚调用（`fetch()`）。
+
+**语句与连接接口**：
+
+```cpp
+struct capabilities { bool streaming, async_io, copy_protocol,
+                             notifications, array_binding; };
+
+struct statement_iface { /* prepare(?占位符) / bind_parameter / bind_column /
+                            execute / fetch / affected_rows / column_meta /
+                            read_long_text / read_long_bytes / reset */ };
+struct connection_iface { /* open / close / is_open / set_autocommit /
+                            commit / rollback / caps / dbms_name /
+                            create_statement / native_handle /
+                            extension(std::type_index) */ };
+
+struct schema_metadata { /* table_columns(table) —— 最小元数据扩展，
+                            供 orm::validate；经 extension() 查找 */ };
+```
+
+事务的 autocommit 开关逻辑留在核心（`transaction` 不变），backend 只暴露
+原语。`reset()` 是缓存复用契约：关游标、解绑列、清参数。
+
+**backend 选择：连接串 scheme + 运行时注册表**（`backend/registry.hpp`）：
+
+- `odbc://DSN=x;UID=u;PWD=p` → "odbc" backend 收到尾串原样进
+  `SQLDriverConnect`；
+- 无 scheme 的裸串（`DSN=...`）默认 ODBC，保持向后兼容；候选 scheme 须
+  匹配 `[a-z][a-z0-9+.-]*`，否则视为裸 ODBC 串（兼容 `SERVER=tcp://host`
+  这类怪串）；
+- 注册表为 Meyers 单例 + mutex；重复注册抛 `backend_error`，未注册 scheme
+  抛 `unknown_scheme` 并列出已注册项；
+- ODBC backend 以文件作用域 `static registrar` 自注册（编进
+  `libuniorm.so`，加载即达）。
+
+**错误体系**：`backend_error : uniorm_error`（backend 名 + context +
+`diagnostic{state, native_code, message}`）；`odbc_error` 改为其派生
+（backend 名固定 "odbc"），现有 catch 站点不受影响；另有
+`capability_not_supported` 与 `unknown_scheme`。
+
+**构建门禁**：`option(UNIORM_BACKEND_ODBC ON)`；ODBC 由 PUBLIC 收紧为
+PRIVATE 链接；`uniorm-gen` 直接读 ODBC 元数据，故 `UNIORM_BUILD_TOOLS`
+依赖该选项。
 
 ### 5.3 原生特性通道
 
 **原生句柄逃生舱口**——保证"ODBC 做不到的事永远有路可走"：
 
 ```cpp
-auto* pg = conn.native_handle<libpq_backend>();    // PGconn*
-PQputCopyData(pg, ...);                            // 用户自行驱动原生操作
+auto* pg = conn.native_handle<PGconn>();   // 调用方命名期望的原生句柄类型
+PQputCopyData(pg, ...);                     // 用户自行驱动原生操作
 ```
 
 连接与事务生命周期仍由 uniorm 管理；原生操作发生在借出的连接上，归还前状态必须自洽。
@@ -793,14 +854,27 @@ uniorm_error : std::runtime_error    // 基类（error.hpp）
 ├── mapping_error                    // 映射/校验：重复注册、未注册、表列缺失、可空不匹配
 └── pool_timeout                     // 池获取超时
 
-odbc::odbc_error : uniorm_error      // ODBC 层（odbc/error.hpp），携带 diagnostics 列表
+backend::backend_error : uniorm_error    // backend 层（backend/error.hpp），
+│                                        // backend 名 + context + diagnostics
+│   └── odbc::odbc_error                 // ODBC 层（odbc/error.hpp），backend 名固定 "odbc"
+├── backend::capability_not_supported    // 能力缺失（不静默降级）
+└── backend::unknown_scheme              // 连接串 scheme 未注册
 ```
 
 ## 8. 测试策略
 
-- **单元测试**（无数据库，已实现）：`test_unicode`（UTF-8/16 往返与非法输入）、`test_odbc_handles`（句柄 RAII）、`test_pfr`（字段数探测/展开/concept 负例）、`test_row`（value_cast/收窄/optional）、`test_params`（值归一化）、`test_expression`（谓词 SQL 生成、方言、分页）、`test_registry`（映射注册/populate/read 闭包/错误路径）、`test_gen_config`
-  （TOML 子集解析正例/错误行号/非法键）、`test_gen_output`（命名转换边界
-  + 生成器快照与覆写/跳表/错误路径）；
+- **单元测试**（无数据库，已实现，拆为两个目标）：
+  `uniorm_unit_tests` 不链接 ODBC——`test_unicode`（UTF-8/16 往返与非法
+  输入）、`test_pfr`（字段数探测/展开/concept 负例）、`test_row`
+  （value_cast/收窄/optional）、`test_params`（值归一化）、
+  `test_expression`（谓词 SQL 生成、方言、分页）、`test_registry`
+  （映射注册/populate/read 闭包/错误路径）、`test_backend_registry`
+  （scheme 解析边界、注册/重复注册/未注册 scheme）、`test_fake_backend`
+  （内存 fake backend 驱动全部高层 API：execute/result_set、聚合投影、
+  实体查询 all/one/count、insert_batch、事务、语句缓存、extension 查找）；
+  `uniorm_odbc_unit_tests` 链接 ODBC——`test_odbc_handles`（句柄 RAII）、
+  `test_gen_config`（TOML 子集解析正例/错误行号/非法键）、
+  `test_gen_output`（命名转换边界 + 生成器快照与覆写/跳表/错误路径）；
 - **集成测试**（已实现，DSN/凭据由 `UNIORM_IT_DSN` / `UNIORM_IT_USER` / `UNIORM_IT_PWD` 指定，凭据以 `UID`/`PWD` 写进连接串；连不上时 ctest SKIP）：execute/params 往返、动态行、聚合投影（含长字符串与 timestamp）、orm validate（含 strict 失败路径）、查询构建器全谓词与分页、事务 commit/rollback/析构回滚、批量插入（实体版含 NULL/超批分批、动态版、参数个数校验）、语句缓存（hit/miss 计数、流式 result_set 借出期间并发 miss、清空）、连接池借还与超时、连接池维护（心跳保活计数、空闲超时驱逐、失败心跳丢弃）；后续按库加条件标签覆盖方言与类型怪癖；
 - **性能基准**（已实现，ctest 标签 `perf`，`tests/perf/test_perf.cpp`）：
   连不上库时 SKIP；行数由 `UNIORM_PERF_ROWS` 指定（默认 10000）。
@@ -819,9 +893,11 @@ odbc::odbc_error : uniorm_error      // ODBC 层（odbc/error.hpp），携带 di
   `validate(strict)` + 构建器 `count()`，覆盖"生成 → 编译 → 注册 →
   校验"全链路。golden 假定默认 `UNIORM_DECIMAL_DEFAULT=string`。
 
-## 9. v2 路线图（不在本次范围）
+## 9. v2 路线图
 
-1. **backend 接口提取 + libpq backend + Oracle OCI backend**（见 §5，已确认需求）
+1. ~~backend 接口提取~~ **已完成（里程碑 1）**：中立接口 + scheme 注册表，
+   ODBC 迁移至接口之后，ODBC 改 PRIVATE 链接，核心单测不链接 ODBC
+   （见 §5）。**待做**：libpq backend、Oracle OCI backend（见 §5.4）
 2. Unit of Work / 脏检查 / 级联
 3. 批量操作（`SQL_ATTR_PARAMSET_SIZE` 数组绑定；OCI backend 可用原生数组绑定）
 4. 异步包装层（libpq backend 可用原生异步）

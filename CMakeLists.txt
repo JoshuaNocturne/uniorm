@@ -33,7 +33,6 @@ add_library(uniorm SHARED
     src/unicode.cpp
     src/row.cpp
     src/result_set.cpp
-    src/params.cpp
     src/connection.cpp
     src/dialect.cpp
     src/transaction.cpp

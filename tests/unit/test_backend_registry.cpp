@@ -66,6 +66,9 @@ struct dummy_connection : uniorm::backend::connection_iface {
 void test_registry() {
   registry& reg = registry::instance();
 
+  // The ODBC backend compiled into libuniorm self-registers at load.
+  CHECK(reg.contains("odbc"));
+
   CHECK(!reg.contains("fake"));
   reg.register_backend(
     "fake", [] { return std::make_unique<dummy_connection>(); });

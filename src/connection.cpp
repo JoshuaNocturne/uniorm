@@ -3,18 +3,18 @@
 #include <algorithm>
 #include <memory>
 
+#include "uniorm/backend/registry.hpp"
 #include "uniorm/dialect.hpp"
-#include "uniorm/odbc/environment.hpp"
-#include "uniorm/odbc/error.hpp"
 #include "uniorm/query/builder.hpp"
 #include "uniorm/transaction.hpp"
 
 namespace uniorm {
 
 connection::connection(std::string_view connection_string)
-  : conn_(odbc::shared_environment()),
-    stmt_cache_(std::make_shared<detail::statement_cache>()) {
-  conn_.open(connection_string);
+  : stmt_cache_(std::make_shared<detail::statement_cache>()) {
+  std::string tail;
+  backend_ = backend::registry::instance().create(connection_string, &tail);
+  backend_->open(tail);
 }
 
 connection::~connection() = default;
@@ -25,35 +25,36 @@ connection& connection::operator=(connection&&) noexcept = default;
 
 void connection::close() {
   clear_statement_cache();
-  conn_.close();
+  backend_->close();
 }
 
 bool connection::is_open() const noexcept {
-  return conn_.is_open();
+  return backend_ && backend_->is_open();
 }
 
 result_set connection::execute(std::string_view sql, params const& p) {
   std::string key(sql);
-  odbc::statement stmt = acquire_cached(key);
-  auto staging = p.bind(stmt);
-  stmt.execute();
+  auto stmt = acquire_cached(key);
+  bind_parameters(*stmt, p);
+  stmt->execute();
   return result_set::from_statement(std::move(stmt), make_releaser(key));
 }
 
 std::size_t connection::execute_update(std::string_view sql, params const& p) {
   std::string key(sql);
-  odbc::statement stmt = acquire_cached(key);
-  auto staging = p.bind(stmt);
-  stmt.execute();
-  std::size_t affected = stmt.affected_rows();
+  auto stmt = acquire_cached(key);
+  bind_parameters(*stmt, p);
+  stmt->execute();
+  std::size_t affected = stmt->affected_rows();
   stmt_cache_->release(key, std::move(stmt));
   return affected;
 }
 
-std::function<void(odbc::statement)> connection::make_releaser(
-  std::string key) {
+std::function<void(std::unique_ptr<backend::statement_iface>)>
+connection::make_releaser(std::string key) {
   std::weak_ptr<detail::statement_cache> weak = stmt_cache_;
-  return [weak, key = std::move(key)](odbc::statement stmt) noexcept {
+  return [weak, key = std::move(key)](
+           std::unique_ptr<backend::statement_iface> stmt) noexcept {
     if (auto cache = weak.lock()) {
       cache->release(key, std::move(stmt));
     }
@@ -151,25 +152,19 @@ transaction connection::begin() {
 }
 
 std::string connection::dbms_name() const {
-  char buffer[128] = {};
-  SQLSMALLINT length = 0;
-  SQLRETURN rc =
-    SQLGetInfo(conn_.native(), SQL_DBMS_NAME, buffer, sizeof(buffer), &length);
-  odbc::throw_if_error(
-    rc, SQL_HANDLE_DBC, conn_.native(), "SQLGetInfo(SQL_DBMS_NAME)");
-  return std::string(buffer, static_cast<std::size_t>(length));
+  return backend_->dbms_name();
 }
 
 void connection::set_autocommit(bool enabled) {
-  conn_.set_autocommit(enabled);
+  backend_->set_autocommit(enabled);
 }
 
 void connection::commit_txn() {
-  conn_.commit();
+  backend_->commit();
 }
 
 void connection::rollback_txn() {
-  conn_.rollback();
+  backend_->rollback();
 }
 
 }  // namespace uniorm

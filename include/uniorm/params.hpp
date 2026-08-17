@@ -7,16 +7,11 @@
 #include <utility>
 #include <vector>
 
-#include <uniorm/detail/param_staging.hpp>
 #include <uniorm/error.hpp>
 #include <uniorm/export.hpp>
 #include <uniorm/value.hpp>
 
 namespace uniorm {
-
-namespace odbc {
-class statement;
-}
 
 namespace detail {
 
@@ -87,10 +82,6 @@ public:
   std::vector<sql_value> const& values() const noexcept {
     return values_;
   }
-
-  // Internal: bind all parameters (1-based) to an ODBC statement. The
-  // returned staging object must outlive statement execution.
-  detail::param_staging bind(odbc::statement& stmt) const;
 
 private:
   std::vector<sql_value> values_;

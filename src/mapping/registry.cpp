@@ -3,9 +3,8 @@
 #include <unordered_map>
 #include <utility>
 
+#include "uniorm/backend/backend.hpp"
 #include "uniorm/connection.hpp"
-#include "uniorm/odbc/error.hpp"
-#include "uniorm/odbc/statement.hpp"
 
 namespace uniorm {
 
@@ -27,44 +26,14 @@ void entity_meta::populate(void* obj, row const& r) const {
 namespace {
 
 struct schema_column {
-  SQLINTEGER data_type = 0;
   bool nullable = false;
 };
 
 std::unordered_map<std::string, schema_column> load_table_schema(
-  odbc::connection& dbc, std::string const& table) {
-  odbc::statement stmt(dbc);
-  SQLRETURN rc = SQLColumns(stmt.native(), nullptr, 0, nullptr, 0,
-    reinterpret_cast<SQLCHAR*>(const_cast<char*>(table.c_str())), SQL_NTS,
-    nullptr, 0);
-  odbc::throw_if_error(
-    rc, SQL_HANDLE_STMT, stmt.native(), "SQLColumns(" + table + ")");
-
-  struct buffers {
-    char name[256] = {};
-    SQLLEN name_ind = SQL_NULL_DATA;
-    SQLINTEGER data_type = 0;
-    SQLLEN type_ind = SQL_NULL_DATA;
-    SQLSMALLINT nullable = SQL_NO_NULLS;
-    SQLLEN null_ind = SQL_NULL_DATA;
-  } buf;
-
-  stmt.bind_column(4, SQL_C_CHAR, buf.name, sizeof(buf.name), &buf.name_ind);
-  stmt.bind_column(
-    5, SQL_C_SLONG, &buf.data_type, sizeof(buf.data_type), &buf.type_ind);
-  stmt.bind_column(
-    11, SQL_C_SSHORT, &buf.nullable, sizeof(buf.nullable), &buf.null_ind);
-
+  backend::schema_metadata& md, std::string const& table) {
   std::unordered_map<std::string, schema_column> schema;
-  while (stmt.fetch()) {
-    if (buf.name_ind == SQL_NULL_DATA) {
-      continue;
-    }
-    std::string name(buf.name, static_cast<std::size_t>(buf.name_ind));
-    schema_column col;
-    col.data_type = buf.data_type;
-    col.nullable = buf.nullable != SQL_NO_NULLS;
-    schema.emplace(std::move(name), col);
+  for (auto const& c : md.table_columns(table)) {
+    schema[c.name] = schema_column{c.nullable};
   }
   return schema;
 }
@@ -72,9 +41,13 @@ std::unordered_map<std::string, schema_column> load_table_schema(
 }  // namespace
 
 void orm::validate(connection& conn, validation_mode mode) {
-  auto& dbc = conn.odbc_conn();
+  auto* md = conn.extension<backend::schema_metadata>();
+  if (md == nullptr) {
+    throw mapping_error(
+      "schema validation requires a backend that exposes schema metadata");
+  }
   for (auto const& [type, meta] : entities_) {
-    auto schema = load_table_schema(dbc, meta.table);
+    auto schema = load_table_schema(*md, meta.table);
     if (schema.empty()) {
       throw mapping_error("table not found: " + meta.table);
     }

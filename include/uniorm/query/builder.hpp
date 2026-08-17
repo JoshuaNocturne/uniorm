@@ -9,12 +9,10 @@
 #include <string>
 #include <vector>
 
-#include <sql.h>
-
+#include <uniorm/backend/backend.hpp>
 #include <uniorm/connection.hpp>
 #include <uniorm/dialect.hpp>
 #include <uniorm/mapping/registry.hpp>
-#include <uniorm/odbc/statement.hpp>
 #include <uniorm/params.hpp>
 #include <uniorm/result_set.hpp>
 #include <uniorm/row.hpp>
@@ -38,9 +36,9 @@ public:
     }
   }
 
-  void bind(odbc::statement& stmt) {
+  void bind(backend::statement_iface& stmt) {
     for (std::size_t i = 0; i < bindings_.size(); ++i) {
-      bindings_[i]->bind(stmt, static_cast<SQLUSMALLINT>(i + 1));
+      bindings_[i]->bind(stmt, i + 1);
     }
   }
 
@@ -122,7 +120,7 @@ public:
     std::vector<sql_value> bound;
     std::string sql = render_select(limit_, bound);
     return gw_->conn().execute_with(
-      sql, params(std::move(bound)), [this](odbc::statement& stmt) {
+      sql, params(std::move(bound)), [this](backend::statement_iface& stmt) {
         detail::entity_binding<T> binding(*meta_);
         binding.bind(stmt);
         std::vector<T> out;
@@ -137,7 +135,7 @@ public:
     std::vector<sql_value> bound;
     std::string sql = render_select(std::size_t{ 1 }, bound);
     return gw_->conn().execute_with(sql, params(std::move(bound)),
-      [this](odbc::statement& stmt) -> std::optional<T> {
+      [this](backend::statement_iface& stmt) -> std::optional<T> {
         detail::entity_binding<T> binding(*meta_);
         binding.bind(stmt);
         if (!stmt.fetch()) {

@@ -3,14 +3,16 @@
 #include <cstddef>
 #include <functional>
 #include <memory>
-#include <string>
 
 #include <uniorm/export.hpp>
-#include <uniorm/odbc/statement.hpp>
 #include <uniorm/row.hpp>
 #include <uniorm/types.hpp>
 
 namespace uniorm {
+
+namespace backend {
+struct statement_iface;
+}
 
 // Row-wise bound result set. Move-only. Created by connection::execute.
 class UNIORM_API result_set {
@@ -36,7 +38,8 @@ private:
   // release receives the statement when this result_set is destroyed
   // (statement cache check-in); it must not throw. May be empty.
   static result_set from_statement(
-    odbc::statement stmt, std::function<void(odbc::statement)> release);
+    std::unique_ptr<backend::statement_iface> stmt,
+    std::function<void(std::unique_ptr<backend::statement_iface>)> release);
 
   std::unique_ptr<impl> impl_;
 };

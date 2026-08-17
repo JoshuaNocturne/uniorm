@@ -24,8 +24,11 @@ endif()
 
 option(UNIORM_BUILD_TESTS "Build uniorm tests" ON)
 option(UNIORM_BUILD_TOOLS "Build uniorm tools (uniorm-gen)" ON)
+option(UNIORM_BACKEND_ODBC "Build the ODBC backend" ON)
 
-find_package(ODBC REQUIRED)
+if(UNIORM_BACKEND_ODBC)
+    find_package(ODBC REQUIRED)
+endif()
 find_package(Threads REQUIRED)
 
 add_library(uniorm SHARED
@@ -42,11 +45,6 @@ add_library(uniorm SHARED
     src/query/expression.cpp
     src/query/builder.cpp
     src/mapping/registry.cpp
-    src/odbc/error.cpp
-    src/odbc/environment.cpp
-    src/odbc/connection.cpp
-    src/odbc/statement.cpp
-    src/odbc/backend.cpp
 )
 add_library(uniorm::uniorm ALIAS uniorm)
 
@@ -54,14 +52,30 @@ target_include_directories(uniorm PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
 )
-# ODBC is PUBLIC because the header-only binding layer (registry.hpp ->
-# projection.hpp) references ODBC symbols in consumer translation units.
-target_link_libraries(uniorm PUBLIC ODBC::ODBC PRIVATE Threads::Threads)
+# ODBC is PRIVATE: the backend contract keeps driver types out of the
+# installed headers, so consumers never see them.
+target_link_libraries(uniorm PRIVATE Threads::Threads)
+if(UNIORM_BACKEND_ODBC)
+    target_sources(uniorm PRIVATE
+        src/odbc/error.cpp
+        src/odbc/environment.cpp
+        src/odbc/connection.cpp
+        src/odbc/statement.cpp
+        src/odbc/backend.cpp
+    )
+    target_link_libraries(uniorm PRIVATE ODBC::ODBC)
+endif()
 target_compile_definitions(uniorm PRIVATE UNIORM_BUILDING_DLL)
 if(UNIORM_DECIMAL_DEFAULT STREQUAL "string")
     target_compile_definitions(uniorm PUBLIC UNIORM_DECIMAL_AS_STRING)
 else()
     target_compile_definitions(uniorm PUBLIC UNIORM_DECIMAL_AS_DOUBLE)
+endif()
+
+if(UNIORM_BUILD_TOOLS AND NOT UNIORM_BACKEND_ODBC)
+    message(FATAL_ERROR
+        "UNIORM_BUILD_TOOLS requires UNIORM_BACKEND_ODBC: "
+        "uniorm-gen reads live schema metadata through ODBC")
 endif()
 
 if(UNIORM_BUILD_TOOLS)

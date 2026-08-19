@@ -1,6 +1,7 @@
 #include "uniorm/connection.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <memory>
 
 #include "uniorm/backend/registry.hpp"
@@ -48,6 +49,75 @@ std::size_t connection::execute_update(std::string_view sql, params const& p) {
   std::size_t affected = stmt->affected_rows();
   stmt_cache_->release(key, std::move(stmt));
   return affected;
+}
+
+namespace {
+
+bool blank(std::string_view s) {
+  return std::all_of(
+    s.begin(), s.end(), [](unsigned char c) { return std::isspace(c) != 0; });
+}
+
+}  // namespace
+
+update_builder::update_builder(connection& conn, std::string table)
+  : conn_(&conn), table_(std::move(table)) {}
+
+update_builder& update_builder::where(std::string_view clause, params p) {
+  where_ = std::string(clause);
+  where_params_ = std::move(p);
+  return *this;
+}
+
+std::size_t update_builder::execute() {
+  if (set_.empty()) {
+    throw uniorm_error("update: no columns to set");
+  }
+  if (blank(where_)) {
+    throw uniorm_error("update: refusing to execute without a WHERE clause");
+  }
+  dialect const d = dialect::detect(conn_->dbms_name());
+  std::string sql = "UPDATE " + d.quote_identifier(table_) + " SET ";
+  std::vector<sql_value> values;
+  values.reserve(set_.size() + where_params_.size());
+  for (std::size_t i = 0; i < set_.size(); ++i) {
+    if (i != 0) {
+      sql += ", ";
+    }
+    sql += d.quote_identifier(set_[i].first) + " = ?";
+    values.push_back(set_[i].second);
+  }
+  sql += " WHERE " + where_;
+  auto const& wp = where_params_.values();
+  values.insert(values.end(), wp.begin(), wp.end());
+  return conn_->execute_update(sql, params(std::move(values)));
+}
+
+remove_builder::remove_builder(connection& conn, std::string table)
+  : conn_(&conn), table_(std::move(table)) {}
+
+remove_builder& remove_builder::where(std::string_view clause, params p) {
+  where_ = std::string(clause);
+  where_params_ = std::move(p);
+  return *this;
+}
+
+std::size_t remove_builder::execute() {
+  if (blank(where_)) {
+    throw uniorm_error("remove: refusing to execute without a WHERE clause");
+  }
+  dialect const d = dialect::detect(conn_->dbms_name());
+  std::string sql =
+    "DELETE FROM " + d.quote_identifier(table_) + " WHERE " + where_;
+  return conn_->execute_update(sql, where_params_);
+}
+
+update_builder connection::update(std::string_view table) {
+  return update_builder(*this, std::string(table));
+}
+
+remove_builder connection::remove(std::string_view table) {
+  return remove_builder(*this, std::string(table));
 }
 
 std::function<void(std::unique_ptr<backend::statement_iface>)>

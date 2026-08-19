@@ -320,6 +320,130 @@ void test_insert(connection& conn, orm& registry) {
   CHECK(conn.query(registry).of<User>().count() == 3);
 }
 
+void test_update(connection& conn, orm& registry) {
+  conn.insert_batch(k_table, { "id", "name", "age", "balance", "note" },
+    { params{ std::int64_t{ 400 }, std::string("ivy"), std::int32_t{ 33 }, 1.0,
+        nullptr },
+      params{ std::int64_t{ 401 }, std::string("jack"), nullptr, 2.0,
+        std::string("orig") } });
+  CHECK(conn.query(registry).of<User>().count() == 5);
+
+  // Dynamic update: bound values, including a NULL write.
+  CHECK(conn.update(k_table)
+          .set("age", std::int32_t{ 34 })
+          .set("note", nullptr)
+          .where("id = ?", params{ std::int64_t{ 400 } })
+          .execute() == 1);
+  auto ivy = conn.query(registry)
+               .of<User>()
+               .where(eq(&User::id, std::int64_t{ 400 }))
+               .one();
+  CHECK(ivy.has_value() && ivy->age.value_or(0) == 34);
+  CHECK(!ivy->note.has_value());
+
+  // Entity update through the builder.
+  CHECK(conn.query(registry)
+          .of<User>()
+          .where(eq(&User::id, std::int64_t{ 401 }))
+          .set(&User::note, std::string("edited"))
+          .set(&User::balance, 2.5)
+          .update() == 1);
+  auto jack = conn.query(registry)
+                .of<User>()
+                .where(eq(&User::id, std::int64_t{ 401 }))
+                .one();
+  CHECK(jack.has_value() && jack->note.value_or("") == "edited");
+  CHECK(jack->balance == 2.5);
+
+  // Guards: empty set or blank where must throw.
+  CHECK_THROWS(conn.update(k_table)
+                 .where("id = ?", params{ std::int64_t{ 400 } })
+                 .execute(),
+    uniorm_error);
+  CHECK_THROWS(
+    conn.update(k_table).set("age", std::int32_t{ 1 }).execute(), uniorm_error);
+  CHECK_THROWS(conn.query(registry)
+                 .of<User>()
+                 .where(eq(&User::id, std::int64_t{ 400 }))
+                 .update(),
+    uniorm_error);
+  CHECK_THROWS(
+    conn.query(registry).of<User>().set(&User::age, std::int32_t{ 1 }).update(),
+    uniorm_error);
+
+  conn.execute_update(
+    "DELETE FROM uniorm_it_user WHERE id >= ?", params{ std::int64_t{ 400 } });
+  CHECK(conn.query(registry).of<User>().count() == 3);
+}
+
+void test_remove(connection& conn, orm& registry) {
+  conn.insert_batch(k_table, { "id", "name", "age", "balance" },
+    { params{
+        std::int64_t{ 400 }, std::string("ivy"), std::int32_t{ 33 }, 1.0 },
+      params{ std::int64_t{ 401 }, std::string("jack"), nullptr, 2.0 } });
+  CHECK(conn.query(registry).of<User>().count() == 5);
+
+  // Entity delete through the builder.
+  CHECK(conn.query(registry)
+          .of<User>()
+          .where(eq(&User::id, std::int64_t{ 400 }))
+          .remove() == 1);
+  CHECK(conn.query(registry).of<User>().count() == 4);
+
+  // Dynamic delete.
+  CHECK(conn.remove(k_table)
+          .where("id = ?", params{ std::int64_t{ 401 } })
+          .execute() == 1);
+  CHECK(conn.query(registry).of<User>().count() == 3);
+
+  // Guards: blank where must throw.
+  CHECK_THROWS(conn.remove(k_table).execute(), uniorm_error);
+  CHECK_THROWS(conn.query(registry).of<User>().remove(), uniorm_error);
+}
+
+void test_entity_update(connection& conn, orm& registry) {
+  // Insert a test row.
+  conn.insert_batch(k_table, { "id", "name", "age", "balance", "note" },
+    { params{ std::int64_t{ 500 }, std::string("eve"), std::int32_t{ 28 }, 10.0,
+      std::string("original") } });
+  CHECK(conn.query(registry).of<User>().count() == 4);
+
+  // Update using primary key as WHERE.
+  User u{ 500, "eve_updated", std::int32_t{ 29 }, 11.5, std::string("modified"),
+    std::nullopt };
+  CHECK(conn.update(registry, u) == 1);
+  auto row = conn.query(registry)
+               .of<User>()
+               .where(eq(&User::id, std::int64_t{ 500 }))
+               .one();
+  CHECK(row.has_value());
+  CHECK(row->name == "eve_updated");
+  CHECK(row->age.value_or(0) == 29);
+  CHECK(row->balance == 11.5);
+  CHECK(row->note.value_or("") == "modified");
+
+  // Update using specified field as WHERE.
+  User u2{ 501, "eve_updated", std::int32_t{ 30 }, 12.0, std::string("again"),
+    std::nullopt };
+  CHECK(conn.update(registry, u2, { "name" }) == 1);
+  auto row2 = conn.query(registry)
+                .of<User>()
+                .where(eq(&User::name, std::string("eve_updated")))
+                .one();
+  CHECK(row2.has_value());
+  CHECK(row2->id == 501);
+  CHECK(row2->age.value_or(0) == 30);
+
+  // Guards.
+  CHECK_THROWS(conn.update(registry, u, {}), uniorm_error);
+  CHECK_THROWS(conn.update(registry, u, { "nonexistent" }), uniorm_error);
+
+  // Cleanup.
+  conn.execute_update(
+    "DELETE FROM uniorm_it_user WHERE id >= ?", params{ std::int64_t{ 500 } });
+  CHECK(conn.query(registry).of<User>().count() == 3);
+}
+
 void test_statement_cache(connection& conn, orm& registry) {
   char const* select_sql = "SELECT id, name FROM uniorm_it_user ORDER BY id";
 
@@ -494,6 +618,9 @@ int main() {
     test_query_builder(conn, registry);
     test_transaction(conn, registry);
     test_insert(conn, registry);
+    test_update(conn, registry);
+    test_remove(conn, registry);
+    test_entity_update(conn, registry);
     test_statement_cache(conn, registry);
     test_pool(conn_string);
     test_pool_maintenance(conn_string);

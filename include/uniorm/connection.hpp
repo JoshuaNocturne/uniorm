@@ -6,19 +6,25 @@
 #include <string>
 #include <string_view>
 #include <typeindex>
+#include <utility>
 #include <vector>
 
 #include <uniorm/backend/backend.hpp>
 #include <uniorm/detail/pfr.hpp>
 #include <uniorm/detail/projection.hpp>
 #include <uniorm/detail/statement_cache.hpp>
+#include <uniorm/dialect.hpp>
 #include <uniorm/export.hpp>
 #include <uniorm/mapping/registry.hpp>
 #include <uniorm/params.hpp>
 #include <uniorm/result_set.hpp>
 
+#include <set>
+
 namespace uniorm {
 
+class update_builder;
+class remove_builder;
 class query_gateway;
 class transaction;
 template <class T>
@@ -33,22 +39,20 @@ public:
   ~connection();
 
   connection(connection&&) noexcept;
+
   connection& operator=(connection&&) noexcept;
 
   connection(connection const&) = delete;
+
   connection& operator=(connection const&) = delete;
 
   void close();
+
   bool is_open() const noexcept;
 
   result_set execute(std::string_view sql, params const& p = {});
-  std::size_t execute_update(std::string_view sql, params const& p = {});
 
-  // Dynamic batch insert: one multi-row VALUES statement per chunk, all
-  // wrapped in a single transaction. Every row must carry exactly
-  // columns.size() parameter values. Returns the number of rows inserted.
-  std::size_t insert_batch(std::string_view table,
-    std::vector<std::string> const& columns, std::vector<params> const& rows);
+  std::size_t execute_update(std::string_view sql, params const& p = {});
 
   // Entity batch insert driven by the registered mapping: all mapped
   // columns are written, std::optional fields without a value become NULL.
@@ -71,6 +75,107 @@ public:
       values.emplace_back(std::move(row_values));
     }
     return insert_batch(meta.table, columns, values);
+  }
+
+  // Dynamic batch insert: one multi-row VALUES statement per chunk, all
+  // wrapped in a single transaction. Every row must carry exactly
+  // columns.size() parameter values. Returns the number of rows inserted.
+  std::size_t insert_batch(std::string_view table,
+    std::vector<std::string> const& columns, std::vector<params> const& rows);
+
+  // Dynamic DELETE without an entity mapping. Column and table
+  remove_builder remove(std::string_view table);
+
+  // Dynamic UPDATE without an entity mapping.
+  update_builder update(std::string_view table);
+
+  // Entity update: SET all mapped columns except WHERE fields, WHERE by
+  // primary key. Throws if the entity has no primary key.
+  template <class Entity>
+  std::size_t update(orm const& registry, Entity const& entity) {
+    entity_meta const& meta = registry.meta<Entity>();
+    std::string pk;
+    for (auto const& c : meta.columns) {
+      if (c.is_primary_key) {
+        pk = c.column;
+        break;
+      }
+    }
+    if (pk.empty()) {
+      throw uniorm_error(
+        "update: entity has no primary key; specify where_fields explicitly");
+    }
+    return update(registry, entity, std::vector<std::string>{ pk });
+  }
+
+  // Entity update: SET all mapped columns except WHERE fields, WHERE by
+  // specified fields. Throws if where_fields is empty or not mapped.
+  template <class Entity>
+  std::size_t update(orm const& registry, Entity const& entity,
+    std::vector<std::string> const& where_fields) {
+    if (where_fields.empty()) {
+      throw uniorm_error("update: no WHERE fields specified");
+    }
+    entity_meta const& meta = registry.meta<Entity>();
+
+    // Build SET clause: all mapped columns except WHERE fields.
+    std::set<std::string> where_set(where_fields.begin(), where_fields.end());
+    std::vector<std::string> set_columns;
+    std::vector<sql_value> set_values;
+    for (auto const& c : meta.columns) {
+      if (where_set.find(c.column) == where_set.end()) {
+        set_columns.push_back(c.column);
+        set_values.push_back(c.read(&entity));
+      }
+    }
+
+    if (set_columns.empty()) {
+      throw uniorm_error(
+        "update: no columns to set (all mapped columns are in WHERE)");
+    }
+
+    dialect const d = dialect::detect(dbms_name());
+
+    // Build WHERE clause.
+    std::vector<sql_value> where_values;
+    std::string where_sql;
+    for (std::size_t i = 0; i < where_fields.size(); ++i) {
+      auto const& field = where_fields[i];
+      column_meta const* col = nullptr;
+      for (auto const& c : meta.columns) {
+        if (c.column == field) {
+          col = &c;
+          break;
+        }
+      }
+      if (!col) {
+        throw uniorm_error("update: WHERE field '" + field + "' is not mapped");
+      }
+      if (i != 0) {
+        where_sql += " AND ";
+      }
+      where_sql += d.quote_identifier(col->column) + " = ?";
+      where_values.push_back(col->read(&entity));
+    }
+
+    // Build full SQL.
+    std::string sql = "UPDATE " + d.quote_identifier(meta.table) + " SET ";
+    for (std::size_t i = 0; i < set_columns.size(); ++i) {
+      if (i != 0) {
+        sql += ", ";
+      }
+      sql += d.quote_identifier(set_columns[i]) + " = ?";
+    }
+    sql += " WHERE " + where_sql;
+
+    // Merge params: SET values first, then WHERE values.
+    std::vector<sql_value> all_values;
+    all_values.reserve(set_values.size() + where_values.size());
+    all_values.insert(all_values.end(), set_values.begin(), set_values.end());
+    all_values.insert(
+      all_values.end(), where_values.begin(), where_values.end());
+
+    return execute_update(sql, params(std::move(all_values)));
   }
 
   template <detail::aggregate_projection T>
@@ -127,8 +232,7 @@ private:
   template <class T>
   friend class query;
 
-  static void bind_parameters(
-    backend::statement_iface& stmt, params const& p) {
+  static void bind_parameters(backend::statement_iface& stmt, params const& p) {
     for (std::size_t i = 0; i < p.size(); ++i) {
       stmt.bind_parameter(i + 1, p.at(i));
     }
@@ -156,8 +260,8 @@ private:
     });
   }
 
-  std::function<void(std::unique_ptr<backend::statement_iface>)>
-  make_releaser(std::string key);
+  std::function<void(std::unique_ptr<backend::statement_iface>)> make_releaser(
+    std::string key);
 
   void set_autocommit(bool enabled);
   void commit_txn();

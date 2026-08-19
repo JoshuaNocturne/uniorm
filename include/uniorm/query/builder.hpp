@@ -7,6 +7,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <uniorm/backend/backend.hpp>
@@ -14,9 +15,9 @@
 #include <uniorm/dialect.hpp>
 #include <uniorm/mapping/registry.hpp>
 #include <uniorm/params.hpp>
+#include <uniorm/query/expression.hpp>
 #include <uniorm/result_set.hpp>
 #include <uniorm/row.hpp>
-#include <uniorm/query/expression.hpp>
 
 namespace uniorm {
 
@@ -58,6 +59,48 @@ private:
 
 template <class T>
 class query;
+
+// Fluent dynamic UPDATE for tables without an entity mapping, obtained via
+// connection::update(table). Every set value is bound through a `?`
+// placeholder; execute() throws instead of firing a table-wide UPDATE.
+class UNIORM_API update_builder {
+public:
+  template <class V>
+  update_builder& set(std::string_view column, V&& value) {
+    set_.emplace_back(
+      std::string(column), detail::make_sql_value(std::forward<V>(value)));
+    return *this;
+  }
+
+  update_builder& where(std::string_view clause, params p = {});
+  std::size_t execute();
+
+private:
+  friend class connection;
+  update_builder(connection& conn, std::string table);
+
+  connection* conn_;
+  std::string table_;
+  std::vector<std::pair<std::string, sql_value>> set_;
+  std::string where_;
+  params where_params_;
+};
+
+// Fluent dynamic DELETE, obtained via connection::remove(table).
+class UNIORM_API remove_builder {
+public:
+  remove_builder& where(std::string_view clause, params p = {});
+  std::size_t execute();
+
+private:
+  friend class connection;
+  remove_builder(connection& conn, std::string table);
+
+  connection* conn_;
+  std::string table_;
+  std::string where_;
+  params where_params_;
+};
 
 // Entry point returned by connection::query(orm); owns nothing.
 class UNIORM_API query_gateway {
@@ -155,6 +198,52 @@ public:
     return rs.current().get<std::int64_t>(0);
   }
 
+  // Stage a column assignment for update(); nullptr writes NULL.
+  template <class M, class V>
+  query& set(M T::* member, V&& value) {
+    sets_.emplace_back(
+      make_member_key(member), detail::make_sql_value(std::forward<V>(value)));
+    return *this;
+  }
+
+  // UPDATE ... SET <staged> WHERE <wheres>. Requires at least one set()
+  // and one where(); order_by/limit/offset are ignored.
+  std::size_t update() {
+    if (sets_.empty()) {
+      throw uniorm_error("update: no columns to set");
+    }
+    if (wheres_.empty()) {
+      throw uniorm_error("update: refusing to run without a WHERE predicate");
+    }
+    auto resolve = make_resolver();
+    std::vector<sql_value> bound;
+    bound.reserve(sets_.size());
+    std::string sql =
+      "UPDATE " + gw_->sql_dialect().quote_identifier(meta_->table) + " SET ";
+    for (std::size_t i = 0; i < sets_.size(); ++i) {
+      if (i != 0) {
+        sql += ", ";
+      }
+      sql += resolve(sets_[i].first) + " = ?";
+      bound.push_back(sets_[i].second);
+    }
+    sql += " WHERE " + where_sql(resolve, bound);
+    return gw_->conn().execute_update(sql, params(std::move(bound)));
+  }
+
+  // DELETE FROM ... WHERE <wheres>. Requires at least one where();
+  // order_by/limit/offset are ignored.
+  std::size_t remove() {
+    if (wheres_.empty()) {
+      throw uniorm_error("remove: refusing to run without a WHERE predicate");
+    }
+    std::vector<sql_value> bound;
+    std::string sql = "DELETE FROM " +
+                      gw_->sql_dialect().quote_identifier(meta_->table) +
+                      " WHERE " + where_sql(make_resolver(), bound);
+    return gw_->conn().execute_update(sql, params(std::move(bound)));
+  }
+
 private:
   struct order_clause {
     member_key key;
@@ -223,6 +312,7 @@ private:
   query_gateway* gw_;
   entity_meta const* meta_;
   std::vector<predicate> wheres_;
+  std::vector<std::pair<member_key, sql_value>> sets_;
   std::vector<order_clause> orders_;
   std::optional<std::size_t> limit_;
   std::size_t offset_ = 0;

@@ -299,6 +299,152 @@ void test_validate_requires_schema_metadata() {
   CHECK_THROWS(reg.validate(conn), uniorm::mapping_error);
 }
 
+void test_dynamic_update_delete() {
+  connection conn("fake://");
+  auto& fake = fake_of(conn);
+
+  fake_statement::scripted_result r;
+  r.affected = 1;
+  fake.script_next(std::move(r));
+  auto n = conn.update("users")
+             .set("age", std::int32_t{ 31 })
+             .set("note", nullptr)
+             .where("id = ?", params(std::int64_t{ 7 }))
+             .execute();
+  CHECK(n == 1);
+  CHECK(fake.last_statement_->prepared_sql() ==
+        "UPDATE \"users\" SET \"age\" = ?, \"note\" = ? WHERE id = ?");
+  auto const& p = fake.last_statement_->last_params();
+  CHECK(p.size() == 3);
+  CHECK(std::get<std::int32_t>(p[0]) == 31);
+  CHECK(std::holds_alternative<std::monostate>(p[1]));
+  CHECK(std::get<std::int64_t>(p[2]) == 7);
+
+  fake_statement::scripted_result d;
+  d.affected = 2;
+  fake.script_next(std::move(d));
+  CHECK(conn.remove("users")
+          .where("age > ?", params(std::int32_t{ 60 }))
+          .execute() == 2);
+  CHECK(fake.last_statement_->prepared_sql() ==
+        "DELETE FROM \"users\" WHERE age > ?");
+
+  // Guards: no accidental table-wide statements.
+  CHECK_THROWS(
+    conn.update("users").set("age", 1).execute(), uniorm::uniorm_error);
+  CHECK_THROWS(
+    conn.update("users").where("id = 1").execute(), uniorm::uniorm_error);
+  CHECK_THROWS(conn.update("users").set("age", 1).where("   ").execute(),
+    uniorm::uniorm_error);
+  CHECK_THROWS(conn.remove("users").execute(), uniorm::uniorm_error);
+}
+
+void test_builder_update_delete() {
+  connection conn("fake://");
+  auto& fake = fake_of(conn);
+
+  orm reg;
+  reg.map<person>("person")
+    .primary_key("id", &person::id)
+    .column("name", &person::name)
+    .column("age", &person::age);
+
+  fake_statement::scripted_result r;
+  r.affected = 1;
+  fake.script_next(std::move(r));
+  auto n = conn.query(reg)
+             .of<person>()
+             .where(uniorm::eq(&person::id, std::int64_t{ 7 }))
+             .set(&person::name, std::string{ "renamed" })
+             .set(&person::age, nullptr)
+             .update();
+  CHECK(n == 1);
+  CHECK(fake.last_statement_->prepared_sql() ==
+        "UPDATE \"person\" SET \"name\" = ?, \"age\" = ? WHERE \"id\" = ?");
+  auto const& p = fake.last_statement_->last_params();
+  CHECK(p.size() == 3);
+  CHECK(std::get<std::string>(p[0]) == "renamed");
+  CHECK(std::holds_alternative<std::monostate>(p[1]));
+  CHECK(std::get<std::int64_t>(p[2]) == 7);
+
+  fake_statement::scripted_result d;
+  d.affected = 1;
+  fake.script_next(std::move(d));
+  CHECK(conn.query(reg)
+          .of<person>()
+          .where(uniorm::eq(&person::id, std::int64_t{ 7 }))
+          .remove() == 1);
+  CHECK(fake.last_statement_->prepared_sql() ==
+        "DELETE FROM \"person\" WHERE \"id\" = ?");
+
+  // Guards.
+  CHECK_THROWS(conn.query(reg).of<person>().set(&person::age, 1).update(),
+    uniorm::uniorm_error);
+  CHECK_THROWS(conn.query(reg)
+                 .of<person>()
+                 .where(uniorm::eq(&person::id, std::int64_t{ 7 }))
+                 .update(),
+    uniorm::uniorm_error);
+  CHECK_THROWS(conn.query(reg).of<person>().remove(), uniorm::uniorm_error);
+}
+
+void test_entity_update() {
+  connection conn("fake://");
+  auto& fake = fake_of(conn);
+
+  orm reg;
+  reg.map<person>("person")
+    .primary_key("id", &person::id)
+    .column("name", &person::name)
+    .column("age", &person::age);
+
+  // Update using primary key as WHERE.
+  person p{ 7, "alice", std::int32_t{ 30 } };
+  fake_statement::scripted_result r;
+  r.affected = 1;
+  fake.script_next(std::move(r));
+  auto n = conn.update(reg, p);
+  CHECK(n == 1);
+  CHECK(fake.last_statement_->prepared_sql() ==
+        "UPDATE \"person\" SET \"name\" = ?, \"age\" = ? WHERE \"id\" = ?");
+  auto const& params = fake.last_statement_->last_params();
+  CHECK(params.size() == 3);
+  CHECK(std::get<std::string>(params[0]) == "alice");
+  CHECK(std::get<std::int32_t>(params[1]) == 30);
+  CHECK(std::get<std::int64_t>(params[2]) == 7);
+
+  // Update using specified field as WHERE.
+  person p2{ 8, "bob", std::int32_t{ 25 } };
+  fake_statement::scripted_result r2;
+  r2.affected = 1;
+  fake.script_next(std::move(r2));
+  n = conn.update(reg, p2, { "name" });
+  CHECK(n == 1);
+  CHECK(fake.last_statement_->prepared_sql() ==
+        "UPDATE \"person\" SET \"id\" = ?, \"age\" = ? WHERE \"name\" = ?");
+  auto const& params2 = fake.last_statement_->last_params();
+  CHECK(params2.size() == 3);
+  CHECK(std::get<std::int64_t>(params2[0]) == 8);
+  CHECK(std::get<std::int32_t>(params2[1]) == 25);
+  CHECK(std::get<std::string>(params2[2]) == "bob");
+
+  // Guards.
+  CHECK_THROWS(conn.update(reg, p, {}), uniorm::uniorm_error);
+  CHECK_THROWS(conn.update(reg, p, { "nonexistent" }), uniorm::uniorm_error);
+
+  // Entity without primary key.
+  struct no_pk {
+    std::int64_t id;
+    std::string name;
+  };
+  orm reg2;
+  reg2.map<no_pk>("no_pk")
+    .column("id", &no_pk::id)
+    .column("name", &no_pk::name);
+  no_pk np{ 1, "test" };
+  CHECK_THROWS(conn.update(reg2, np), uniorm::uniorm_error);
+}
+
 }  // namespace
 
 void test_fake_backend() {
@@ -311,4 +457,7 @@ void test_fake_backend() {
   test_statement_cache();
   test_transactions();
   test_validate_requires_schema_metadata();
+  test_dynamic_update_delete();
+  test_builder_update_delete();
+  test_entity_update();
 }

@@ -43,8 +43,7 @@ public:
     std::size_t affected = 0;
   };
 
-  fake_statement(fake_counters& counters,
-    std::deque<scripted_result>& pending)
+  fake_statement(fake_counters& counters, std::deque<scripted_result>& pending)
     : counters_(counters), pending_(pending) {}
 
   void prepare(std::string_view sql) override {
@@ -76,7 +75,8 @@ public:
       scripted_result r = std::move(pending_.front());
       pending_.pop_front();
       affected_ = r.affected;
-      std::size_t rows = r.columns.empty() ? 0 : r.columns.front().values.size();
+      std::size_t rows =
+        r.columns.empty() ? 0 : r.columns.front().values.size();
       for (auto const& c : r.columns) {
         columns_.push_back(c.info);
       }
@@ -97,8 +97,7 @@ public:
       return false;
     }
     for (std::size_t i = 0;
-         i < bound_columns_.size() && i < result_rows_[cursor_].size();
-         ++i) {
+      i < bound_columns_.size() && i < result_rows_[cursor_].size(); ++i) {
       write_buffer(bound_columns_[i], result_rows_[cursor_][i]);
     }
     ++cursor_;
@@ -122,6 +121,9 @@ public:
 
   void reset() override {
     ++counters_.reset_calls;
+    // Statements are reset when checked back into the cache; keep a copy
+    // of the last bound parameters so tests can assert on them afterwards.
+    last_params_ = bound_params_;
     bound_params_.clear();
     bound_columns_.clear();
     executed_ = false;
@@ -133,6 +135,9 @@ public:
   }
   std::vector<sql_value> const& bound_params() const {
     return bound_params_;
+  }
+  std::vector<sql_value> const& last_params() const {
+    return last_params_;
   }
 
 private:
@@ -218,6 +223,7 @@ private:
   std::size_t affected_ = 0;
   std::size_t cursor_ = 0;
   std::vector<sql_value> bound_params_;
+  std::vector<sql_value> last_params_;
   std::vector<backend::column_buffer> bound_columns_;
   std::vector<column_info> columns_;
   std::vector<std::vector<sql_value>> result_rows_;

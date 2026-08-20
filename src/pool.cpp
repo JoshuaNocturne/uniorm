@@ -274,7 +274,7 @@ pooled_connection::pooled_connection(connection_pool* pool, connection conn)
   : pool_(pool), conn_(std::move(conn)), valid_(true) {}
 
 pooled_connection::~pooled_connection() {
-  if (valid_) {
+  if (valid_ && pool_) {
     pool_->release(std::move(conn_));
   }
 }
@@ -288,7 +288,7 @@ pooled_connection::pooled_connection(pooled_connection&& other) noexcept
 pooled_connection& pooled_connection::operator=(
   pooled_connection&& other) noexcept {
   if (this != &other) {
-    if (valid_) {
+    if (valid_ && pool_) {
       pool_->release(std::move(conn_));
     }
     pool_ = other.pool_;
@@ -298,6 +298,86 @@ pooled_connection& pooled_connection::operator=(
     other.valid_ = false;
   }
   return *this;
+}
+
+// --- connection_pool_registry ---
+
+namespace {
+
+std::string to_lower(std::string_view s) {
+  std::string result(s);
+  std::transform(result.begin(), result.end(), result.begin(),
+    [](unsigned char c) { return std::tolower(c); });
+  return result;
+}
+
+std::string trim(std::string_view s) {
+  auto start = s.find_first_not_of(" \t\r\n");
+  if (start == std::string_view::npos) return "";
+  auto end = s.find_last_not_of(" \t\r\n");
+  return std::string(s.substr(start, end - start + 1));
+}
+
+}  // namespace
+
+std::string connection_pool_registry::make_key(
+  std::string const& connection_string) {
+  std::string dsn, uid;
+
+  std::string_view sv(connection_string);
+  std::size_t pos = 0;
+  while (pos < sv.size()) {
+    auto semi = sv.find(';', pos);
+    auto token = (semi == std::string_view::npos) ? sv.substr(pos)
+                                                   : sv.substr(pos, semi - pos);
+    auto eq = token.find('=');
+    if (eq != std::string_view::npos) {
+      auto key = to_lower(trim(token.substr(0, eq)));
+      auto value = trim(token.substr(eq + 1));
+      if (key == "dsn") dsn = value;
+      else if (key == "uid" || key == "user" || key == "username")
+        uid = value;
+    }
+    pos = (semi == std::string_view::npos) ? sv.size() : semi + 1;
+  }
+
+  return "dsn=" + dsn + "|uid=" + uid;
+}
+
+connection_pool_registry& connection_pool_registry::instance() {
+  static connection_pool_registry reg;
+  return reg;
+}
+
+pooled_connection connection_pool_registry::acquire(
+  std::string const& connection_string) {
+  // Fake backend uses per-connection state; bypass pooling.
+  if (connection_string.rfind("fake://", 0) == 0) {
+    connection conn(connection_string);
+    return pooled_connection(nullptr, std::move(conn));
+  }
+
+  std::string key = make_key(connection_string);
+
+  std::lock_guard lock(mutex_);
+  auto it = pools_.find(key);
+  if (it == pools_.end()) {
+    pool_options opts;
+    opts.connection_string = connection_string;
+    auto [new_it, _] = pools_.emplace(
+      key, std::make_unique<connection_pool>(std::move(opts)));
+    it = new_it;
+  }
+  return it->second->acquire();
+}
+
+void connection_pool_registry::configure(
+  std::string const& connection_string, pool_options opts) {
+  std::string key = make_key(connection_string);
+  opts.connection_string = connection_string;
+
+  std::lock_guard lock(mutex_);
+  pools_.emplace(key, std::make_unique<connection_pool>(std::move(opts)));
 }
 
 }  // namespace uniorm

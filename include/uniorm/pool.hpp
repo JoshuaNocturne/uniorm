@@ -10,7 +10,9 @@
 
 #include <chrono>
 #include <cstddef>
+#include <map>
 #include <memory>
+#include <mutex>
 #include <string>
 
 #include <uniorm/connection.hpp>
@@ -45,7 +47,13 @@ public:
   connection& get() noexcept {
     return conn_;
   }
+  connection const& get() const noexcept {
+    return conn_;
+  }
   connection* operator->() noexcept {
+    return &conn_;
+  }
+  connection const* operator->() const noexcept {
     return &conn_;
   }
   explicit operator bool() const noexcept {
@@ -54,6 +62,7 @@ public:
 
 private:
   friend class connection_pool;
+  friend class connection_pool_registry;
   pooled_connection(connection_pool* pool, connection conn);
 
   connection_pool* pool_ = nullptr;
@@ -87,6 +96,25 @@ private:
 
   std::shared_ptr<pool_detail::shared_state>
     impl_;  // scheduler holds weak refs
+};
+
+// Global registry of connection pools, keyed by DSN+UID.
+// orm uses this to automatically pool connections.
+class UNIORM_API connection_pool_registry {
+public:
+  static connection_pool_registry& instance();
+
+  pooled_connection acquire(std::string const& connection_string);
+
+  void configure(std::string const& connection_string, pool_options opts);
+
+private:
+  connection_pool_registry() = default;
+
+  static std::string make_key(std::string const& connection_string);
+
+  std::mutex mutex_;
+  std::map<std::string, std::unique_ptr<connection_pool>> pools_;
 };
 
 }  // namespace uniorm

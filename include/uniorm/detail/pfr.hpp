@@ -18,8 +18,10 @@ inline constexpr std::size_t max_aggregate_fields = 64;
 
 struct ubiq {
   template <class T>
-  constexpr
-  operator T&() const noexcept;  // never defined; validity-checked only
+  constexpr operator T&() const noexcept {
+    // Only used in unevaluated contexts (requires expressions); never called.
+    __builtin_unreachable();
+  }
 };
 
 template <class T, std::size_t... I>

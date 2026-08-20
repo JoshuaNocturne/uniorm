@@ -7,7 +7,7 @@
 #include <vector>
 
 #include <uniorm/error.hpp>
-#include <uniorm/mapping/registry.hpp>
+#include <uniorm/orm.hpp>
 
 using namespace uniorm;
 

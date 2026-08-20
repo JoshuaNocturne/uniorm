@@ -15,6 +15,7 @@
 #include <uniorm/connection.hpp>
 #include <uniorm/detail/time.hpp>
 #include <uniorm/mapping/registry.hpp>
+#include <uniorm/orm.hpp>
 #include <uniorm/pool.hpp>
 #include <uniorm/query/builder.hpp>
 #include <uniorm/transaction.hpp>
@@ -40,9 +41,9 @@ namespace {
 char const* k_table = "uniorm_it_user";
 std::string const long_note(1000, 'x');
 
-void prepare_schema(connection& conn) {
-  conn.execute_update(std::string("DROP TABLE IF EXISTS ") + k_table);
-  conn.execute_update(std::string("CREATE TABLE ") + k_table +
+void prepare_schema(orm& db) {
+  db.execute_update(std::string("DROP TABLE IF EXISTS ") + k_table);
+  db.execute_update(std::string("CREATE TABLE ") + k_table +
                       " (id BIGINT NOT NULL PRIMARY KEY,"
                       " name VARCHAR(64) NOT NULL,"
                       " age INT NULL,"
@@ -51,21 +52,21 @@ void prepare_schema(connection& conn) {
                       " created DATETIME NULL)");
 }
 
-void seed_rows(connection& conn) {
+void seed_rows(orm& db) {
   timestamp ts = detail::make_timestamp(2024, 1, 2, 3, 4, 5, 0);
-  std::size_t n1 = conn.execute_update(
+  std::size_t n1 = db.execute_update(
     "INSERT INTO uniorm_it_user (id, name, age, balance, note, created)"
     " VALUES (?, ?, ?, ?, ?, ?)",
     params{ std::int64_t{ 1 }, std::string("alice"), std::int32_t{ 30 }, 12.5,
       nullptr, ts });
   CHECK(n1 == 1);
-  std::size_t n2 = conn.execute_update(
+  std::size_t n2 = db.execute_update(
     "INSERT INTO uniorm_it_user (id, name, age, balance, note, created)"
     " VALUES (?, ?, ?, ?, ?, ?)",
     params{ std::int64_t{ 2 }, std::string("bob"), nullptr, 0.0, long_note,
       nullptr });
   CHECK(n2 == 1);
-  std::size_t n3 = conn.execute_update(
+  std::size_t n3 = db.execute_update(
     "INSERT INTO uniorm_it_user (id, name, age, balance, note, created)"
     " VALUES (?, ?, ?, ?, ?, ?)",
     params{ std::int64_t{ 3 }, std::string("carol"), std::int32_t{ 25 }, -4.25,
@@ -73,9 +74,9 @@ void seed_rows(connection& conn) {
   CHECK(n3 == 1);
 }
 
-void test_dynamic_rows(connection& conn) {
+void test_dynamic_rows(orm& db) {
   result_set rs =
-    conn.execute("SELECT id, name, age, note FROM uniorm_it_user WHERE id = ?",
+    db.execute("SELECT id, name, age, note FROM uniorm_it_user WHERE id = ?",
       params{ std::int64_t{ 2 } });
   CHECK(rs.column_count() == 4);
   CHECK(rs.next());
@@ -88,7 +89,7 @@ void test_dynamic_rows(connection& conn) {
   CHECK(!rs.next());
 }
 
-void test_projection(connection& conn) {
+void test_projection(orm& db) {
   struct user_row {
     std::int64_t id;
     std::string name;
@@ -98,7 +99,7 @@ void test_projection(connection& conn) {
     std::optional<timestamp> created;
   };
 
-  auto rows = conn.query<user_row>(
+  auto rows = db.query<user_row>(
     "SELECT id, name, age, balance, note, created FROM uniorm_it_user"
     " ORDER BY id");
   CHECK(rows.size() == 3);
@@ -118,48 +119,48 @@ void test_projection(connection& conn) {
   CHECK(rows[2].note.value_or("") == "short");
 }
 
-orm build_registry() {
-  orm registry;
-  registry.map<User>(k_table)
+orm build_registry(std::string_view conn_string) {
+  orm db(conn_string);
+  db.map<User>(k_table)
     .primary_key("id", &User::id)
     .column("name", &User::name)
     .column("age", &User::age)
     .column("balance", &User::balance)
     .column("note", &User::note)
     .column("created", &User::created);
-  return registry;
+  return db;
 }
 
-void test_validate(connection& conn) {
-  orm registry = build_registry();
-  registry.validate(conn);  // strict: must pass
-  registry.validate(conn, validation_mode::lenient);
+void test_validate(std::string_view conn_string) {
+  orm db = build_registry(conn_string);
+  db.validate();  // strict: must pass
+  db.validate(validation_mode::lenient);
 
   struct Bad {
     std::int64_t id = 0;
   };
   {
-    orm bad;
+    orm bad(conn_string);
     bad.map<Bad>(k_table).primary_key("no_such_col", &Bad::id);
-    CHECK_THROWS(bad.validate(conn), mapping_error);
+    CHECK_THROWS(bad.validate(), mapping_error);
   }
   {
-    orm bad;
+    orm bad(conn_string);
     bad.map<Bad>("no_such_table").primary_key("id", &Bad::id);
-    CHECK_THROWS(bad.validate(conn), mapping_error);
+    CHECK_THROWS(bad.validate(), mapping_error);
   }
   {
     struct NoOpt {
       std::int64_t id = 0;
       std::int32_t age = 0;  // non-optional against nullable column
     };
-    orm strict_reg;
+    orm strict_reg(conn_string);
     strict_reg.map<NoOpt>(k_table)
       .primary_key("id", &NoOpt::id)
       .column("age", &NoOpt::age);
-    CHECK_THROWS(strict_reg.validate(conn), mapping_error);
+    CHECK_THROWS(strict_reg.validate(), mapping_error);
     try {
-      strict_reg.validate(conn, validation_mode::lenient);
+      strict_reg.validate(validation_mode::lenient);
       CHECK(true);
     } catch (...) {
       CHECK(false);
@@ -167,50 +168,50 @@ void test_validate(connection& conn) {
   }
 }
 
-void test_query_builder(connection& conn, orm& registry) {
-  CHECK(conn.query(registry).of<User>().count() == 3);
+void test_query_builder(orm& db) {
+  CHECK(db.query().of<User>().count() == 3);
 
-  auto all = conn.query(registry).of<User>().all();
+  auto all = db.query().of<User>().all();
   CHECK(all.size() == 3);
 
-  auto one = conn.query(registry)
+  auto one = db.query()
                .of<User>()
                .where(eq(&User::name, std::string("alice")))
                .one();
   CHECK(one.has_value() && one->id == 1 && one->age.value_or(0) == 30);
   CHECK(one->created.has_value());
 
-  auto none = conn.query(registry)
+  auto none = db.query()
                 .of<User>()
                 .where(eq(&User::name, std::string("nobody")))
                 .one();
   CHECK(!none.has_value());
 
-  auto adults = conn.query(registry).of<User>().where(gt(&User::age, 26)).all();
+  auto adults = db.query().of<User>().where(gt(&User::age, 26)).all();
   CHECK(adults.size() == 1 && adults[0].id == 1);  // NULL age excluded
 
-  auto nulls = conn.query(registry).of<User>().where(is_null(&User::age)).all();
+  auto nulls = db.query().of<User>().where(is_null(&User::age)).all();
   CHECK(nulls.size() == 1 && nulls[0].id == 2);
 
   auto picked =
-    conn.query(registry)
+    db.query()
       .of<User>()
       .where(in(&User::id, { std::int64_t{ 1 }, std::int64_t{ 3 } }))
       .all();
   CHECK(picked.size() == 2);
 
   auto liked =
-    conn.query(registry).of<User>().where(like(&User::name, "a%")).all();
+    db.query().of<User>().where(like(&User::name, "a%")).all();
   CHECK(liked.size() == 1 && liked[0].name == "alice");
 
   auto combined =
-    conn.query(registry)
+    db.query()
       .of<User>()
       .where(gt(&User::age, 20) && ne(&User::name, std::string("carol")))
       .all();
   CHECK(combined.size() == 1 && combined[0].id == 1);
 
-  auto page = conn.query(registry)
+  auto page = db.query()
                 .of<User>()
                 .order_by(&User::id, direction::desc)
                 .limit(2)
@@ -218,7 +219,7 @@ void test_query_builder(connection& conn, orm& registry) {
                 .all();
   CHECK(page.size() == 2 && page[0].id == 2 && page[1].id == 1);
 
-  std::string sql = conn.query(registry)
+  std::string sql = db.query()
                       .of<User>()
                       .where(eq(&User::id, std::int64_t{ 1 }))
                       .build_select();
@@ -226,41 +227,41 @@ void test_query_builder(connection& conn, orm& registry) {
   CHECK(sql.find("`id` = ?") != std::string::npos);
 }
 
-void test_transaction(connection& conn, orm& registry) {
+void test_transaction(orm& db) {
   {
-    transaction tx = conn.begin();
+    transaction tx = db.begin();
     CHECK(tx.active());
-    conn.execute_update("INSERT INTO uniorm_it_user (id, name, age, balance)"
+    db.execute_update("INSERT INTO uniorm_it_user (id, name, age, balance)"
                         " VALUES (?, ?, ?, ?)",
       params{ std::int64_t{ 100 }, std::string("temp"), nullptr, 0.0 });
     tx.rollback();
     CHECK(!tx.active());
   }
-  CHECK(conn.query(registry).of<User>().count() == 3);
+  CHECK(db.query().of<User>().count() == 3);
 
   {
-    transaction tx = conn.begin();
-    conn.execute_update("INSERT INTO uniorm_it_user (id, name, age, balance)"
+    transaction tx = db.begin();
+    db.execute_update("INSERT INTO uniorm_it_user (id, name, age, balance)"
                         " VALUES (?, ?, ?, ?)",
       params{ std::int64_t{ 101 }, std::string("kept"), nullptr, 0.0 });
     tx.commit();
   }
-  CHECK(conn.query(registry).of<User>().count() == 4);
+  CHECK(db.query().of<User>().count() == 4);
 
   {
-    transaction tx = conn.begin();  // destructor must roll back
-    conn.execute_update("INSERT INTO uniorm_it_user (id, name, age, balance)"
+    transaction tx = db.begin();  // destructor must roll back
+    db.execute_update("INSERT INTO uniorm_it_user (id, name, age, balance)"
                         " VALUES (?, ?, ?, ?)",
       params{ std::int64_t{ 102 }, std::string("dropped"), nullptr, 0.0 });
   }
-  CHECK(conn.query(registry).of<User>().count() == 4);
+  CHECK(db.query().of<User>().count() == 4);
 
-  conn.execute_update(
+  db.execute_update(
     "DELETE FROM uniorm_it_user WHERE id = ?", params{ std::int64_t{ 101 } });
-  CHECK(conn.query(registry).of<User>().count() == 3);
+  CHECK(db.query().of<User>().count() == 3);
 }
 
-void test_insert(connection& conn, orm& registry) {
+void test_insert(orm& db) {
   std::vector<User> users;
   users.push_back(User{ 200, "dave", std::int32_t{ 40 }, 1.5,
     std::string("batched"), std::nullopt });
@@ -269,10 +270,10 @@ void test_insert(connection& conn, orm& registry) {
   users.push_back(
     User{ 202, "frank", std::int32_t{ 51 }, -2.0, std::nullopt, std::nullopt });
 
-  CHECK(conn.insert(registry, users) == 3);
-  CHECK(conn.query(registry).of<User>().count() == 6);
+  CHECK(db.insert(users) == 3);
+  CHECK(db.query().of<User>().count() == 6);
 
-  auto erin = conn.query(registry)
+  auto erin = db.query()
                 .of<User>()
                 .where(eq(&User::id, std::int64_t{ 201 }))
                 .one();
@@ -283,26 +284,26 @@ void test_insert(connection& conn, orm& registry) {
   CHECK(erin->created.has_value());
 
   // Dynamic version without an entity mapping.
-  std::size_t n = conn.insert_batch(k_table,
+  std::size_t n = db.insert_batch(k_table,
     { "id", "name", "age", "balance", "note", "created" },
     { params{ std::int64_t{ 300 }, std::string("gina"), nullptr, 9.0, nullptr,
         nullptr },
       params{ std::int64_t{ 301 }, std::string("hank"), std::int32_t{ 22 }, 0.5,
         nullptr, nullptr } });
   CHECK(n == 2);
-  CHECK(conn.query(registry).of<User>().count() == 8);
+  CHECK(db.query().of<User>().count() == 8);
 
-  CHECK(conn.insert_batch(k_table, { "id", "name" }, {}) == 0);  // no rows
+  CHECK(db.insert_batch(k_table, { "id", "name" }, {}) == 0);  // no rows
 
   // Every row must carry exactly one value per column.
   CHECK_THROWS(
-    conn.insert_batch(k_table, { "id", "name" },
+    db.insert_batch(k_table, { "id", "name" },
       { params{ std::int64_t{ 302 }, std::string("x"), std::int32_t{ 1 } } }),
     uniorm_error);
   CHECK_THROWS(
-    conn.insert_batch(k_table, {}, { params{ std::int64_t{ 303 } } }),
+    db.insert_batch(k_table, {}, { params{ std::int64_t{ 303 } } }),
     uniorm_error);
-  CHECK(conn.query(registry).of<User>().count() == 8);  // nothing leaked
+  CHECK(db.query().of<User>().count() == 8);  // nothing leaked
 
   // 1500 rows x 6 columns exceeds the per-statement placeholder cap,
   // forcing multiple multi-row VALUES statements in one transaction.
@@ -312,29 +313,29 @@ void test_insert(connection& conn, orm& registry) {
     many.push_back(
       User{ id, "bulk", std::nullopt, 0.0, std::nullopt, std::nullopt });
   }
-  CHECK(conn.insert(registry, many) == 1500);
-  CHECK(conn.query(registry).of<User>().count() == 8 + 1500);
+  CHECK(db.insert(many) == 1500);
+  CHECK(db.query().of<User>().count() == 8 + 1500);
 
-  conn.execute_update(
+  db.execute_update(
     "DELETE FROM uniorm_it_user WHERE id >= ?", params{ std::int64_t{ 200 } });
-  CHECK(conn.query(registry).of<User>().count() == 3);
+  CHECK(db.query().of<User>().count() == 3);
 }
 
-void test_update(connection& conn, orm& registry) {
-  conn.insert_batch(k_table, { "id", "name", "age", "balance", "note" },
+void test_update(orm& db) {
+  db.insert_batch(k_table, { "id", "name", "age", "balance", "note" },
     { params{ std::int64_t{ 400 }, std::string("ivy"), std::int32_t{ 33 }, 1.0,
         nullptr },
       params{ std::int64_t{ 401 }, std::string("jack"), nullptr, 2.0,
         std::string("orig") } });
-  CHECK(conn.query(registry).of<User>().count() == 5);
+  CHECK(db.query().of<User>().count() == 5);
 
   // Dynamic update: bound values, including a NULL write.
-  CHECK(conn.update(k_table)
+  CHECK(db.update(k_table)
           .set("age", std::int32_t{ 34 })
           .set("note", nullptr)
           .where("id = ?", params{ std::int64_t{ 400 } })
           .execute() == 1);
-  auto ivy = conn.query(registry)
+  auto ivy = db.query()
                .of<User>()
                .where(eq(&User::id, std::int64_t{ 400 }))
                .one();
@@ -342,13 +343,13 @@ void test_update(connection& conn, orm& registry) {
   CHECK(!ivy->note.has_value());
 
   // Entity update through the builder.
-  CHECK(conn.query(registry)
+  CHECK(db.query()
           .of<User>()
           .where(eq(&User::id, std::int64_t{ 401 }))
           .set(&User::note, std::string("edited"))
           .set(&User::balance, 2.5)
           .update() == 1);
-  auto jack = conn.query(registry)
+  auto jack = db.query()
                 .of<User>()
                 .where(eq(&User::id, std::int64_t{ 401 }))
                 .one();
@@ -356,63 +357,63 @@ void test_update(connection& conn, orm& registry) {
   CHECK(jack->balance == 2.5);
 
   // Guards: empty set or blank where must throw.
-  CHECK_THROWS(conn.update(k_table)
+  CHECK_THROWS(db.update(k_table)
                  .where("id = ?", params{ std::int64_t{ 400 } })
                  .execute(),
     uniorm_error);
   CHECK_THROWS(
-    conn.update(k_table).set("age", std::int32_t{ 1 }).execute(), uniorm_error);
-  CHECK_THROWS(conn.query(registry)
+    db.update(k_table).set("age", std::int32_t{ 1 }).execute(), uniorm_error);
+  CHECK_THROWS(db.query()
                  .of<User>()
                  .where(eq(&User::id, std::int64_t{ 400 }))
                  .update(),
     uniorm_error);
   CHECK_THROWS(
-    conn.query(registry).of<User>().set(&User::age, std::int32_t{ 1 }).update(),
+    db.query().of<User>().set(&User::age, std::int32_t{ 1 }).update(),
     uniorm_error);
 
-  conn.execute_update(
+  db.execute_update(
     "DELETE FROM uniorm_it_user WHERE id >= ?", params{ std::int64_t{ 400 } });
-  CHECK(conn.query(registry).of<User>().count() == 3);
+  CHECK(db.query().of<User>().count() == 3);
 }
 
-void test_remove(connection& conn, orm& registry) {
-  conn.insert_batch(k_table, { "id", "name", "age", "balance" },
+void test_remove(orm& db) {
+  db.insert_batch(k_table, { "id", "name", "age", "balance" },
     { params{
         std::int64_t{ 400 }, std::string("ivy"), std::int32_t{ 33 }, 1.0 },
       params{ std::int64_t{ 401 }, std::string("jack"), nullptr, 2.0 } });
-  CHECK(conn.query(registry).of<User>().count() == 5);
+  CHECK(db.query().of<User>().count() == 5);
 
   // Entity delete through the builder.
-  CHECK(conn.query(registry)
+  CHECK(db.query()
           .of<User>()
           .where(eq(&User::id, std::int64_t{ 400 }))
           .remove() == 1);
-  CHECK(conn.query(registry).of<User>().count() == 4);
+  CHECK(db.query().of<User>().count() == 4);
 
   // Dynamic delete.
-  CHECK(conn.remove(k_table)
+  CHECK(db.remove(k_table)
           .where("id = ?", params{ std::int64_t{ 401 } })
           .execute() == 1);
-  CHECK(conn.query(registry).of<User>().count() == 3);
+  CHECK(db.query().of<User>().count() == 3);
 
   // Guards: blank where must throw.
-  CHECK_THROWS(conn.remove(k_table).execute(), uniorm_error);
-  CHECK_THROWS(conn.query(registry).of<User>().remove(), uniorm_error);
+  CHECK_THROWS(db.remove(k_table).execute(), uniorm_error);
+  CHECK_THROWS(db.query().of<User>().remove(), uniorm_error);
 }
 
-void test_entity_update(connection& conn, orm& registry) {
+void test_entity_update(orm& db) {
   // Insert a test row.
-  conn.insert_batch(k_table, { "id", "name", "age", "balance", "note" },
+  db.insert_batch(k_table, { "id", "name", "age", "balance", "note" },
     { params{ std::int64_t{ 500 }, std::string("eve"), std::int32_t{ 28 }, 10.0,
       std::string("original") } });
-  CHECK(conn.query(registry).of<User>().count() == 4);
+  CHECK(db.query().of<User>().count() == 4);
 
   // Update using primary key as WHERE.
   User u{ 500, "eve_updated", std::int32_t{ 29 }, 11.5, std::string("modified"),
     std::nullopt };
-  CHECK(conn.update(registry, u) == 1);
-  auto row = conn.query(registry)
+  CHECK(db.update(u) == 1);
+  auto row = db.query()
                .of<User>()
                .where(eq(&User::id, std::int64_t{ 500 }))
                .one();
@@ -425,8 +426,8 @@ void test_entity_update(connection& conn, orm& registry) {
   // Update using specified field as WHERE.
   User u2{ 501, "eve_updated", std::int32_t{ 30 }, 12.0, std::string("again"),
     std::nullopt };
-  CHECK(conn.update(registry, u2, { "name" }) == 1);
-  auto row2 = conn.query(registry)
+  CHECK(db.update(u2, { "name" }) == 1);
+  auto row2 = db.query()
                 .of<User>()
                 .where(eq(&User::name, std::string("eve_updated")))
                 .one();
@@ -435,34 +436,34 @@ void test_entity_update(connection& conn, orm& registry) {
   CHECK(row2->age.value_or(0) == 30);
 
   // Guards.
-  CHECK_THROWS(conn.update(registry, u, {}), uniorm_error);
-  CHECK_THROWS(conn.update(registry, u, { "nonexistent" }), uniorm_error);
+  CHECK_THROWS(db.update(u, {}), uniorm_error);
+  CHECK_THROWS(db.update(u, { "nonexistent" }), uniorm_error);
 
   // Cleanup.
-  conn.execute_update(
+  db.execute_update(
     "DELETE FROM uniorm_it_user WHERE id >= ?", params{ std::int64_t{ 500 } });
-  CHECK(conn.query(registry).of<User>().count() == 3);
+  CHECK(db.query().of<User>().count() == 3);
 }
 
-void test_statement_cache(connection& conn, orm& registry) {
+void test_statement_cache(orm& db) {
   char const* select_sql = "SELECT id, name FROM uniorm_it_user ORDER BY id";
 
   // Streaming result_set: checked out until destroyed, so a second
   // execute of the same SQL while the first is open is a miss.
-  unsigned long long hits = conn.statement_cache_hits();
-  unsigned long long misses = conn.statement_cache_misses();
+  unsigned long long hits = db.statement_cache_hits();
+  unsigned long long misses = db.statement_cache_misses();
   {
-    result_set rs1 = conn.execute(select_sql);
-    result_set rs2 = conn.execute(select_sql);
-    CHECK(conn.statement_cache_hits() == hits);
-    CHECK(conn.statement_cache_misses() == misses + 2);
+    result_set rs1 = db.execute(select_sql);
+    result_set rs2 = db.execute(select_sql);
+    CHECK(db.statement_cache_hits() == hits);
+    CHECK(db.statement_cache_misses() == misses + 2);
     CHECK(rs1.next() && rs2.next());
   }  // both returned to the cache here
 
   // Same SQL again: reuse the prepared statement, identical rows.
   {
-    result_set rs = conn.execute(select_sql);
-    CHECK(conn.statement_cache_hits() == hits + 1);
+    result_set rs = db.execute(select_sql);
+    CHECK(db.statement_cache_hits() == hits + 1);
     std::vector<std::string> names;
     while (rs.next()) {
       names.push_back(rs.current().get<std::string>("name"));
@@ -473,20 +474,20 @@ void test_statement_cache(connection& conn, orm& registry) {
 
   // execute_update path returns the statement immediately.
   char const* noop_update = "DELETE FROM uniorm_it_user WHERE id < ?";
-  conn.execute_update(noop_update, params{ std::int64_t{ 0 } });
-  hits = conn.statement_cache_hits();
-  CHECK(conn.execute_update(noop_update, params{ std::int64_t{ 0 } }) == 0);
-  CHECK(conn.statement_cache_hits() == hits + 1);
+  db.execute_update(noop_update, params{ std::int64_t{ 0 } });
+  hits = db.statement_cache_hits();
+  CHECK(db.execute_update(noop_update, params{ std::int64_t{ 0 } }) == 0);
+  CHECK(db.statement_cache_hits() == hits + 1);
 
   // Entity queries participate too. Clear the cache first so the first
   // call below is a guaranteed miss.
-  conn.clear_statement_cache();
-  CHECK(conn.statement_cache_size() == 0);
-  hits = conn.statement_cache_hits();
-  CHECK(conn.query(registry).of<User>().all().size() == 3);
-  CHECK(conn.query(registry).of<User>().all().size() == 3);
-  CHECK(conn.statement_cache_hits() == hits + 1);
-  CHECK(conn.statement_cache_size() > 0);
+  db.clear_statement_cache();
+  CHECK(db.statement_cache_size() == 0);
+  hits = db.statement_cache_hits();
+  CHECK(db.query().of<User>().all().size() == 3);
+  CHECK(db.query().of<User>().all().size() == 3);
+  CHECK(db.statement_cache_hits() == hits + 1);
+  CHECK(db.statement_cache_size() > 0);
 }
 
 void test_pool(std::string const& conn_string) {
@@ -606,26 +607,25 @@ int main() {
   }
 
   try {
-    connection conn(conn_string);
-    prepare_schema(conn);
-    seed_rows(conn);
+    orm db = build_registry(conn_string);
+    prepare_schema(db);
+    seed_rows(db);
 
-    test_dynamic_rows(conn);
-    test_projection(conn);
-    test_validate(conn);
+    test_dynamic_rows(db);
+    test_projection(db);
+    test_validate(conn_string);
 
-    orm registry = build_registry();
-    test_query_builder(conn, registry);
-    test_transaction(conn, registry);
-    test_insert(conn, registry);
-    test_update(conn, registry);
-    test_remove(conn, registry);
-    test_entity_update(conn, registry);
-    test_statement_cache(conn, registry);
+    test_query_builder(db);
+    test_transaction(db);
+    test_insert(db);
+    test_update(db);
+    test_remove(db);
+    test_entity_update(db);
+    test_statement_cache(db);
     test_pool(conn_string);
     test_pool_maintenance(conn_string);
 
-    conn.execute_update(std::string("DROP TABLE ") + k_table);
+    db.execute_update(std::string("DROP TABLE ") + k_table);
   } catch (std::exception const& e) {
     std::printf("FATAL: unexpected exception: %s\n", e.what());
     ++uniorm::test::failure_count();

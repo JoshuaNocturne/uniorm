@@ -53,12 +53,12 @@ void drop_schema(connection& conn) {
 }
 
 // Compile -> register -> validate(strict) on the checked-in golden header.
-void test_golden(connection& conn) {
-  orm registry;
-  gen_it::register_gen_it_schema(registry);
-  CHECK(registry.size() == 2);
-  registry.validate(conn, validation_mode::strict);
-  CHECK(conn.query(registry).of<gen_it::UniormGenUser>().count() == 0);
+void test_golden(std::string_view conn_string) {
+  orm db(conn_string);
+  gen_it::register_gen_it_schema(db);
+  CHECK(db.size() == 2);
+  db.validate(validation_mode::strict);
+  CHECK(db.query().of<gen_it::UniormGenUser>().count() == 0);
 }
 
 std::string read_normalized(std::string const& path) {
@@ -131,7 +131,7 @@ int main() {
   try {
     connection conn(conn_string);
     prepare_schema(conn);
-    test_golden(conn);
+    test_golden(conn_string);
     test_generate_matches_golden(conn_string);
     drop_schema(conn);
   } catch (std::exception const& e) {

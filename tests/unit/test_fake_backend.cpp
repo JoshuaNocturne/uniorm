@@ -30,6 +30,12 @@ fake_connection& fake_of(connection& conn) {
   return *fake;
 }
 
+fake_connection& fake_of(orm& db) {
+  auto* fake = db.native_handle<fake_connection>();
+  CHECK(fake != nullptr);
+  return *fake;
+}
+
 fake_statement::scripted_result users_result() {
   fake_statement::scripted_result r;
   r.columns.push_back({
@@ -171,19 +177,17 @@ fake_statement::scripted_result person_result(std::vector<std::int64_t> ids,
 }
 
 void test_builder_query() {
-  connection conn("fake://");
-  auto& fake = fake_of(conn);
-
-  orm reg;
-  reg.map<person>("person")
+  orm db("fake://");
+  db.map<person>("person")
     .primary_key("id", &person::id)
     .column("name", &person::name)
     .column("age", &person::age);
+  auto& fake = fake_of(db);
 
   // all(): two scripted rows, including a NULL in the optional column.
   fake.script_next(person_result(
     { 1, 2 }, { "alice", "bob" }, { std::int64_t{ 30 }, std::nullopt }));
-  auto all = conn.query(reg).of<person>().all();
+  auto all = db.query().of<person>().all();
   CHECK(all.size() == 2);
   CHECK(all[0].id == 1);
   CHECK(all[0].name == "alice");
@@ -193,14 +197,14 @@ void test_builder_query() {
 
   // one(): single row.
   fake.script_next(person_result({ 7 }, { "carol" }, { std::int64_t{ 22 } }));
-  auto one = conn.query(reg).of<person>().one();
+  auto one = db.query().of<person>().one();
   CHECK(one.has_value());
   CHECK(one->id == 7);
   CHECK(one->name == "carol");
 
   // one() with no matching row.
   fake.script_next(person_result({}, {}, {}));
-  auto none = conn.query(reg).of<person>().one();
+  auto none = db.query().of<person>().one();
   CHECK(!none.has_value());
 
   // count(): scripted COUNT(*) result.
@@ -210,7 +214,7 @@ void test_builder_query() {
     { std::int64_t{ 42 } },
   });
   fake.script_next(std::move(cnt));
-  CHECK(conn.query(reg).of<person>().count() == 42);
+  CHECK(db.query().of<person>().count() == 42);
 }
 
 void test_insert_batch() {
@@ -292,11 +296,10 @@ void test_transactions() {
 }
 
 void test_validate_requires_schema_metadata() {
-  connection conn("fake://");
-  orm reg;
-  reg.map<person>("person").primary_key("id", &person::id);
+  orm db("fake://");
+  db.map<person>("person").primary_key("id", &person::id);
 
-  CHECK_THROWS(reg.validate(conn), uniorm::mapping_error);
+  CHECK_THROWS(db.validate(), uniorm::mapping_error);
 }
 
 void test_dynamic_update_delete() {
@@ -340,19 +343,17 @@ void test_dynamic_update_delete() {
 }
 
 void test_builder_update_delete() {
-  connection conn("fake://");
-  auto& fake = fake_of(conn);
-
-  orm reg;
-  reg.map<person>("person")
+  orm db("fake://");
+  db.map<person>("person")
     .primary_key("id", &person::id)
     .column("name", &person::name)
     .column("age", &person::age);
+  auto& fake = fake_of(db);
 
   fake_statement::scripted_result r;
   r.affected = 1;
   fake.script_next(std::move(r));
-  auto n = conn.query(reg)
+  auto n = db.query()
              .of<person>()
              .where(uniorm::eq(&person::id, std::int64_t{ 7 }))
              .set(&person::name, std::string{ "renamed" })
@@ -370,7 +371,7 @@ void test_builder_update_delete() {
   fake_statement::scripted_result d;
   d.affected = 1;
   fake.script_next(std::move(d));
-  CHECK(conn.query(reg)
+  CHECK(db.query()
           .of<person>()
           .where(uniorm::eq(&person::id, std::int64_t{ 7 }))
           .remove() == 1);
@@ -378,32 +379,30 @@ void test_builder_update_delete() {
         "DELETE FROM \"person\" WHERE \"id\" = ?");
 
   // Guards.
-  CHECK_THROWS(conn.query(reg).of<person>().set(&person::age, 1).update(),
+  CHECK_THROWS(db.query().of<person>().set(&person::age, 1).update(),
     uniorm::uniorm_error);
-  CHECK_THROWS(conn.query(reg)
+  CHECK_THROWS(db.query()
                  .of<person>()
                  .where(uniorm::eq(&person::id, std::int64_t{ 7 }))
                  .update(),
     uniorm::uniorm_error);
-  CHECK_THROWS(conn.query(reg).of<person>().remove(), uniorm::uniorm_error);
+  CHECK_THROWS(db.query().of<person>().remove(), uniorm::uniorm_error);
 }
 
 void test_entity_update() {
-  connection conn("fake://");
-  auto& fake = fake_of(conn);
-
-  orm reg;
-  reg.map<person>("person")
+  orm db("fake://");
+  db.map<person>("person")
     .primary_key("id", &person::id)
     .column("name", &person::name)
     .column("age", &person::age);
+  auto& fake = fake_of(db);
 
   // Update using primary key as WHERE.
   person p{ 7, "alice", std::int32_t{ 30 } };
   fake_statement::scripted_result r;
   r.affected = 1;
   fake.script_next(std::move(r));
-  auto n = conn.update(reg, p);
+  auto n = db.update(p);
   CHECK(n == 1);
   CHECK(fake.last_statement_->prepared_sql() ==
         "UPDATE \"person\" SET \"name\" = ?, \"age\" = ? WHERE \"id\" = ?");
@@ -418,7 +417,7 @@ void test_entity_update() {
   fake_statement::scripted_result r2;
   r2.affected = 1;
   fake.script_next(std::move(r2));
-  n = conn.update(reg, p2, { "name" });
+  n = db.update(p2, { "name" });
   CHECK(n == 1);
   CHECK(fake.last_statement_->prepared_sql() ==
         "UPDATE \"person\" SET \"id\" = ?, \"age\" = ? WHERE \"name\" = ?");
@@ -429,20 +428,20 @@ void test_entity_update() {
   CHECK(std::get<std::string>(params2[2]) == "bob");
 
   // Guards.
-  CHECK_THROWS(conn.update(reg, p, {}), uniorm::uniorm_error);
-  CHECK_THROWS(conn.update(reg, p, { "nonexistent" }), uniorm::uniorm_error);
+  CHECK_THROWS(db.update(p, {}), uniorm::uniorm_error);
+  CHECK_THROWS(db.update(p, { "nonexistent" }), uniorm::uniorm_error);
 
   // Entity without primary key.
   struct no_pk {
     std::int64_t id;
     std::string name;
   };
-  orm reg2;
-  reg2.map<no_pk>("no_pk")
+  orm db2("fake://");
+  db2.map<no_pk>("no_pk")
     .column("id", &no_pk::id)
     .column("name", &no_pk::name);
   no_pk np{ 1, "test" };
-  CHECK_THROWS(conn.update(reg2, np), uniorm::uniorm_error);
+  CHECK_THROWS(db2.update(np), uniorm::uniorm_error);
 }
 
 }  // namespace

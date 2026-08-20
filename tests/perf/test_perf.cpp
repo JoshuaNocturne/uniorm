@@ -107,7 +107,7 @@ void run_benchmarks(connection& conn, orm& registry, std::size_t n) {
   std::vector<Bench> rows = make_rows(n);
   std::size_t inserted = 0;
   report("insert (batch)", n,
-    best_of([&] { inserted = conn.insert(registry, rows); }, 1), 1);
+    best_of([&] { inserted = registry.insert(rows); }, 1), 1);
   if (inserted != n) {
     std::printf("FATAL: inserted %zu of %zu rows\n", inserted, n);
     std::exit(1);
@@ -119,7 +119,7 @@ void run_benchmarks(connection& conn, orm& registry, std::size_t n) {
   std::size_t entity_rows = 0;
   report("query entity all() (direct bind)", n,
     best_of(
-      [&] { entity_rows = conn.query(registry).of<Bench>().all().size(); },
+      [&] { entity_rows = registry.query().of<Bench>().all().size(); },
       runs),
     runs);
   if (entity_rows != n) {
@@ -166,7 +166,7 @@ void run_benchmarks(connection& conn, orm& registry, std::size_t n) {
   report("query one() (direct bind)", 1,
     best_of(
       [&] {
-        auto one = conn.query(registry).of<Bench>().limit(1).one();
+        auto one = registry.query().of<Bench>().limit(1).one();
         if (!one) {
           std::exit(1);
         }
@@ -176,7 +176,7 @@ void run_benchmarks(connection& conn, orm& registry, std::size_t n) {
 
   std::int64_t count = 0;
   report("query count()", 1,
-    best_of([&] { count = conn.query(registry).of<Bench>().count(); }, runs),
+    best_of([&] { count = registry.query().of<Bench>().count(); }, runs),
     runs);
   if (count != static_cast<std::int64_t>(n)) {
     std::printf("FATAL: count() returned %" PRId64 "\n", count);

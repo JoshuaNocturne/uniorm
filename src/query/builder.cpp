@@ -4,7 +4,7 @@ namespace uniorm {
 
 dialect const& query_gateway::sql_dialect() const {
   if (!dialect_detected_) {
-    dialect_ = uniorm::dialect::detect(conn_->dbms_name());
+    dialect_ = uniorm::dialect::detect(orm_->dbms_name());
     dialect_detected_ = true;
   }
   return dialect_;

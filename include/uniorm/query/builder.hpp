@@ -13,7 +13,7 @@
 #include <uniorm/backend/backend.hpp>
 #include <uniorm/connection.hpp>
 #include <uniorm/dialect.hpp>
-#include <uniorm/mapping/registry.hpp>
+#include <uniorm/orm.hpp>
 #include <uniorm/params.hpp>
 #include <uniorm/query/expression.hpp>
 #include <uniorm/result_set.hpp>
@@ -102,28 +102,26 @@ private:
   params where_params_;
 };
 
-// Entry point returned by connection::query(orm); owns nothing.
+// Entry point returned by orm::query(); owns nothing.
 class UNIORM_API query_gateway {
 public:
-  query_gateway(connection& conn, orm& registry)
-    : conn_(&conn), registry_(&registry) {}
+  explicit query_gateway(orm& db) : orm_(&db) {}
 
   template <class T>
   query<T> of() {
-    return query<T>(*this, registry_->meta<T>());
+    return query<T>(*this, orm_->meta<T>());
   }
 
   connection& conn() const {
-    return *conn_;
+    return orm_->conn();
   }
-  orm& registry() const {
-    return *registry_;
+  orm& get_orm() const {
+    return *orm_;
   }
   dialect const& sql_dialect() const;
 
 private:
-  connection* conn_;
-  orm* registry_;
+  orm* orm_;
   mutable bool dialect_detected_ = false;
   mutable dialect dialect_;
 };

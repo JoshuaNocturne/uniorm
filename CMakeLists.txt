@@ -45,6 +45,7 @@ add_library(uniorm SHARED
     src/query/expression.cpp
     src/query/builder.cpp
     src/mapping/registry.cpp
+    src/orm.cpp
 )
 add_library(uniorm::uniorm ALIAS uniorm)
 

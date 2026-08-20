@@ -1,30 +1,25 @@
 #pragma once
 
-// Entity mapping registry: explicit contract between C++ types and tables.
-// Column access is captured as type-erased write closures at registration
-// time; runtime query materialization needs no templates.
+// Entity mapping registry: column_meta, entity_meta, mapping_builder.
 
+#include <cstddef>
 #include <functional>
 #include <memory>
 #include <string>
 #include <string_view>
 #include <typeindex>
 #include <typeinfo>
-#include <unordered_map>
 #include <vector>
 
 #include <uniorm/detail/projection.hpp>
 #include <uniorm/detail/traits.hpp>
 #include <uniorm/error.hpp>
 #include <uniorm/export.hpp>
-#include <uniorm/params.hpp>
 #include <uniorm/query/expression.hpp>
 #include <uniorm/row.hpp>
 #include <uniorm/value.hpp>
 
 namespace uniorm {
-
-class connection;
 
 enum class validation_mode { strict, lenient };
 
@@ -133,53 +128,6 @@ public:
 
 private:
   entity_meta& meta_;
-};
-
-// Mapping registry plus schema validation entry point. Not thread-safe; hold
-// one per thread/session.
-class UNIORM_API orm {
-public:
-  orm() = default;
-
-  template <class T>
-  mapping_builder<T> map(std::string_view table) {
-    std::type_index type(typeid(T));
-    if (entities_.count(type) != 0) {
-      throw mapping_error(
-        std::string("entity already registered: ") + typeid(T).name());
-    }
-    entity_meta& meta = entities_[type];
-    meta.table = table;
-    return mapping_builder<T>(meta);
-  }
-
-  template <class T>
-  entity_meta const& meta() const {
-    auto it = entities_.find(std::type_index(typeid(T)));
-    if (it == entities_.end()) {
-      throw mapping_error(
-        std::string("entity not registered: ") + typeid(T).name());
-    }
-    return it->second;
-  }
-
-  entity_meta const* find(std::type_index type) const {
-    auto it = entities_.find(type);
-    return it == entities_.end() ? nullptr : &it->second;
-  }
-
-  std::size_t size() const noexcept {
-    return entities_.size();
-  }
-
-  // Reconcile all registered mappings against the live schema via the
-  // backend's schema metadata extension. Throws mapping_error on the first
-  // mismatch or when the backend offers no schema metadata.
-  void validate(
-    connection& conn, validation_mode mode = validation_mode::strict);
-
-private:
-  std::unordered_map<std::type_index, entity_meta> entities_;
 };
 
 }  // namespace uniorm

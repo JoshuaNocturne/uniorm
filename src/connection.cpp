@@ -213,10 +213,6 @@ std::size_t connection::insert_batch(std::string_view table,
   return inserted;
 }
 
-query_gateway connection::query(orm& registry) {
-  return query_gateway(*this, registry);
-}
-
 transaction connection::begin() {
   return transaction(*this);
 }
@@ -229,11 +225,11 @@ void connection::set_autocommit(bool enabled) {
   backend_->set_autocommit(enabled);
 }
 
-void connection::commit_txn() {
+void connection::commit() {
   backend_->commit();
 }
 
-void connection::rollback_txn() {
+void connection::rollback() {
   backend_->rollback();
 }
 

@@ -46,7 +46,7 @@ void transaction::commit() {
   if (!active_) {
     return;
   }
-  conn_->commit_txn();
+  conn_->commit();
   conn_->set_autocommit(true);
   active_ = false;
 }
@@ -55,7 +55,7 @@ void transaction::rollback() {
   if (!active_) {
     return;
   }
-  conn_->rollback_txn();
+  conn_->rollback();
   conn_->set_autocommit(true);
   active_ = false;
 }

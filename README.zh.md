@@ -65,20 +65,20 @@ cmake --build build -j
 ### 连接与裸 SQL
 
 ```cpp
-#include <uniorm/connection.hpp>
+#include <uniorm/uniorm.hpp>
 
-uniorm::connection conn("DSN=mydb;UID=user;PWD=secret");
+uniorm::orm db("DSN=mydb;UID=user;PWD=secret");
 // 等价的显式写法："odbc://DSN=mydb;UID=user;PWD=secret"。
 // :// 之前的 scheme 选择 backend；无 scheme 的串按 ODBC 连接串处理。
 
-auto rs = conn.execute("SELECT id, name FROM users WHERE age > ?",
-                       uniorm::params{18});
+auto rs = db.execute("SELECT id, name FROM users WHERE age > ?",
+                     uniorm::params{18});
 while (rs.next()) {
     uniorm::row r = rs.current();
     // r.get<std::int64_t>(0), r.get<std::string>("name")
 }
 
-std::size_t n = conn.execute_update(
+std::size_t n = db.execute_update(
     "UPDATE users SET name = ? WHERE id = ?",
     uniorm::params{"alice", std::int64_t{1}});
 ```
@@ -92,15 +92,14 @@ struct user_row {
     std::optional<std::int32_t> age;
 };
 
-auto rows = conn.query<user_row>(
+auto rows = db.query<user_row>(
     "SELECT id, name, age FROM users WHERE age > ?", uniorm::params{18});
 ```
 
 ### 实体映射 + 查询构建器
 
 ```cpp
-#include <uniorm/mapping/registry.hpp>
-#include <uniorm/query/builder.hpp>
+#include <uniorm/uniorm.hpp>
 
 struct User {
     std::int64_t id;
@@ -108,41 +107,41 @@ struct User {
     std::optional<std::int32_t> age;
 };
 
-uniorm::orm registry;
-registry.map<User>("users")
+uniorm::orm db("DSN=mydb;UID=user;PWD=secret");
+db.map<User>("users")
     .primary_key("id", &User::id)
     .column("name", &User::name)
     .column("age", &User::age);
 
-registry.validate(conn);  // 与数据库 schema 对账（可选）
+db.validate();  // 与数据库 schema 对账（可选）
 
 using namespace uniorm;
-auto adults = conn.query(registry)
-                  .of<User>()
-                  .where(gt(&User::age, 18) && like(&User::name, "a%"))
-                  .order_by(&User::id, direction::desc)
-                  .limit(10)
-                  .all();  // 直接绑定到 User 字段
+auto adults = db.query()
+                .of<User>()
+                .where(gt(&User::age, 18) && like(&User::name, "a%"))
+                .order_by(&User::id, direction::desc)
+                .limit(10)
+                .all();  // 直接绑定到 User 字段
 ```
 
 ### 批量插入
 
 ```cpp
 std::vector<User> users = /* ... */;
-std::size_t n = conn.insert(registry, users);  // NULL、分批、事务全自动
+std::size_t n = db.insert(users);  // NULL、分批、事务全自动
 
 // 无实体映射的动态版本
-conn.insert_batch("users", {"name", "age"},
-                  {uniorm::params{"alice", 30}, uniorm::params{"bob", nullptr}});
+db.insert_batch("users", {"name", "age"},
+                {uniorm::params{"alice", 30}, uniorm::params{"bob", nullptr}});
 ```
 
 ### 事务与连接池
 
 ```cpp
 {
-    auto txn = conn.begin();
-    conn.execute_update("INSERT INTO logs (msg) VALUES (?)",
-                        uniorm::params{"x"});
+    auto txn = db.begin();
+    db.execute_update("INSERT INTO logs (msg) VALUES (?)",
+                      uniorm::params{"x"});
     txn.commit();  // 不 commit 则析构时回滚
 }
 

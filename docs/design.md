@@ -386,11 +386,11 @@ v1 采用**行式绑定**（每列 `SQLBindCol`，逐行 `SQLFetch`）；列式�
 
 ```cpp
 // 实体版（主接口）：列名与顺序来自注册映射，字段经注册的 read 闭包提取
-std::size_t n = conn.insert(registry, users);      // users: std::vector<User>
+std::size_t n = db.insert(users);      // users: std::vector<User>
 
 // 动态版（无映射逃生口）
-conn.insert_batch("user", {"name", "age"},
-                  {params{"alice", 30}, params{"bob", nullptr}});
+db.insert_batch("user", {"name", "age"},
+                {params{"alice", 30}, params{"bob", nullptr}});
 ```
 
 实现要点：
@@ -909,7 +909,7 @@ backend::backend_error : uniorm_error    // backend 层（backend/error.hpp）�
 
 1. ~~聚合投影自实现 PFR 手法还是依赖 Boost.PFR~~ **已定：自实现 pfr-lite，字段上限 64，不引入 Boost**（见 §4.6）；
 2. ~~DECIMAL/NUMERIC v1 默认映射~~ **已定：`decimal_t` 全局可配（默认 `std::string`），逐列可经 converter 覆写**（见 §4.3）；
-3. ~~`orm`（注册表）与 `connection` 的组合方式~~ **已定：连接前置 `conn.query(orm).of<T>()`**，让调用方明确操作所在连接（见 §4.8）；
+3. ~~`orm`（注册表）与 `connection` 的组合方式~~ **已定：`orm` 作为中心入口，内部持有 `connection`**，`db.query().of<T>()`、`db.insert()`、`db.update()` 等统一经 `orm` 调用（见 §4.8）；
 4. ~~头文件-only 还是编译库~~ **已定：动态库**（避免 header-only 升级后全量重编），非模板实现进 `libuniorm`，模板代码留头文件（见 §1）。
 
 **全部待定点已闭环。**

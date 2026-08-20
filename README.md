@@ -77,21 +77,21 @@ The product is a shared library, `libuniorm.so` (headers in
 ### Connection and raw SQL
 
 ```cpp
-#include <uniorm/connection.hpp>
+#include <uniorm/uniorm.hpp>
 
-uniorm::connection conn("DSN=mydb;UID=user;PWD=secret");
+uniorm::orm db("DSN=mydb;UID=user;PWD=secret");
 // Equivalent explicit form: "odbc://DSN=mydb;UID=user;PWD=secret".
 // The scheme before :// selects the backend; strings without a scheme
 // are treated as ODBC connection strings.
 
-auto rs = conn.execute("SELECT id, name FROM users WHERE age > ?",
-                       uniorm::params{18});
+auto rs = db.execute("SELECT id, name FROM users WHERE age > ?",
+                     uniorm::params{18});
 while (rs.next()) {
     uniorm::row r = rs.current();
     // r.get<std::int64_t>(0), r.get<std::string>("name")
 }
 
-std::size_t n = conn.execute_update(
+std::size_t n = db.execute_update(
     "UPDATE users SET name = ? WHERE id = ?",
     uniorm::params{"alice", std::int64_t{1}});
 ```
@@ -105,15 +105,14 @@ struct user_row {
     std::optional<std::int32_t> age;
 };
 
-auto rows = conn.query<user_row>(
+auto rows = db.query<user_row>(
     "SELECT id, name, age FROM users WHERE age > ?", uniorm::params{18});
 ```
 
 ### Entity mapping + query builder
 
 ```cpp
-#include <uniorm/mapping/registry.hpp>
-#include <uniorm/query/builder.hpp>
+#include <uniorm/uniorm.hpp>
 
 struct User {
     std::int64_t id;
@@ -121,41 +120,41 @@ struct User {
     std::optional<std::int32_t> age;
 };
 
-uniorm::orm registry;
-registry.map<User>("users")
+uniorm::orm db("DSN=mydb;UID=user;PWD=secret");
+db.map<User>("users")
     .primary_key("id", &User::id)
     .column("name", &User::name)
     .column("age", &User::age);
 
-registry.validate(conn);  // reconcile against the live schema (optional)
+db.validate();  // reconcile against the live schema (optional)
 
 using namespace uniorm;
-auto adults = conn.query(registry)
-                  .of<User>()
-                  .where(gt(&User::age, 18) && like(&User::name, "a%"))
-                  .order_by(&User::id, direction::desc)
-                  .limit(10)
-                  .all();  // direct binding onto User fields
+auto adults = db.query()
+                .of<User>()
+                .where(gt(&User::age, 18) && like(&User::name, "a%"))
+                .order_by(&User::id, direction::desc)
+                .limit(10)
+                .all();  // direct binding onto User fields
 ```
 
 ### Batch insert
 
 ```cpp
 std::vector<User> users = /* ... */;
-std::size_t n = conn.insert(registry, users);  // NULLs, chunking, transaction
+std::size_t n = db.insert(users);  // NULLs, chunking, transaction
 
 // Dynamic variant without an entity mapping
-conn.insert_batch("users", {"name", "age"},
-                  {uniorm::params{"alice", 30}, uniorm::params{"bob", nullptr}});
+db.insert_batch("users", {"name", "age"},
+                {uniorm::params{"alice", 30}, uniorm::params{"bob", nullptr}});
 ```
 
 ### Transactions and connection pool
 
 ```cpp
 {
-    auto txn = conn.begin();
-    conn.execute_update("INSERT INTO logs (msg) VALUES (?)",
-                        uniorm::params{"x"});
+    auto txn = db.begin();
+    db.execute_update("INSERT INTO logs (msg) VALUES (?)",
+                      uniorm::params{"x"});
     txn.commit();  // no commit -> rollback on destruction
 }
 

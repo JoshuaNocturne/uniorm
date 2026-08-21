@@ -4,7 +4,7 @@
 #include <utility>
 
 #include "uniorm/backend/backend.hpp"
-#include "uniorm/connection.hpp"
+#include <uniorm/detail/connection.hpp>
 #include "uniorm/query/builder.hpp"
 #include "uniorm/result_set.hpp"
 #include "uniorm/transaction.hpp"
@@ -33,6 +33,9 @@ std::unordered_map<std::string, schema_column> load_table_schema(
 orm::orm(std::string_view connection_string)
   : pooled_conn_(
       connection_pool_registry::instance().acquire(std::string(connection_string))) {}
+
+orm::orm(connection_pool& pool)
+  : pooled_conn_(pool.acquire()) {}
 
 orm::~orm() = default;
 

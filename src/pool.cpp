@@ -1,4 +1,4 @@
-#include "uniorm/pool.hpp"
+#include <uniorm/pool.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -298,6 +298,10 @@ pooled_connection& pooled_connection::operator=(
     other.valid_ = false;
   }
   return *this;
+}
+
+bool pooled_connection::is_open() const noexcept {
+  return valid_ && conn_.is_open();
 }
 
 // --- connection_pool_registry ---

@@ -15,7 +15,7 @@
 #include <mutex>
 #include <string>
 
-#include <uniorm/connection.hpp>
+#include <uniorm/detail/connection.hpp>
 #include <uniorm/error.hpp>
 #include <uniorm/export.hpp>
 
@@ -44,6 +44,18 @@ public:
   pooled_connection(pooled_connection const&) = delete;
   pooled_connection& operator=(pooled_connection const&) = delete;
 
+  explicit operator bool() const noexcept {
+    return valid_;
+  }
+
+  bool is_open() const noexcept;
+
+private:
+  friend class connection_pool;
+  friend class connection_pool_registry;
+  friend class orm;
+  pooled_connection(connection_pool* pool, connection conn);
+
   connection& get() noexcept {
     return conn_;
   }
@@ -56,14 +68,6 @@ public:
   connection const* operator->() const noexcept {
     return &conn_;
   }
-  explicit operator bool() const noexcept {
-    return valid_;
-  }
-
-private:
-  friend class connection_pool;
-  friend class connection_pool_registry;
-  pooled_connection(connection_pool* pool, connection conn);
 
   connection_pool* pool_ = nullptr;
   connection conn_;

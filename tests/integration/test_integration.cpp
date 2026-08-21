@@ -12,7 +12,7 @@
 
 #include "../unit/check.hpp"
 
-#include <uniorm/connection.hpp>
+#include <uniorm/detail/connection.hpp>
 #include <uniorm/detail/time.hpp>
 #include <uniorm/mapping/registry.hpp>
 #include <uniorm/orm.hpp>
@@ -502,13 +502,13 @@ void test_pool(std::string const& conn_string) {
     pooled_connection a = pool.acquire();
     pooled_connection b = pool.acquire();
     CHECK(bool(a) && bool(b));
-    CHECK(a.get().is_open() && b.get().is_open());
+    CHECK(a.is_open() && b.is_open());
     CHECK_THROWS(pool.acquire(), pool_timeout);  // exhausted
   }
 
   pooled_connection c = pool.acquire();  // returned by destructors above
   CHECK(bool(c));
-  CHECK(c->is_open());
+  CHECK(c.is_open());
 }
 
 void test_pool_maintenance(std::string const& conn_string) {
@@ -524,7 +524,7 @@ void test_pool_maintenance(std::string const& conn_string) {
 
     {
       pooled_connection c = pool.acquire();
-      CHECK(c.get().is_open());
+      CHECK(c.is_open());
     }
     CHECK(pool.idle_count() == 1);
     std::this_thread::sleep_for(300ms);
@@ -535,7 +535,7 @@ void test_pool_maintenance(std::string const& conn_string) {
 
     pooled_connection again = pool.acquire();  // lazily recreated
     CHECK(bool(again));
-    CHECK(again.get().is_open());
+    CHECK(again.is_open());
   }
   {
     // A failing heartbeat discards the connection well before max idle.

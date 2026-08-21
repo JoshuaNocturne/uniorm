@@ -14,7 +14,7 @@
 #include <unordered_map>
 #include <vector>
 
-#include <uniorm/connection.hpp>
+#include <uniorm/detail/connection.hpp>
 #include <uniorm/dialect.hpp>
 #include <uniorm/mapping/registry.hpp>
 #include <uniorm/pool.hpp>
@@ -35,6 +35,7 @@ class UNIORM_API orm {
 public:
   orm() = default;
   explicit orm(std::string_view connection_string);
+  explicit orm(connection_pool& pool);  // Acquire connection from user-managed pool
   ~orm();
 
   orm(orm&&) noexcept;

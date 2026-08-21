@@ -1,4 +1,4 @@
-#include "uniorm/connection.hpp"
+#include <uniorm/detail/connection.hpp>
 
 #include <algorithm>
 #include <cctype>

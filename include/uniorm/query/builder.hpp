@@ -10,8 +10,6 @@
 #include <utility>
 #include <vector>
 
-#include <uniorm/backend/backend.hpp>
-#include <uniorm/detail/connection.hpp>
 #include <uniorm/dialect.hpp>
 #include <uniorm/orm.hpp>
 #include <uniorm/params.hpp>
@@ -20,6 +18,12 @@
 #include <uniorm/row.hpp>
 
 namespace uniorm {
+
+class connection;
+
+namespace backend {
+class statement_iface;
+}
 
 enum class direction { asc, desc };
 

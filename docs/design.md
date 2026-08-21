@@ -110,9 +110,8 @@ uniorm/
 │   ├── generator.cpp            # model + 配置 → 头文件文本
 │   ├── config.cpp               # TOML 子集解析
 │   └── naming.cpp               # PascalCase/camelCase 标识符转换
-├── tests/unit/                  # 无数据库依赖的单测；uniorm_unit_tests 不链 ODBC
-│                                # （含 fake backend 证明测试），odbc_unit_tests
-│                                # 覆盖句柄 RAII 与 uniorm-gen
+├── tests/unit/                  # 无数据库依赖的单测；uniorm_unit_tests 不链 ODBC，
+│                                # odbc_unit_tests 覆盖句柄 RAII 与 uniorm-gen
 └── docs/design.md
 ```
 
@@ -693,9 +692,9 @@ v1 不实现 backend 抽象接口（单一实现下抽象必然抽错），但�
 - 单元测试中对语句层以上的测试不得链接 ODBC 头文件。
 
 v2 里程碑 1 完成后，以上纪律从约定升级为编译强制：核心单测目标
-`uniorm_unit_tests` 不链接任何 ODBC 库，全部高层 API（execute /
-result_set / 聚合投影 / 实体查询 / 批量插入 / 事务 / 语句缓存）经内存
-fake backend 驱动（见 §8）；任何驱动类型上浮都会在编译期失败。
+`uniorm_unit_tests` 不链接任何 ODBC 库，覆盖类型系统、映射注册、表达式生成等
+核心逻辑；高层 API（execute / result_set / 实体查询 / 事务等）由集成测试
+通过真实数据库验证。
 
 ### 5.2 backend 接口（v2 里程碑 1，已实现）
 
@@ -869,9 +868,7 @@ backend::backend_error : uniorm_error    // backend 层（backend/error.hpp）�
   （value_cast/收窄/optional）、`test_params`（值归一化）、
   `test_expression`（谓词 SQL 生成、方言、分页）、`test_registry`
   （映射注册/populate/read 闭包/错误路径）、`test_backend_registry`
-  （scheme 解析边界、注册/重复注册/未注册 scheme）、`test_fake_backend`
-  （内存 fake backend 驱动全部高层 API：execute/result_set、聚合投影、
-  实体查询 all/one/count、insert_batch、事务、语句缓存、extension 查找）；
+  （scheme 解析边界、注册/重复注册/未注册 scheme）；
   `uniorm_odbc_unit_tests` 链接 ODBC——`test_odbc_handles`（句柄 RAII）、
   `test_gen_config`（TOML 子集解析正例/错误行号/非法键）、
   `test_gen_output`（命名转换边界 + 生成器快照与覆写/跳表/错误路径）；

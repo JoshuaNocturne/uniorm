@@ -351,12 +351,6 @@ connection_pool_registry& connection_pool_registry::instance() {
 
 pooled_connection connection_pool_registry::acquire(
   std::string const& connection_string) {
-  // Fake backend uses per-connection state; bypass pooling.
-  if (connection_string.rfind("fake://", 0) == 0) {
-    connection conn(connection_string);
-    return pooled_connection(nullptr, std::move(conn));
-  }
-
   std::string key = make_key(connection_string);
 
   std::lock_guard lock(mutex_);

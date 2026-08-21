@@ -7,7 +7,6 @@ void test_params();
 void test_expression();
 void test_registry();
 void test_backend_registry();
-void test_fake_backend();
 
 int main() {
   test_unicode();
@@ -17,7 +16,6 @@ int main() {
   test_expression();
   test_registry();
   test_backend_registry();
-  test_fake_backend();
 
   int failures = uniorm::test::failure_count();
   if (failures == 0) {

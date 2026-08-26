@@ -80,6 +80,17 @@ struct column_buffer {
   std::int64_t* indicator;
 };
 
+// Caller-owned parameter-array binding for batch inserts. `data` points
+// to a contiguous buffer of `count` elements, each `stride` bytes apart.
+// `indicators` has `count` entries. The buffer must outlive execute().
+struct param_array_buffer {
+  buffer_type type;
+  void* data;
+  std::size_t stride;  // bytes per element
+  std::int64_t* indicators;
+  std::size_t count;
+};
+
 // What a backend implementation offers. Core features requiring an
 // absent capability throw capability_not_supported; they never degrade
 // silently.
@@ -105,6 +116,15 @@ struct statement_iface {
 
   virtual void bind_column(std::size_t index, column_buffer const& buffer) = 0;
 
+  // Batch parameter binding: bind an array of `count` values for parameter
+  // `index`. The data buffer and indicators must outlive execute().
+  virtual void bind_param_array(
+    std::size_t index, param_array_buffer const& buffer) = 0;
+
+  // Reset all parameter bindings. Must be called before rebinding parameters
+  // when reusing a statement for multiple executions.
+  virtual void reset_parameters() = 0;
+
   virtual void execute() = 0;
   virtual bool fetch() = 0;  // false when the result set is exhausted
   virtual std::size_t affected_rows() const = 0;
@@ -113,6 +133,9 @@ struct statement_iface {
   // Block fetch support: set the number of rows to fetch per SQLFetch call.
   virtual void set_row_array_size(std::size_t size) = 0;
   virtual std::size_t rows_fetched() const = 0;
+
+  // Batch insert support: set the number of parameter sets per SQLExecute.
+  virtual void set_paramset_size(std::size_t size) = 0;
 
   // Continuation reads for values that did not fit the bound buffer
   // (indicator is no_total or exceeds capacity). column is 1-based.

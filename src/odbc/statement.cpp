@@ -45,6 +45,13 @@ void statement::set_row_array_size(SQLULEN size) {
   throw_if_error(rc, SQL_HANDLE_STMT, native(), "set row array size");
 }
 
+void statement::set_paramset_size(SQLULEN size) {
+  paramset_size_ = size;
+  SQLRETURN rc = SQLSetStmtAttr(native(), SQL_ATTR_PARAMSET_SIZE,
+    reinterpret_cast<SQLPOINTER>(size), 0);
+  throw_if_error(rc, SQL_HANDLE_STMT, native(), "set paramset size");
+}
+
 std::size_t statement::affected_rows() const {
   SQLLEN count = 0;
   SQLRETURN rc = SQLRowCount(native(), &count);
@@ -82,12 +89,12 @@ void statement::close_cursor() {
 void statement::reset() {
   // SQL_CLOSE (unlike SQLCloseCursor) is a no-op when no cursor is open,
   // which makes reset() safe on statements reused from the cache.
+  // We only need SQL_CLOSE here because:
+  // - SQLBindParameter automatically replaces existing parameter bindings
+  // - SQLBindCol automatically replaces existing column bindings
+  // So SQL_RESET_PARAMS and SQL_UNBIND are redundant.
   SQLRETURN rc = SQLFreeStmt(native(), SQL_CLOSE);
   throw_if_error(rc, SQL_HANDLE_STMT, native(), "close statement cursor");
-  rc = SQLFreeStmt(native(), SQL_RESET_PARAMS);
-  throw_if_error(rc, SQL_HANDLE_STMT, native(), "reset statement parameters");
-  rc = SQLFreeStmt(native(), SQL_UNBIND);
-  throw_if_error(rc, SQL_HANDLE_STMT, native(), "unbind statement columns");
   
   // Reset row array size to 1 for next use
   if (row_array_size_ != 1) {
@@ -95,6 +102,13 @@ void statement::reset() {
     rc = SQLSetStmtAttr(native(), SQL_ATTR_ROW_ARRAY_SIZE,
       reinterpret_cast<SQLPOINTER>(1), 0);
     throw_if_error(rc, SQL_HANDLE_STMT, native(), "reset row array size");
+  }
+  // Reset paramset size to 1 for next use
+  if (paramset_size_ != 1) {
+    paramset_size_ = 1;
+    rc = SQLSetStmtAttr(native(), SQL_ATTR_PARAMSET_SIZE,
+      reinterpret_cast<SQLPOINTER>(1), 0);
+    throw_if_error(rc, SQL_HANDLE_STMT, native(), "reset paramset size");
   }
 }
 

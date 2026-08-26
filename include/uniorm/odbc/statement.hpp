@@ -32,6 +32,9 @@ public:
   void set_row_array_size(SQLULEN size);
   SQLULEN rows_fetched() const noexcept { return rows_fetched_; }
 
+  // Batch insert support: set the number of parameter sets per SQLExecute.
+  void set_paramset_size(SQLULEN size);
+
   // index is 1-based. indicator points to a SQLLEN owned by the caller
   // that must outlive the statement execution.
   void bind_parameter(SQLUSMALLINT index, SQLSMALLINT c_type,
@@ -53,6 +56,7 @@ private:
   detail::stmt_handle handle_;
   SQLULEN row_array_size_ = 1;
   SQLULEN rows_fetched_ = 0;
+  SQLULEN paramset_size_ = 1;
 };
 
 }  // namespace uniorm::odbc

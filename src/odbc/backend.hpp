@@ -22,12 +22,16 @@ public:
   void bind_parameter(std::size_t index, sql_value const& value) override;
   void bind_column(
     std::size_t index, backend::column_buffer const& buffer) override;
+  void bind_param_array(
+    std::size_t index, backend::param_array_buffer const& buffer) override;
+  void reset_parameters() override;
   void execute() override;
   bool fetch() override;
   std::size_t affected_rows() const override;
   std::vector<column_info> column_meta() const override;
   void set_row_array_size(std::size_t size) override;
   std::size_t rows_fetched() const override;
+  void set_paramset_size(std::size_t size) override;
   std::string read_long_text(std::size_t column) override;
   std::vector<std::byte> read_long_bytes(std::size_t column) override;
   void reset() override;

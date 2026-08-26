@@ -187,6 +187,69 @@ void backend_statement::bind_column(
     reinterpret_cast<SQLLEN*>(buffer.indicator));
 }
 
+namespace {
+
+// Map buffer_type to the SQL type for parameter array binding.
+SQLSMALLINT sql_type_for(backend::buffer_type t) {
+  switch (t) {
+  case backend::buffer_type::bit:
+    return SQL_BIT;
+  case backend::buffer_type::int8:
+    return SQL_TINYINT;
+  case backend::buffer_type::int16:
+    return SQL_SMALLINT;
+  case backend::buffer_type::int32:
+    return SQL_INTEGER;
+  case backend::buffer_type::int64:
+    return SQL_BIGINT;
+  case backend::buffer_type::float32:
+    return SQL_FLOAT;
+  case backend::buffer_type::float64:
+    return SQL_DOUBLE;
+  case backend::buffer_type::chars:
+    return SQL_VARCHAR;
+  case backend::buffer_type::bytes:
+    return SQL_VARBINARY;
+  case backend::buffer_type::timestamp_parts:
+    return SQL_TYPE_TIMESTAMP;
+  case backend::buffer_type::date_parts:
+    return SQL_TYPE_DATE;
+  case backend::buffer_type::time_parts:
+    return SQL_TYPE_TIME;
+  }
+  throw backend::backend_error("odbc", "unsupported buffer type", {});
+}
+
+}  // namespace
+
+void backend_statement::bind_param_array(
+  std::size_t index, backend::param_array_buffer const& buffer) {
+  auto odbc_index = static_cast<SQLUSMALLINT>(index);
+  SQLSMALLINT c_type = c_type_for(buffer.type);
+  SQLSMALLINT sql_type = sql_type_for(buffer.type);
+  SQLULEN column_size = static_cast<SQLULEN>(buffer.stride);
+  SQLSMALLINT decimal_digits = 0;
+  if (buffer.type == backend::buffer_type::timestamp_parts) {
+    column_size = 26;
+    decimal_digits = 6;
+  } else if (buffer.type == backend::buffer_type::chars ||
+             buffer.type == backend::buffer_type::bytes) {
+    column_size = std::max(column_size, SQLULEN(255));
+  }
+  SQLRETURN rc = SQLBindParameter(stmt_.native(), odbc_index, SQL_PARAM_INPUT,
+    c_type, sql_type, column_size, decimal_digits, buffer.data,
+    static_cast<SQLLEN>(buffer.stride),
+    reinterpret_cast<SQLLEN*>(buffer.indicators));
+  odbc::throw_if_error(
+    rc, SQL_HANDLE_STMT, stmt_.native(), "bind parameter array");
+}
+
+void backend_statement::reset_parameters() {
+  SQLRETURN rc = SQLFreeStmt(stmt_.native(), SQL_RESET_PARAMS);
+  odbc::throw_if_error(
+    rc, SQL_HANDLE_STMT, stmt_.native(), "reset statement parameters");
+}
+
 void backend_statement::execute() {
   stmt_.execute();
 }
@@ -201,6 +264,10 @@ void backend_statement::set_row_array_size(std::size_t size) {
 
 std::size_t backend_statement::rows_fetched() const {
   return static_cast<std::size_t>(stmt_.rows_fetched());
+}
+
+void backend_statement::set_paramset_size(std::size_t size) {
+  stmt_.set_paramset_size(static_cast<SQLULEN>(size));
 }
 
 std::size_t backend_statement::affected_rows() const {
@@ -324,9 +391,10 @@ void backend_connection::rollback() {
 
 backend::capabilities backend_connection::caps() const noexcept {
   // Bound-column streaming fetch plus SQLGetData continuation reads
-  // count as streaming; nothing else is implemented over ODBC.
+  // count as streaming; parameter array binding (SQL_ATTR_PARAMSET_SIZE)
+  // is supported for batch inserts.
   return {/*streaming=*/true, /*async_io=*/false, /*copy_protocol=*/false,
-    /*notifications=*/false, /*array_binding=*/false};
+    /*notifications=*/false, /*array_binding=*/true};
 }
 
 std::string backend_connection::dbms_name() const {

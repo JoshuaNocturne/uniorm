@@ -39,7 +39,8 @@ private:
   // (statement cache check-in); it must not throw. May be empty.
   static result_set from_statement(
     std::unique_ptr<backend::statement_iface> stmt,
-    std::function<void(std::unique_ptr<backend::statement_iface>)> release);
+    std::function<void(std::unique_ptr<backend::statement_iface>)> release,
+    std::size_t row_array_size);
 
   std::unique_ptr<impl> impl_;
 };

@@ -54,6 +54,10 @@ public:
   std::size_t row_array_size() const noexcept { return row_array_size_; }
   void row_array_size(std::size_t size) noexcept { row_array_size_ = size; }
 
+  // --- Batch operation configuration (insert/update/delete) ---
+  std::size_t paramset_size() const noexcept { return paramset_size_; }
+  void paramset_size(std::size_t size) noexcept { paramset_size_ = size; }
+
   result_set execute(std::string_view sql, params const& p = {});
 
   std::size_t execute_update(std::string_view sql, params const& p = {});
@@ -63,6 +67,21 @@ public:
   // columns.size() parameter values. Returns the number of rows inserted.
   std::size_t insert_batch(std::string_view table,
     std::vector<std::string> const& columns, std::vector<params> const& rows);
+
+  // Dynamic batch update: UPDATE table SET set_cols... WHERE where_cols...
+  // Each row in `rows` must contain [set_values..., where_values...].
+  // Returns the number of rows affected.
+  std::size_t update_batch(std::string_view table,
+    std::vector<std::string> const& set_columns,
+    std::vector<std::string> const& where_columns,
+    std::vector<params> const& rows);
+
+  // Dynamic batch delete: DELETE FROM table WHERE col1=? AND col2=? ...
+  // Each row in `keys` must contain values for the where_columns.
+  // Returns the number of rows affected.
+  std::size_t remove_batch(std::string_view table,
+    std::vector<std::string> const& where_columns,
+    std::vector<params> const& keys);
 
   // Dynamic DELETE without an entity mapping. Column and table
   remove_builder remove(std::string_view table);
@@ -167,6 +186,7 @@ private:
   // survive even if the connection is moved.
   std::shared_ptr<detail::statement_cache> stmt_cache_;
   std::size_t row_array_size_ = 100;  // Default block fetch size
+  std::size_t paramset_size_ = 1000;  // Default batch insert size
 };
 
 }  // namespace uniorm

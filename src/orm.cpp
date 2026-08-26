@@ -32,7 +32,10 @@ std::unordered_map<std::string, schema_column> load_table_schema(
 
 orm::orm(std::string_view connection_string)
   : pooled_conn_(
-      connection_pool_registry::instance().acquire(std::string(connection_string))) {}
+      connection_pool_registry::instance().acquire(std::string(connection_string))) {
+  pooled_conn_->get().row_array_size(row_array_size_);
+  pooled_conn_->get().paramset_size(paramset_size_);
+}
 
 orm::orm(connection_pool& pool)
   : pooled_conn_(pool.acquire()) {}
@@ -46,6 +49,8 @@ orm& orm::operator=(orm&&) noexcept = default;
 void orm::connect(std::string_view connection_string) {
   pooled_conn_ =
     connection_pool_registry::instance().acquire(std::string(connection_string));
+  pooled_conn_->get().row_array_size(row_array_size_);
+  pooled_conn_->get().paramset_size(paramset_size_);
 }
 
 void orm::disconnect() {

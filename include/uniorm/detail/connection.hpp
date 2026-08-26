@@ -72,11 +72,17 @@ public:
     auto stmt = acquire_cached(key);
     bind_parameters(*stmt, p);
     stmt->execute();
+    constexpr std::size_t default_row_array_size = 100;
+    stmt->set_row_array_size(default_row_array_size);
     detail::projection<T> proj;
+    proj.set_row_array_size(default_row_array_size);
     proj.bind(*stmt);
     std::vector<T> out;
     while (stmt->fetch()) {
-      out.push_back(proj.take());
+      std::size_t rows_fetched = stmt->rows_fetched();
+      for (std::size_t i = 0; i < rows_fetched; ++i) {
+        out.push_back(proj.take(i));
+      }
     }
     stmt_cache_->release(key, std::move(stmt));
     return out;

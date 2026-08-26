@@ -41,21 +41,27 @@ public:
     }
   }
 
+  void set_row_array_size(std::size_t size) {
+    row_array_size_ = size;
+  }
+
   void bind(backend::statement_iface& stmt) {
     for (std::size_t i = 0; i < bindings_.size(); ++i) {
+      bindings_[i]->set_row_array_size(row_array_size_);
       bindings_[i]->bind(stmt, i + 1);
     }
   }
 
-  T take() {
+  T take(std::size_t row_index) {
     for (auto& binding : bindings_) {
-      binding->finalize();
+      binding->finalize(row_index);
     }
     return std::move(proto_);
   }
 
 private:
   T proto_{};
+  std::size_t row_array_size_ = 1;
   std::vector<std::unique_ptr<field_binding>> bindings_;
 };
 
@@ -166,11 +172,17 @@ public:
     std::string sql = render_select(limit_, bound);
     return gw_->conn().execute_with(
       sql, params(std::move(bound)), [this](backend::statement_iface& stmt) {
+        constexpr std::size_t default_row_array_size = 100;
+        stmt.set_row_array_size(default_row_array_size);
         detail::entity_binding<T> binding(*meta_);
+        binding.set_row_array_size(default_row_array_size);
         binding.bind(stmt);
         std::vector<T> out;
         while (stmt.fetch()) {
-          out.push_back(binding.take());
+          std::size_t rows_fetched = stmt.rows_fetched();
+          for (std::size_t i = 0; i < rows_fetched; ++i) {
+            out.push_back(binding.take(i));
+          }
         }
         return out;
       });
@@ -181,12 +193,14 @@ public:
     std::string sql = render_select(std::size_t{ 1 }, bound);
     return gw_->conn().execute_with(sql, params(std::move(bound)),
       [this](backend::statement_iface& stmt) -> std::optional<T> {
+        stmt.set_row_array_size(1);
         detail::entity_binding<T> binding(*meta_);
+        binding.set_row_array_size(1);
         binding.bind(stmt);
         if (!stmt.fetch()) {
           return std::nullopt;
         }
-        return binding.take();
+        return binding.take(0);
       });
   }
 

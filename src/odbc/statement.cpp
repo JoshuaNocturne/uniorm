@@ -2,7 +2,12 @@
 
 namespace uniorm::odbc {
 
-statement::statement(connection& conn) : handle_(conn.native(), "statement") {}
+statement::statement(connection& conn) : handle_(conn.native(), "statement") {
+  // Set up rows fetched pointer for block fetch support
+  SQLRETURN rc = SQLSetStmtAttr(native(), SQL_ATTR_ROWS_FETCHED_PTR,
+    &rows_fetched_, 0);
+  throw_if_error(rc, SQL_HANDLE_STMT, native(), "set rows fetched pointer");
+}
 
 statement::~statement() = default;
 
@@ -24,12 +29,20 @@ void statement::execute() {
 }
 
 bool statement::fetch() {
+  rows_fetched_ = 0;
   SQLRETURN rc = SQLFetch(native());
   if (rc == SQL_NO_DATA) {
     return false;
   }
   throw_if_error(rc, SQL_HANDLE_STMT, native(), "fetch row");
-  return true;
+  return rows_fetched_ > 0;
+}
+
+void statement::set_row_array_size(SQLULEN size) {
+  row_array_size_ = size;
+  SQLRETURN rc = SQLSetStmtAttr(native(), SQL_ATTR_ROW_ARRAY_SIZE,
+    reinterpret_cast<SQLPOINTER>(size), 0);
+  throw_if_error(rc, SQL_HANDLE_STMT, native(), "set row array size");
 }
 
 std::size_t statement::affected_rows() const {
@@ -75,6 +88,14 @@ void statement::reset() {
   throw_if_error(rc, SQL_HANDLE_STMT, native(), "reset statement parameters");
   rc = SQLFreeStmt(native(), SQL_UNBIND);
   throw_if_error(rc, SQL_HANDLE_STMT, native(), "unbind statement columns");
+  
+  // Reset row array size to 1 for next use
+  if (row_array_size_ != 1) {
+    row_array_size_ = 1;
+    rc = SQLSetStmtAttr(native(), SQL_ATTR_ROW_ARRAY_SIZE,
+      reinterpret_cast<SQLPOINTER>(1), 0);
+    throw_if_error(rc, SQL_HANDLE_STMT, native(), "reset row array size");
+  }
 }
 
 }  // namespace uniorm::odbc

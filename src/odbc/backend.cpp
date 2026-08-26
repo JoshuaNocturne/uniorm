@@ -195,6 +195,14 @@ bool backend_statement::fetch() {
   return stmt_.fetch();
 }
 
+void backend_statement::set_row_array_size(std::size_t size) {
+  stmt_.set_row_array_size(static_cast<SQLULEN>(size));
+}
+
+std::size_t backend_statement::rows_fetched() const {
+  return static_cast<std::size_t>(stmt_.rows_fetched());
+}
+
 std::size_t backend_statement::affected_rows() const {
   return stmt_.affected_rows();
 }

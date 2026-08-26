@@ -28,6 +28,10 @@ public:
   std::size_t affected_rows() const;
   std::size_t column_count() const;
 
+  // Block fetch support: set the number of rows to fetch per SQLFetch call.
+  void set_row_array_size(SQLULEN size);
+  SQLULEN rows_fetched() const noexcept { return rows_fetched_; }
+
   // index is 1-based. indicator points to a SQLLEN owned by the caller
   // that must outlive the statement execution.
   void bind_parameter(SQLUSMALLINT index, SQLSMALLINT c_type,
@@ -47,6 +51,8 @@ public:
 
 private:
   detail::stmt_handle handle_;
+  SQLULEN row_array_size_ = 1;
+  SQLULEN rows_fetched_ = 0;
 };
 
 }  // namespace uniorm::odbc

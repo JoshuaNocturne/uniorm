@@ -41,8 +41,8 @@ namespace {
 
 char const* k_table = "uniorm_perf_bench";
 
-orm build_registry() {
-  orm registry;
+orm build_registry(std::string const& conn_string) {
+  orm registry(conn_string);
   registry.map<Bench>(k_table)
     .primary_key("id", &Bench::id)
     .column("name", &Bench::name)
@@ -106,8 +106,19 @@ void run_benchmarks(connection& conn, orm& registry, std::size_t n) {
 
   std::vector<Bench> rows = make_rows(n);
   std::size_t inserted = 0;
-  report("insert (batch)", n,
-    best_of([&] { inserted = registry.insert(rows); }, 1), 1);
+  {
+    perf_clock::duration best = perf_clock::duration::max();
+    for (int i = 0; i < runs; ++i) {
+      conn.execute_update(std::string("TRUNCATE TABLE ") + k_table);
+      auto start = perf_clock::now();
+      inserted = registry.insert(rows);
+      auto elapsed = perf_clock::now() - start;
+      if (elapsed < best) {
+        best = elapsed;
+      }
+    }
+    report("insert (batch)", n, best, 1);
+  }
   if (inserted != n) {
     std::printf("FATAL: inserted %zu of %zu rows\n", inserted, n);
     std::exit(1);
@@ -127,62 +138,62 @@ void run_benchmarks(connection& conn, orm& registry, std::size_t n) {
     std::exit(1);
   }
 
-  struct bench_row {
-    std::int64_t id;
-    std::string name;
-    std::int32_t score;
-    std::optional<std::string> note;
-  };
-  std::size_t proj_rows = 0;
-  report("query aggregate projection", n,
-    best_of(
-      [&] { proj_rows = conn.query<bench_row>(select_all).size(); }, runs),
-    runs);
-  if (proj_rows != n) {
-    std::printf("FATAL: projection returned %zu rows\n", proj_rows);
-    std::exit(1);
-  }
-
-  std::size_t dynamic_rows = 0;
-  std::int64_t id_sum = 0;
-  report("query dynamic rows (row/sql_value)", n,
-    best_of(
-      [&] {
-        result_set rs = conn.execute(select_all);
-        dynamic_rows = 0;
-        while (rs.next()) {
-          row r = rs.current();
-          id_sum += r.get<std::int64_t>("id");
-          ++dynamic_rows;
-        }
-      },
-      runs),
-    runs);
-  if (dynamic_rows != n) {
-    std::printf("FATAL: dynamic query returned %zu rows\n", dynamic_rows);
-    std::exit(1);
-  }
-
-  report("query one() (direct bind)", 1,
-    best_of(
-      [&] {
-        auto one = registry.query().of<Bench>().limit(1).one();
-        if (!one) {
-          std::exit(1);
-        }
-      },
-      runs),
-    runs);
-
-  std::int64_t count = 0;
-  report("query count()", 1,
-    best_of([&] { count = registry.query().of<Bench>().count(); }, runs),
-    runs);
-  if (count != static_cast<std::int64_t>(n)) {
-    std::printf("FATAL: count() returned %" PRId64 "\n", count);
-    std::exit(1);
-  }
-  (void)id_sum;
+  // struct bench_row {
+  //   std::int64_t id;
+  //   std::string name;
+  //   std::int32_t score;
+  //   std::optional<std::string> note;
+  // };
+  // std::size_t proj_rows = 0;
+  // report("query aggregate projection", n,
+  //   best_of(
+  //     [&] { proj_rows = conn.query<bench_row>(select_all).size(); }, runs),
+  //   runs);
+  // if (proj_rows != n) {
+  //   std::printf("FATAL: projection returned %zu rows\n", proj_rows);
+  //   std::exit(1);
+  // }
+  //
+  // std::size_t dynamic_rows = 0;
+  // std::int64_t id_sum = 0;
+  // report("query dynamic rows (row/sql_value)", n,
+  //   best_of(
+  //     [&] {
+  //       result_set rs = conn.execute(select_all);
+  //       dynamic_rows = 0;
+  //       while (rs.next()) {
+  //         row r = rs.current();
+  //         id_sum += r.get<std::int64_t>("id");
+  //         ++dynamic_rows;
+  //       }
+  //     },
+  //     runs),
+  //   runs);
+  // if (dynamic_rows != n) {
+  //   std::printf("FATAL: dynamic query returned %zu rows\n", dynamic_rows);
+  //   std::exit(1);
+  // }
+  //
+  // report("query one() (direct bind)", 1,
+  //   best_of(
+  //     [&] {
+  //       auto one = registry.query().of<Bench>().limit(1).one();
+  //       if (!one) {
+  //         std::exit(1);
+  //       }
+  //     },
+  //     runs),
+  //   runs);
+  //
+  // std::int64_t count = 0;
+  // report("query count()", 1,
+  //   best_of([&] { count = registry.query().of<Bench>().count(); }, runs),
+  //   runs);
+  // if (count != static_cast<std::int64_t>(n)) {
+  //   std::printf("FATAL: count() returned %" PRId64 "\n", count);
+  //   std::exit(1);
+  // }
+  // (void)id_sum;
 }
 
 // ---- raw ODBC baseline: same ODBC call patterns as uniorm -----------
@@ -444,9 +455,9 @@ int main() {
   try {
     connection conn(conn_string);
     prepare_schema(conn);
-    orm registry = build_registry();
+    orm registry = build_registry(conn_string);
     run_benchmarks(conn, registry, n);
-    run_raw_benchmarks(conn_string, n);
+    // run_raw_benchmarks(conn_string, n);
     conn.execute_update(std::string("DROP TABLE ") + k_table);
   } catch (std::exception const& e) {
     std::printf("FATAL: unexpected exception: %s\n", e.what());

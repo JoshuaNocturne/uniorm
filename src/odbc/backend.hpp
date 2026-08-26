@@ -26,6 +26,8 @@ public:
   bool fetch() override;
   std::size_t affected_rows() const override;
   std::vector<column_info> column_meta() const override;
+  void set_row_array_size(std::size_t size) override;
+  std::size_t rows_fetched() const override;
   std::string read_long_text(std::size_t column) override;
   std::vector<std::byte> read_long_bytes(std::size_t column) override;
   void reset() override;

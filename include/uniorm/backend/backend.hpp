@@ -110,6 +110,10 @@ struct statement_iface {
   virtual std::size_t affected_rows() const = 0;
   virtual std::vector<column_info> column_meta() const = 0;
 
+  // Block fetch support: set the number of rows to fetch per SQLFetch call.
+  virtual void set_row_array_size(std::size_t size) = 0;
+  virtual std::size_t rows_fetched() const = 0;
+
   // Continuation reads for values that did not fit the bound buffer
   // (indicator is no_total or exceeds capacity). column is 1-based.
   virtual std::string read_long_text(std::size_t column) = 0;

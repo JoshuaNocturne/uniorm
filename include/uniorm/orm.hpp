@@ -48,6 +48,10 @@ public:
   void connect(std::string_view connection_string);
   void disconnect();
 
+  // --- Block fetching configuration ---
+  std::size_t row_array_size() const noexcept { return row_array_size_; }
+  void row_array_size(std::size_t size) noexcept { row_array_size_ = size; }
+
   // --- Entity mapping ---
   template <class T>
   mapping_builder<T> map(std::string_view table) {
@@ -247,6 +251,7 @@ private:
 
   std::optional<pooled_connection> pooled_conn_;
   std::unordered_map<std::type_index, entity_meta> entities_;
+  std::size_t row_array_size_ = 100;  // Default block fetch size
 
   void ensure_connected() const;
 };

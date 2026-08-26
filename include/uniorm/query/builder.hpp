@@ -128,6 +128,9 @@ public:
   orm& get_orm() const {
     return *orm_;
   }
+  std::size_t row_array_size() const noexcept {
+    return orm_->row_array_size();
+  }
   dialect const& sql_dialect() const;
 
 private:
@@ -172,10 +175,10 @@ public:
     std::string sql = render_select(limit_, bound);
     return gw_->conn().execute_with(
       sql, params(std::move(bound)), [this](backend::statement_iface& stmt) {
-        constexpr std::size_t default_row_array_size = 100;
-        stmt.set_row_array_size(default_row_array_size);
+        std::size_t ras = gw_->row_array_size();
+        stmt.set_row_array_size(ras);
         detail::entity_binding<T> binding(*meta_);
-        binding.set_row_array_size(default_row_array_size);
+        binding.set_row_array_size(ras);
         binding.bind(stmt);
         std::vector<T> out;
         while (stmt.fetch()) {

@@ -50,6 +50,10 @@ public:
 
   bool is_open() const noexcept;
 
+  // --- Block fetching configuration ---
+  std::size_t row_array_size() const noexcept { return row_array_size_; }
+  void row_array_size(std::size_t size) noexcept { row_array_size_ = size; }
+
   result_set execute(std::string_view sql, params const& p = {});
 
   std::size_t execute_update(std::string_view sql, params const& p = {});
@@ -72,10 +76,9 @@ public:
     auto stmt = acquire_cached(key);
     bind_parameters(*stmt, p);
     stmt->execute();
-    constexpr std::size_t default_row_array_size = 100;
-    stmt->set_row_array_size(default_row_array_size);
+    stmt->set_row_array_size(row_array_size_);
     detail::projection<T> proj;
-    proj.set_row_array_size(default_row_array_size);
+    proj.set_row_array_size(row_array_size_);
     proj.bind(*stmt);
     std::vector<T> out;
     while (stmt->fetch()) {
@@ -163,6 +166,7 @@ private:
   // Shared so result_set check-in closures can hold weak references that
   // survive even if the connection is moved.
   std::shared_ptr<detail::statement_cache> stmt_cache_;
+  std::size_t row_array_size_ = 100;  // Default block fetch size
 };
 
 }  // namespace uniorm

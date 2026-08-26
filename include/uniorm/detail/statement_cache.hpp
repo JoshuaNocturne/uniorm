@@ -46,12 +46,13 @@ struct statement_cache {
   // Returns a used statement to the cache. Dropped when sql already has
   // a cached entry (a concurrent checkout produced this one) or the
   // cache is full; the least recently used entry is evicted to make room.
+  // Note: we don't reset() here because the statement will be reset() on
+  // the next acquire(), so resetting on release would be redundant.
   void release(std::string const& sql,
     std::unique_ptr<backend::statement_iface> stmt) {
     if (entries.count(sql) != 0) {
       return;
     }
-    stmt->reset();
     if (entries.size() >= capacity) {
       entries.erase(lru.back());
       lru.pop_back();

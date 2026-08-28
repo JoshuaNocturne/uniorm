@@ -21,7 +21,7 @@
 
 #include <uniorm/detail/connection.hpp>
 #include <uniorm/mapping/registry.hpp>
-#include <uniorm/query/builder.hpp>
+#include <uniorm/builder/builder.hpp>
 
 using namespace uniorm;
 using perf_clock = std::chrono::steady_clock;
@@ -105,6 +105,25 @@ void run_benchmarks(connection& conn, orm& registry, std::size_t n) {
   std::printf("%-34s %12s %14s\n", "benchmark", "time", "throughput");
 
   std::vector<Bench> rows = make_rows(n);
+
+  // Standalone update test: fresh ORM, insert rows, then update only
+  {
+    std::string conn_string = "DSN=docker_maria;UID=Joshua;PWD=joshua";
+    orm fresh_registry = build_registry(conn_string);
+    conn.execute_update(std::string("DELETE FROM ") + k_table);
+    fresh_registry.insert(rows);
+    fresh_registry.clear_statement_cache();
+
+    std::vector<Bench> update_rows = rows;
+    for (auto& b : update_rows) { b.score += 1; }
+
+    auto start = perf_clock::now();
+    auto updated = fresh_registry.update(update_rows);
+    auto elapsed = perf_clock::now() - start;
+    double ms = std::chrono::duration<double, std::milli>(elapsed).count();
+    std::printf("update (fresh orm, no prior cache)  %8.2f ms %12.1f krows/s\n",
+      ms, static_cast<double>(n) / ms);
+  }
   std::size_t inserted = 0;
   {
     perf_clock::duration best = perf_clock::duration::max();
@@ -127,6 +146,7 @@ void run_benchmarks(connection& conn, orm& registry, std::size_t n) {
   // Batch update benchmark: update score column for all rows
   std::size_t updated = 0;
   {
+    registry.clear_statement_cache();
     perf_clock::duration best = perf_clock::duration::max();
     for (int i = 0; i < runs; ++i) {
       // Reset scores to original values before each run
@@ -157,9 +177,9 @@ void run_benchmarks(connection& conn, orm& registry, std::size_t n) {
   std::size_t deleted = 0;
   {
     // Prepare keys for deletion: delete rows with even IDs
-    std::vector<params> delete_keys;
+    std::vector<std::int64_t> delete_ids;
     for (std::size_t i = 0; i < n; i += 2) {
-      delete_keys.emplace_back(std::vector<sql_value>{static_cast<std::int64_t>(i)});
+      delete_ids.push_back(static_cast<std::int64_t>(i));
     }
     perf_clock::duration best = perf_clock::duration::max();
     for (int i = 0; i < runs; ++i) {
@@ -179,13 +199,18 @@ void run_benchmarks(connection& conn, orm& registry, std::size_t n) {
         registry.insert(reinsert_rows);
       }
       auto start = perf_clock::now();
-      deleted = conn.remove_batch(k_table, {"id"}, delete_keys);
+      deleted = 0;
+      for (auto id : delete_ids) {
+        deleted += conn.execute_update(
+          "DELETE FROM " + std::string(k_table) + " WHERE id = ?",
+          params{ id });
+      }
       auto elapsed = perf_clock::now() - start;
       if (elapsed < best) {
         best = elapsed;
       }
     }
-    report("delete (batch)", delete_keys.size(), best, 1);
+    report("delete (batch)", delete_ids.size(), best, 1);
   }
   std::size_t expected_deleted = (n + 1) / 2;  // ceiling division
   if (deleted != expected_deleted) {
@@ -493,6 +518,151 @@ void run_raw_benchmarks(std::string const& conn_string, std::size_t n) {
     runs);
   if (batch_updated != n) {
     std::printf("FATAL: raw batch updated %zu of %zu rows\n", batch_updated, n);
+    std::exit(1);
+  }
+
+  // --- Batch update with VARCHAR params (to test driver behavior) ---
+  std::size_t batch_updated_varchar = 0;
+  report("update (paramset+varchar)", n,
+    best_of(
+      [&] {
+        std::vector<SQLINTEGER> scores(batch_size);
+        std::vector<char> names(batch_size * 65);
+        std::vector<char> notes(batch_size * 65);
+        std::vector<SQLBIGINT> ids(batch_size);
+        std::vector<SQLLEN> name_inds(batch_size);
+        std::vector<SQLLEN> note_inds(batch_size);
+
+        raw_statement upd(rc.dbc,
+          std::string("UPDATE ") + k_table + " SET name = ?, score = ?, note = ? WHERE id = ?");
+
+        SQLULEN paramset = batch_size;
+        odbc_check(SQLSetStmtAttr(upd.stmt, SQL_ATTR_PARAMSET_SIZE,
+                       reinterpret_cast<SQLPOINTER>(paramset), 0),
+          SQL_HANDLE_STMT, upd.stmt, "set paramset size");
+
+        odbc_check(SQLBindParameter(upd.stmt, 1, SQL_PARAM_INPUT,
+                         SQL_C_CHAR, SQL_VARCHAR, 64, 0, names.data(),
+                         65, name_inds.data()),
+          SQL_HANDLE_STMT, upd.stmt, "bind paramset name");
+        odbc_check(SQLBindParameter(upd.stmt, 2, SQL_PARAM_INPUT,
+                         SQL_C_SLONG, SQL_INTEGER, 0, 0, scores.data(),
+                         sizeof(SQLINTEGER), nullptr),
+          SQL_HANDLE_STMT, upd.stmt, "bind paramset score");
+        odbc_check(SQLBindParameter(upd.stmt, 3, SQL_PARAM_INPUT,
+                         SQL_C_CHAR, SQL_VARCHAR, 64, 0, notes.data(),
+                         65, note_inds.data()),
+          SQL_HANDLE_STMT, upd.stmt, "bind paramset note");
+        odbc_check(SQLBindParameter(upd.stmt, 4, SQL_PARAM_INPUT,
+                         SQL_C_SBIGINT, SQL_BIGINT, 0, 0, ids.data(),
+                         sizeof(SQLBIGINT), nullptr),
+          SQL_HANDLE_STMT, upd.stmt, "bind paramset id");
+
+        batch_updated_varchar = 0;
+        for (std::size_t start = 0; start < n; start += batch_size) {
+          std::size_t count = std::min(batch_size, n - start);
+          if (count != batch_size) {
+            paramset = count;
+            odbc_check(SQLSetStmtAttr(upd.stmt, SQL_ATTR_PARAMSET_SIZE,
+                           reinterpret_cast<SQLPOINTER>(paramset), 0),
+              SQL_HANDLE_STMT, upd.stmt, "set paramset size (tail)");
+          }
+          for (std::size_t i = 0; i < count; ++i) {
+            std::size_t row = start + i;
+            ids[i] = static_cast<SQLBIGINT>(row);
+            scores[i] = static_cast<SQLINTEGER>(row % 1000 + 1);
+            std::snprintf(&names[i * 65], 65, "row-%zu", row);
+            name_inds[i] = static_cast<SQLLEN>(std::strlen(&names[i * 65]));
+            if (row % 4 == 0) {
+              note_inds[i] = SQL_NULL_DATA;
+            } else {
+              std::snprintf(&notes[i * 65], 65, "note-%zu", row);
+              note_inds[i] = static_cast<SQLLEN>(std::strlen(&notes[i * 65]));
+            }
+          }
+          odbc_check(SQLExecute(upd.stmt), SQL_HANDLE_STMT, upd.stmt,
+            "execute paramset update varchar");
+          batch_updated_varchar += count;
+        }
+      },
+      runs),
+    runs);
+  if (batch_updated_varchar != n) {
+    std::printf("FATAL: raw batch updated (varchar) %zu of %zu rows\n", batch_updated_varchar, n);
+    std::exit(1);
+  }
+
+  // --- Batch update with VARCHAR, REUSING + REBINDING (like ORM) ---
+  std::size_t batch_updated_reuse = 0;
+  report("update (paramset+varchar+rebind)", n,
+    best_of(
+      [&] {
+        std::vector<SQLINTEGER> scores(batch_size);
+        std::vector<char> names(batch_size * 65);
+        std::vector<char> notes(batch_size * 65);
+        std::vector<SQLBIGINT> ids(batch_size);
+        std::vector<SQLLEN> name_inds(batch_size);
+        std::vector<SQLLEN> note_inds(batch_size);
+
+        SQLHSTMT reuse_stmt = SQL_NULL_HANDLE;
+        SQLAllocHandle(SQL_HANDLE_STMT, rc.dbc, &reuse_stmt);
+        std::string upd_sql = std::string("UPDATE ") + k_table + " SET name = ?, score = ?, note = ? WHERE id = ?";
+        odbc_check(SQLPrepare(reuse_stmt,
+          reinterpret_cast<SQLCHAR*>(const_cast<char*>(upd_sql.c_str())), SQL_NTS),
+          SQL_HANDLE_STMT, reuse_stmt, "prepare reuse update");
+
+        batch_updated_reuse = 0;
+        for (std::size_t start = 0; start < n; start += batch_size) {
+          std::size_t count = std::min(batch_size, n - start);
+
+          // Reset and rebind (like ORM's finish())
+          SQLFreeStmt(reuse_stmt, SQL_RESET_PARAMS);
+
+          SQLULEN paramset = count;
+          odbc_check(SQLSetStmtAttr(reuse_stmt, SQL_ATTR_PARAMSET_SIZE,
+                         reinterpret_cast<SQLPOINTER>(paramset), 0),
+            SQL_HANDLE_STMT, reuse_stmt, "set paramset size");
+
+          odbc_check(SQLBindParameter(reuse_stmt, 1, SQL_PARAM_INPUT,
+                           SQL_C_CHAR, SQL_VARCHAR, 64, 0, names.data(),
+                           65, name_inds.data()),
+            SQL_HANDLE_STMT, reuse_stmt, "bind name");
+          odbc_check(SQLBindParameter(reuse_stmt, 2, SQL_PARAM_INPUT,
+                           SQL_C_SLONG, SQL_INTEGER, 0, 0, scores.data(),
+                           sizeof(SQLINTEGER), nullptr),
+            SQL_HANDLE_STMT, reuse_stmt, "bind score");
+          odbc_check(SQLBindParameter(reuse_stmt, 3, SQL_PARAM_INPUT,
+                           SQL_C_CHAR, SQL_VARCHAR, 64, 0, notes.data(),
+                           65, note_inds.data()),
+            SQL_HANDLE_STMT, reuse_stmt, "bind note");
+          odbc_check(SQLBindParameter(reuse_stmt, 4, SQL_PARAM_INPUT,
+                           SQL_C_SBIGINT, SQL_BIGINT, 0, 0, ids.data(),
+                           sizeof(SQLBIGINT), nullptr),
+            SQL_HANDLE_STMT, reuse_stmt, "bind id");
+
+          for (std::size_t i = 0; i < count; ++i) {
+            std::size_t row = start + i;
+            ids[i] = static_cast<SQLBIGINT>(row);
+            scores[i] = static_cast<SQLINTEGER>(row % 1000 + 1);
+            std::snprintf(&names[i * 65], 65, "row-%zu", row);
+            name_inds[i] = static_cast<SQLLEN>(std::strlen(&names[i * 65]));
+            if (row % 4 == 0) {
+              note_inds[i] = SQL_NULL_DATA;
+            } else {
+              std::snprintf(&notes[i * 65], 65, "note-%zu", row);
+              note_inds[i] = static_cast<SQLLEN>(std::strlen(&notes[i * 65]));
+            }
+          }
+          odbc_check(SQLExecute(reuse_stmt), SQL_HANDLE_STMT, reuse_stmt,
+            "execute rebind update");
+          batch_updated_reuse += count;
+        }
+        SQLFreeHandle(SQL_HANDLE_STMT, reuse_stmt);
+      },
+      runs),
+    runs);
+  if (batch_updated_reuse != n) {
+    std::printf("FATAL: raw batch updated (reuse) %zu of %zu rows\n", batch_updated_reuse, n);
     std::exit(1);
   }
 

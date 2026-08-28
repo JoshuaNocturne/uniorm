@@ -17,7 +17,7 @@
 #include <uniorm/mapping/registry.hpp>
 #include <uniorm/orm.hpp>
 #include <uniorm/pool.hpp>
-#include <uniorm/query/builder.hpp>
+#include <uniorm/builder/builder.hpp>
 #include <uniorm/transaction.hpp>
 #include <uniorm/value.hpp>
 
@@ -283,28 +283,6 @@ void test_insert(orm& db) {
   CHECK(!erin->note.has_value());
   CHECK(erin->created.has_value());
 
-  // Dynamic version without an entity mapping.
-  std::size_t n = db.insert_batch(k_table,
-    { "id", "name", "age", "balance", "note", "created" },
-    { params{ std::int64_t{ 300 }, std::string("gina"), nullptr, 9.0, nullptr,
-        nullptr },
-      params{ std::int64_t{ 301 }, std::string("hank"), std::int32_t{ 22 }, 0.5,
-        nullptr, nullptr } });
-  CHECK(n == 2);
-  CHECK(db.query().of<User>().count() == 8);
-
-  CHECK(db.insert_batch(k_table, { "id", "name" }, {}) == 0);  // no rows
-
-  // Every row must carry exactly one value per column.
-  CHECK_THROWS(
-    db.insert_batch(k_table, { "id", "name" },
-      { params{ std::int64_t{ 302 }, std::string("x"), std::int32_t{ 1 } } }),
-    uniorm_error);
-  CHECK_THROWS(
-    db.insert_batch(k_table, {}, { params{ std::int64_t{ 303 } } }),
-    uniorm_error);
-  CHECK(db.query().of<User>().count() == 8);  // nothing leaked
-
   // 1500 rows x 6 columns exceeds the per-statement placeholder cap,
   // forcing multiple multi-row VALUES statements in one transaction.
   std::vector<User> many;
@@ -314,7 +292,7 @@ void test_insert(orm& db) {
       User{ id, "bulk", std::nullopt, 0.0, std::nullopt, std::nullopt });
   }
   CHECK(db.insert(many) == 1500);
-  CHECK(db.query().of<User>().count() == 8 + 1500);
+  CHECK(db.query().of<User>().count() == 6 + 1500);
 
   db.execute_update(
     "DELETE FROM uniorm_it_user WHERE id >= ?", params{ std::int64_t{ 200 } });
@@ -322,11 +300,11 @@ void test_insert(orm& db) {
 }
 
 void test_update(orm& db) {
-  db.insert_batch(k_table, { "id", "name", "age", "balance", "note" },
-    { params{ std::int64_t{ 400 }, std::string("ivy"), std::int32_t{ 33 }, 1.0,
-        nullptr },
-      params{ std::int64_t{ 401 }, std::string("jack"), nullptr, 2.0,
-        std::string("orig") } });
+  std::vector<User> users{
+    User{ 400, "ivy", std::int32_t{ 33 }, 1.0, std::nullopt, std::nullopt },
+    User{ 401, "jack", std::nullopt, 2.0, std::string("orig"), std::nullopt }
+  };
+  db.insert(users);
   CHECK(db.query().of<User>().count() == 5);
 
   // Dynamic update: bound values, including a NULL write.
@@ -378,10 +356,11 @@ void test_update(orm& db) {
 }
 
 void test_remove(orm& db) {
-  db.insert_batch(k_table, { "id", "name", "age", "balance" },
-    { params{
-        std::int64_t{ 400 }, std::string("ivy"), std::int32_t{ 33 }, 1.0 },
-      params{ std::int64_t{ 401 }, std::string("jack"), nullptr, 2.0 } });
+  std::vector<User> users{
+    User{ 400, "ivy", std::int32_t{ 33 }, 1.0, std::nullopt, std::nullopt },
+    User{ 401, "jack", std::nullopt, 2.0, std::nullopt, std::nullopt }
+  };
+  db.insert(users);
   CHECK(db.query().of<User>().count() == 5);
 
   // Entity delete through the builder.
@@ -404,15 +383,15 @@ void test_remove(orm& db) {
 
 void test_entity_update(orm& db) {
   // Insert a test row.
-  db.insert_batch(k_table, { "id", "name", "age", "balance", "note" },
-    { params{ std::int64_t{ 500 }, std::string("eve"), std::int32_t{ 28 }, 10.0,
-      std::string("original") } });
+  User u{ 500, "eve", std::int32_t{ 28 }, 10.0, std::string("original"),
+    std::nullopt };
+  db.insert(std::vector<User>{ u });
   CHECK(db.query().of<User>().count() == 4);
 
   // Update using primary key as WHERE.
-  User u{ 500, "eve_updated", std::int32_t{ 29 }, 11.5, std::string("modified"),
+  User u2{ 500, "eve_updated", std::int32_t{ 29 }, 11.5, std::string("modified"),
     std::nullopt };
-  CHECK(db.update(u) == 1);
+  CHECK(db.update(u2) == 1);
   auto row = db.query()
                .of<User>()
                .where(eq(&User::id, std::int64_t{ 500 }))
@@ -424,9 +403,9 @@ void test_entity_update(orm& db) {
   CHECK(row->note.value_or("") == "modified");
 
   // Update using specified field as WHERE.
-  User u2{ 501, "eve_updated", std::int32_t{ 30 }, 12.0, std::string("again"),
+  User u3{ 501, "eve_updated", std::int32_t{ 30 }, 12.0, std::string("again"),
     std::nullopt };
-  CHECK(db.update(u2, { "name" }) == 1);
+  CHECK(db.update(u3, { "name" }) == 1);
   auto row2 = db.query()
                 .of<User>()
                 .where(eq(&User::name, std::string("eve_updated")))

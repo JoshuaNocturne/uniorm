@@ -16,7 +16,6 @@
 
 #include <uniorm/backend/backend.hpp>
 #include <uniorm/detail/connection.hpp>
-#include <uniorm/dialect.hpp>
 #include <uniorm/mapping/registry.hpp>
 #include <uniorm/pool.hpp>
 #include <uniorm/transaction.hpp>
@@ -37,7 +36,8 @@ class UNIORM_API orm {
 public:
   orm() = default;
   explicit orm(std::string_view connection_string);
-  explicit orm(connection_pool& pool);  // Acquire connection from user-managed pool
+  // Acquire connection from user-managed pool
+  explicit orm(connection_pool& pool);
   ~orm();
 
   orm(orm&&) noexcept;
@@ -51,17 +51,18 @@ public:
   void disconnect();
 
   // --- Block fetching configuration ---
-  std::size_t row_array_size() const noexcept { return row_array_size_; }
-  void row_array_size(std::size_t size) noexcept { row_array_size_ = size; }
-
-  // --- Batch operation configuration (insert/update/delete) ---
-  std::size_t paramset_size() const noexcept { return paramset_size_; }
-  void paramset_size(std::size_t size) noexcept {
-    paramset_size_ = size;
-    if (pooled_conn_) {
-      pooled_conn_->get().paramset_size(size);
-    }
+  std::size_t row_array_size() const noexcept {
+    return row_array_size_;
   }
+  void row_array_size(std::size_t size) noexcept {
+    row_array_size_ = size;
+  }
+
+  // --- Batch operation configuration (insert/update) ---
+  std::size_t paramset_size() const noexcept {
+    return paramset_size_;
+  }
+  void paramset_size(std::size_t size) noexcept;
 
   // --- Entity mapping ---
   template <class T>
@@ -103,221 +104,48 @@ public:
   std::size_t insert(std::vector<Entity> const& rows) {
     ensure_connected();
     entity_meta const& m = meta<Entity>();
-
-    // Use direct buffer path to avoid sql_value overhead
-    return insert_entities_direct<Entity>(m, rows);
-  }
-
-private:
-  // Direct entity insert: writes entity fields directly to ODBC parameter
-  // buffers, bypassing the sql_value variant intermediate layer.
-  template <class Entity>
-  std::size_t insert_entities_direct(
-    entity_meta const& m, std::vector<Entity> const& rows) {
-    if (rows.empty()) {
-      return 0;
-    }
-
-    std::size_t const num_cols = m.columns.size();
-    std::size_t const batch_size = paramset_size_ > 0 ? paramset_size_ : 1000;
-
-    // Build SQL
-    dialect const d = dialect::detect(conn().dbms_name());
-    std::string sql = "INSERT INTO " + d.quote_identifier(m.table) + " (";
-    for (std::size_t i = 0; i < num_cols; ++i) {
-      if (i != 0) {
-        sql += ", ";
-      }
-      sql += d.quote_identifier(m.columns[i].column);
-    }
-    sql += ") VALUES (?";
-    for (std::size_t i = 1; i < num_cols; ++i) {
-      sql += ", ?";
-    }
-    sql += ")";
-
-    // Column buffer structure for direct binding
-    struct col_buffer {
-      backend::buffer_type type = backend::buffer_type::chars;
-      std::vector<unsigned char> bit_vals;
-      std::vector<std::int16_t> i16_vals;
-      std::vector<std::int32_t> i32_vals;
-      std::vector<std::int64_t> i64_vals;
-      std::vector<double> f64_vals;
-      std::vector<backend::timestamp_parts> ts_vals;
-      std::vector<char> var_buf;
-      std::size_t stride = 0;
-      std::vector<std::int64_t> indicators;
-    };
-
-    std::vector<col_buffer> cols(num_cols);
-    std::size_t inserted = 0;
-    transaction txn = conn().begin();
-
-    std::string key(sql);
-    auto stmt = conn().acquire_cached(key);
-
-    // Pre-scan ALL rows for max string/binary size once (not per batch)
-    std::vector<std::size_t> max_sizes(num_cols, 1);
-    for (std::size_t c = 0; c < num_cols; ++c) {
-      auto const& col = m.columns[c];
-      if (col.buffer_type == backend::buffer_type::chars ||
-          col.buffer_type == backend::buffer_type::bytes) {
-        for (std::size_t r = 0; r < rows.size(); ++r) {
-          max_sizes[c] = std::max(max_sizes[c], col.get_string_size(&rows[r]));
+    std::optional<transaction> txn;
+    if (auto_commit_) txn.emplace(conn().begin());
+    std::size_t result;
+    if (conn().caps().columnar_batch) {
+      auto string_size = +[](void const* meta, void const* entity,
+                          std::size_t col) -> std::size_t {
+        return static_cast<entity_meta const*>(meta)
+          ->columns[col]
+          .get_string_size(entity);
+      };
+      auto write_row = +[](void const* meta, void const* entity,
+                        std::size_t row, std::size_t col, void* buf,
+                        std::size_t stride, std::int64_t* inds) {
+        static_cast<entity_meta const*>(meta)
+          ->columns[col]
+          .write_to_param_buffer(entity, row, buf, stride, inds);
+      };
+      auto entity_at = +[](void const* data,
+                        std::size_t i) -> void const* {
+        return &(*static_cast<std::vector<Entity> const*>(data))[i];
+      };
+      result = insert_columnar_impl(conn(), m, rows.size(),
+        paramset_size_ > 0 ? paramset_size_ : 1000,
+        &rows, string_size, write_row, entity_at);
+    } else {
+      std::vector<std::vector<sql_value>> extracted;
+      extracted.reserve(rows.size());
+      for (auto const& row : rows) {
+        std::vector<sql_value> vals;
+        vals.reserve(m.columns.size());
+        for (auto const& col : m.columns) {
+          vals.push_back(col.read(&row));
         }
+        extracted.push_back(std::move(vals));
       }
+      result = insert_rowwise_impl(conn(), m, extracted, paramset_size_);
     }
-
-    // Pre-allocate buffers with max batch size — pointers stay stable
-    std::size_t const alloc_count = std::min(batch_size, rows.size());
-    for (std::size_t c = 0; c < num_cols; ++c) {
-      auto& col_buf = cols[c];
-      col_buf.type = m.columns[c].buffer_type;
-      col_buf.indicators.resize(alloc_count);
-
-      switch (col_buf.type) {
-      case backend::buffer_type::bit:
-        col_buf.bit_vals.resize(alloc_count, 0);
-        col_buf.stride = sizeof(unsigned char);
-        break;
-      case backend::buffer_type::int16:
-        col_buf.i16_vals.resize(alloc_count, 0);
-        col_buf.stride = sizeof(std::int16_t);
-        break;
-      case backend::buffer_type::int32:
-        col_buf.i32_vals.resize(alloc_count, 0);
-        col_buf.stride = sizeof(std::int32_t);
-        break;
-      case backend::buffer_type::int64:
-        col_buf.i64_vals.resize(alloc_count, 0);
-        col_buf.stride = sizeof(std::int64_t);
-        break;
-      case backend::buffer_type::float64:
-        col_buf.f64_vals.resize(alloc_count, 0.0);
-        col_buf.stride = sizeof(double);
-        break;
-      case backend::buffer_type::chars:
-      case backend::buffer_type::bytes:
-        col_buf.stride = std::max(max_sizes[c] + 1, std::size_t(65));
-        col_buf.var_buf.resize(alloc_count * col_buf.stride, '\0');
-        break;
-      case backend::buffer_type::timestamp_parts:
-        col_buf.ts_vals.resize(alloc_count, {});
-        col_buf.stride = sizeof(backend::timestamp_parts);
-        break;
-      default:
-        break;
-      }
-    }
-
-    // Bind ONCE before the loop — buffer pointers are stable
-    for (std::size_t c = 0; c < num_cols; ++c) {
-      auto& col_buf = cols[c];
-      backend::param_array_buffer pab{};
-      pab.type = col_buf.type;
-      pab.indicators = col_buf.indicators.data();
-      pab.count = alloc_count;
-
-      switch (col_buf.type) {
-      case backend::buffer_type::bit:
-        pab.data = col_buf.bit_vals.data();
-        pab.stride = sizeof(unsigned char);
-        break;
-      case backend::buffer_type::int16:
-        pab.data = col_buf.i16_vals.data();
-        pab.stride = sizeof(std::int16_t);
-        break;
-      case backend::buffer_type::int32:
-        pab.data = col_buf.i32_vals.data();
-        pab.stride = sizeof(std::int32_t);
-        break;
-      case backend::buffer_type::int64:
-        pab.data = col_buf.i64_vals.data();
-        pab.stride = sizeof(std::int64_t);
-        break;
-      case backend::buffer_type::float64:
-        pab.data = col_buf.f64_vals.data();
-        pab.stride = sizeof(double);
-        break;
-      case backend::buffer_type::chars:
-      case backend::buffer_type::bytes:
-        pab.data = col_buf.var_buf.data();
-        pab.stride = col_buf.stride;
-        break;
-      case backend::buffer_type::timestamp_parts:
-        pab.data = col_buf.ts_vals.data();
-        pab.stride = sizeof(backend::timestamp_parts);
-        break;
-      default:
-        break;
-      }
-
-      stmt->bind_param_array(c + 1, pab);
-    }
-
-    // Set paramset size once before the loop
-    stmt->set_paramset_size(alloc_count);
-
-    for (std::size_t start = 0; start < rows.size(); start += batch_size) {
-      std::size_t end = std::min(start + batch_size, rows.size());
-      std::size_t count = end - start;
-
-      // Update paramset size only for last batch if different
-      if (count != alloc_count) {
-        stmt->set_paramset_size(count);
-      }
-
-      // Write entity fields directly to pre-allocated buffers
-      for (std::size_t c = 0; c < num_cols; ++c) {
-        auto& col_buf = cols[c];
-        auto const& col_meta = m.columns[c];
-
-        void* buffer = nullptr;
-        switch (col_buf.type) {
-        case backend::buffer_type::bit:
-          buffer = col_buf.bit_vals.data();
-          break;
-        case backend::buffer_type::int16:
-          buffer = col_buf.i16_vals.data();
-          break;
-        case backend::buffer_type::int32:
-          buffer = col_buf.i32_vals.data();
-          break;
-        case backend::buffer_type::int64:
-          buffer = col_buf.i64_vals.data();
-          break;
-        case backend::buffer_type::float64:
-          buffer = col_buf.f64_vals.data();
-          break;
-        case backend::buffer_type::chars:
-        case backend::buffer_type::bytes:
-          buffer = col_buf.var_buf.data();
-          break;
-        case backend::buffer_type::timestamp_parts:
-          buffer = col_buf.ts_vals.data();
-          break;
-        default:
-          break;
-        }
-
-        for (std::size_t r = 0; r < count; ++r) {
-          col_meta.write_to_param_buffer(
-            &rows[start + r], r, buffer, col_buf.stride, col_buf.indicators.data());
-        }
-      }
-
-      stmt->execute();
-      inserted += count;
-    }
-
-    conn().stmt_cache_->release(key, std::move(stmt));
-    txn.commit();
-    return inserted;
+    if (txn) txn->commit();
+    return result;
   }
 
 public:
-
   template <class Entity>
     requires(!std::is_convertible_v<Entity const&, std::string_view>)
   std::size_t update(Entity const& entity) {
@@ -339,67 +167,25 @@ public:
 
   template <class Entity>
     requires(!std::is_convertible_v<Entity const&, std::string_view>)
-  std::size_t update(Entity const& entity,
-    std::vector<std::string> const& where_fields) {
+  std::size_t update(
+    Entity const& entity, std::vector<std::string> const& where_fields) {
     ensure_connected();
-    if (where_fields.empty()) {
-      throw uniorm_error("update: no WHERE fields specified");
-    }
     entity_meta const& m = meta<Entity>();
-
     std::set<std::string> where_set(where_fields.begin(), where_fields.end());
     std::vector<std::string> set_columns;
     std::vector<sql_value> set_values;
+    std::vector<sql_value> where_values;
     for (auto const& c : m.columns) {
-      if (where_set.find(c.column) == where_set.end()) {
+      if (where_set.count(c.column)) {
+        where_values.push_back(c.read(&entity));
+      } else {
         set_columns.push_back(c.column);
         set_values.push_back(c.read(&entity));
       }
     }
-
-    if (set_columns.empty()) {
-      throw uniorm_error(
-        "update: no columns to set (all mapped columns are in WHERE)");
-    }
-
-    dialect const d = dialect::detect(dbms_name());
-
-    std::vector<sql_value> where_values;
-    std::string where_sql;
-    for (std::size_t i = 0; i < where_fields.size(); ++i) {
-      auto const& field = where_fields[i];
-      column_meta const* col = nullptr;
-      for (auto const& c : m.columns) {
-        if (c.column == field) {
-          col = &c;
-          break;
-        }
-      }
-      if (!col) {
-        throw uniorm_error("update: WHERE field '" + field + "' is not mapped");
-      }
-      if (i != 0) {
-        where_sql += " AND ";
-      }
-      where_sql += d.quote_identifier(col->column) + " = ?";
-      where_values.push_back(col->read(&entity));
-    }
-
-    std::string sql = "UPDATE " + d.quote_identifier(m.table) + " SET ";
-    for (std::size_t i = 0; i < set_columns.size(); ++i) {
-      if (i != 0) {
-        sql += ", ";
-      }
-      sql += d.quote_identifier(set_columns[i]) + " = ?";
-    }
-    sql += " WHERE " + where_sql;
-
-    std::vector<sql_value> all_values;
-    all_values.reserve(set_values.size() + where_values.size());
-    all_values.insert(all_values.end(), set_values.begin(), set_values.end());
-    all_values.insert(all_values.end(), where_values.begin(), where_values.end());
-
-    return pooled_conn_->get().execute_update(sql, params(std::move(all_values)));
+    return update_single_impl(
+      conn(), m, dbms_name(), set_columns, set_values,
+      where_fields, where_values);
   }
 
   template <class Entity>
@@ -427,55 +213,74 @@ public:
     if (entities.empty()) {
       return 0;
     }
-    if (where_fields.empty()) {
-      throw uniorm_error("update: no WHERE fields specified");
-    }
     entity_meta const& m = meta<Entity>();
-
     std::set<std::string> where_set(where_fields.begin(), where_fields.end());
     std::vector<std::string> set_columns;
-    for (auto const& c : m.columns) {
-      if (where_set.find(c.column) == where_set.end()) {
-        set_columns.push_back(c.column);
+    std::vector<std::size_t> set_col_indices;
+    for (std::size_t ci = 0; ci < m.columns.size(); ++ci) {
+      if (!where_set.count(m.columns[ci].column)) {
+        set_columns.push_back(m.columns[ci].column);
+        set_col_indices.push_back(ci);
+      }
+    }
+    std::vector<std::size_t> where_col_indices;
+    for (auto const& f : where_fields) {
+      for (std::size_t ci = 0; ci < m.columns.size(); ++ci) {
+        if (m.columns[ci].column == f) {
+          where_col_indices.push_back(ci);
+          break;
+        }
       }
     }
 
-    if (set_columns.empty()) {
-      throw uniorm_error(
-        "update: no columns to set (all mapped columns are in WHERE)");
+    if (conn().caps().columnar_batch) {
+      auto string_size = +[](void const* meta, void const* entity,
+                          std::size_t col) -> std::size_t {
+        return static_cast<entity_meta const*>(meta)
+          ->columns[col]
+          .get_string_size(entity);
+      };
+      auto write_row = +[](void const* meta, void const* entity,
+                        std::size_t row, std::size_t col, void* buf,
+                        std::size_t stride, std::int64_t* inds) {
+        static_cast<entity_meta const*>(meta)
+          ->columns[col]
+          .write_to_param_buffer(entity, row, buf, stride, inds);
+      };
+      auto entity_at = +[](void const* data,
+                        std::size_t i) -> void const* {
+        return &(*static_cast<std::vector<Entity> const*>(data))[i];
+      };
+      std::optional<transaction> txn;
+      if (auto_commit_) txn.emplace(conn().begin());
+      auto result = update_columnar_impl(conn(), m, dbms_name(),
+        set_columns, set_col_indices,
+        where_fields, where_col_indices,
+        entities.size(), paramset_size_ > 0 ? paramset_size_ : 1000,
+        &entities, string_size, write_row, entity_at);
+      if (txn) txn->commit();
+      return result;
     }
 
-    // Build parameter rows: [set_col1, set_col2, ..., where_col1, where_col2, ...]
-    std::vector<params> rows;
+    std::vector<std::vector<sql_value>> rows;
     rows.reserve(entities.size());
-    for (auto const& entity : entities) {
-      std::vector<sql_value> row_values;
-      row_values.reserve(set_columns.size() + where_fields.size());
-      
-      // SET columns
-      for (auto const& col_name : set_columns) {
-        for (auto const& c : m.columns) {
-          if (c.column == col_name) {
-            row_values.push_back(c.read(&entity));
-            break;
-          }
-        }
+    for (auto const& e : entities) {
+      std::vector<sql_value> rv;
+      rv.reserve(set_columns.size() + where_fields.size());
+      for (auto ci : set_col_indices) {
+        rv.push_back(m.columns[ci].read(&e));
       }
-      
-      // WHERE columns
-      for (auto const& field : where_fields) {
-        for (auto const& c : m.columns) {
-          if (c.column == field) {
-            row_values.push_back(c.read(&entity));
-            break;
-          }
-        }
+      for (auto ci : where_col_indices) {
+        rv.push_back(m.columns[ci].read(&e));
       }
-      
-      rows.emplace_back(std::move(row_values));
+      rows.push_back(std::move(rv));
     }
-
-    return pooled_conn_->get().update_batch(m.table, set_columns, where_fields, rows);
+    std::optional<transaction> txn;
+    if (auto_commit_) txn.emplace(conn().begin());
+    auto result = update_batch_impl(
+      conn(), m, dbms_name(), set_columns, where_fields, rows, paramset_size_);
+    if (txn) txn->commit();
+    return result;
   }
 
   // --- Entity query entry point ---
@@ -491,10 +296,6 @@ public:
     return pooled_conn_->get().query<T>(sql, p);
   }
 
-  // --- Dynamic (non-entity) operations ---
-  std::size_t insert_batch(std::string_view table,
-    std::vector<std::string> const& columns, std::vector<params> const& rows);
-
   update_builder update(std::string_view table);
   remove_builder remove(std::string_view table);
 
@@ -502,6 +303,13 @@ public:
   transaction begin();
   void commit();
   void rollback();
+
+  // --- Auto-commit control ---
+  // When enabled (default), batch CRUD operations (insert/update of
+  // entity collections) are automatically wrapped in a transaction.
+  // Disable for manual transaction control via begin()/commit()/rollback().
+  bool auto_commit() const noexcept { return auto_commit_; }
+  void auto_commit(bool enabled) noexcept { auto_commit_ = enabled; }
 
   // --- Cache observability ---
   unsigned long long statement_cache_hits() const;
@@ -522,6 +330,8 @@ public:
 
 private:
   friend class query_gateway;
+  friend class update_builder;
+  friend class remove_builder;
 
   connection& conn() {
     ensure_connected();
@@ -537,8 +347,51 @@ private:
   std::unordered_map<std::type_index, entity_meta> entities_;
   std::size_t row_array_size_ = 100;  // Default block fetch size
   std::size_t paramset_size_ = 1000;  // Default batch insert size
+  bool auto_commit_ = true;           // Auto-wrap batch ops in transaction
 
   void ensure_connected() const;
+
+  static std::size_t update_single_impl(connection& conn,
+    entity_meta const& m, std::string const& dbms,
+    std::vector<std::string> const& set_columns,
+    std::vector<sql_value> const& set_values,
+    std::vector<std::string> const& where_fields,
+    std::vector<sql_value> const& where_values);
+
+  static std::size_t update_batch_impl(connection& conn,
+    entity_meta const& m, std::string const& dbms,
+    std::vector<std::string> const& set_columns,
+    std::vector<std::string> const& where_fields,
+    std::vector<std::vector<sql_value>> const& rows,
+    std::size_t default_batch_size);
+
+  static std::size_t insert_rowwise_impl(connection& conn,
+    entity_meta const& m,
+    std::vector<std::vector<sql_value>> const& rows,
+    std::size_t default_batch_size);
+
+  using string_size_fn = std::size_t (*)(void const* meta,
+    void const* entity, std::size_t col);
+  using write_row_fn = void (*)(void const* meta, void const* entity,
+    std::size_t row, std::size_t col,
+    void* buf, std::size_t stride, std::int64_t* inds);
+
+  static std::size_t insert_columnar_impl(connection& conn,
+    entity_meta const& m, std::size_t row_count,
+    std::size_t batch_size, void const* rows_data,
+    string_size_fn string_size, write_row_fn write_row,
+    void const* (*entity_at)(void const* data, std::size_t i));
+
+  static std::size_t update_columnar_impl(connection& conn,
+    entity_meta const& m, std::string const& dbms,
+    std::vector<std::string> const& set_columns,
+    std::vector<std::size_t> const& set_col_indices,
+    std::vector<std::string> const& where_fields,
+    std::vector<std::size_t> const& where_col_indices,
+    std::size_t row_count, std::size_t batch_size,
+    void const* rows_data,
+    string_size_fn string_size, write_row_fn write_row,
+    void const* (*entity_at)(void const* data, std::size_t i));
 };
 
 }  // namespace uniorm

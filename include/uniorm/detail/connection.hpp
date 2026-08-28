@@ -23,8 +23,6 @@
 namespace uniorm {
 
 class orm;
-class update_builder;
-class remove_builder;
 class query_gateway;
 class transaction;
 template <class T>
@@ -62,33 +60,6 @@ public:
 
   std::size_t execute_update(std::string_view sql, params const& p = {});
 
-  // Dynamic batch insert: one multi-row VALUES statement per chunk, all
-  // wrapped in a single transaction. Every row must carry exactly
-  // columns.size() parameter values. Returns the number of rows inserted.
-  std::size_t insert_batch(std::string_view table,
-    std::vector<std::string> const& columns, std::vector<params> const& rows);
-
-  // Dynamic batch update: UPDATE table SET set_cols... WHERE where_cols...
-  // Each row in `rows` must contain [set_values..., where_values...].
-  // Returns the number of rows affected.
-  std::size_t update_batch(std::string_view table,
-    std::vector<std::string> const& set_columns,
-    std::vector<std::string> const& where_columns,
-    std::vector<params> const& rows);
-
-  // Dynamic batch delete: DELETE FROM table WHERE col1=? AND col2=? ...
-  // Each row in `keys` must contain values for the where_columns.
-  // Returns the number of rows affected.
-  std::size_t remove_batch(std::string_view table,
-    std::vector<std::string> const& where_columns,
-    std::vector<params> const& keys);
-
-  // Dynamic DELETE without an entity mapping. Column and table
-  remove_builder remove(std::string_view table);
-
-  // Dynamic UPDATE without an entity mapping.
-  update_builder update(std::string_view table);
-
   template <detail::aggregate_projection T>
   std::vector<T> query(std::string_view sql, params const& p = {}) {
     std::string key(sql);
@@ -114,6 +85,9 @@ public:
 
   // Database product name reported by the backend.
   std::string dbms_name() const;
+
+  // Backend capabilities (columnar_batch, streaming, etc.).
+  backend::capabilities caps() const noexcept { return backend_->caps(); }
 
   // Prepared-statement cache observability (keyed by SQL text, LRU).
   unsigned long long statement_cache_hits() const;

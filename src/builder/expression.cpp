@@ -1,4 +1,4 @@
-#include "uniorm/query/expression.hpp"
+#include "uniorm/builder/expression.hpp"
 
 #include <utility>
 

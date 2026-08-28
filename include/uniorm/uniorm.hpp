@@ -9,8 +9,8 @@
 #include <uniorm/orm.hpp>
 #include <uniorm/params.hpp>
 #include <uniorm/pool.hpp>
-#include <uniorm/query/builder.hpp>
-#include <uniorm/query/expression.hpp>
+#include <uniorm/builder/builder.hpp>
+#include <uniorm/builder/expression.hpp>
 #include <uniorm/result_set.hpp>
 #include <uniorm/row.hpp>
 #include <uniorm/transaction.hpp>

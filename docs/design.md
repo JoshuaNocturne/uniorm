@@ -39,7 +39,7 @@ uniorm 是一个基于 **ODBC**（而非各数据库专有 C 客户端）的现�
 | 平台 | Linux（unixODBC）、Windows（原生 ODBC） |
 | 错误处理 | 异常 |
 | Unicode | 内部一律 UTF-8，仅在 ODBC 边界转换 |
-| 库形态 | 动态库（`libuniorm.so` / `uniorm.dll`），经 `UNIORM_API` 导出宏控制符号可见性；模板密集代码（mapping/query/projection/pfr）保留在头文件 |
+| 库形态 | 动态库（`libuniorm.so` / `uniorm.dll`），经 `UNIORM_API` 导出宏控制符号可见性；模板密集代码（mapping/builder/projection/pfr）保留在头文件 |
 
 ## 2. 分层架构
 
@@ -98,9 +98,9 @@ uniorm/
 │   │   ├── traits.hpp           # is_optional_v 等共享 traits
 │   │   └── time.hpp             # chrono ↔ 日历拆分/组装
 │   ├── mapping/registry.hpp     # 实体映射注册表（含 mapping_builder）
-│   └── query/
-│       ├── builder.hpp          # query_gateway / query<T>
-│       └── expression.hpp       # member_key / predicate / 谓词构造器
+│   └── builder/
+│       ├── builder.hpp            # query_gateway / query<T> / update_builder / remove_builder
+│       └── expression.hpp         # member_key / predicate / 谓词构造器
 ├── src/                         # 对应实现（编译进 libuniorm）
 │   ├── backend/                 # scheme 解析与注册表实现
 │   └── odbc/                    # ODBC backend（backend.cpp 适配器，自注册 "odbc"）
@@ -727,7 +727,7 @@ struct column_buffer { buffer_type type; void* data; std::size_t capacity;
 
 ```cpp
 struct capabilities { bool streaming, async_io, copy_protocol,
-                             notifications, array_binding; };
+                             notifications, columnar_batch; };
 
 struct statement_iface { /* prepare(?占位符) / bind_parameter / bind_column /
                             execute / fetch / affected_rows / column_meta /

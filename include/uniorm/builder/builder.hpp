@@ -13,7 +13,7 @@
 #include <uniorm/dialect.hpp>
 #include <uniorm/orm.hpp>
 #include <uniorm/params.hpp>
-#include <uniorm/query/expression.hpp>
+#include <uniorm/builder/expression.hpp>
 #include <uniorm/result_set.hpp>
 #include <uniorm/row.hpp>
 
@@ -71,7 +71,7 @@ template <class T>
 class query;
 
 // Fluent dynamic UPDATE for tables without an entity mapping, obtained via
-// connection::update(table). Every set value is bound through a `?`
+// orm::update(table). Every set value is bound through a `?`
 // placeholder; execute() throws instead of firing a table-wide UPDATE.
 class UNIORM_API update_builder {
 public:
@@ -86,27 +86,27 @@ public:
   std::size_t execute();
 
 private:
-  friend class connection;
-  update_builder(connection& conn, std::string table);
+  friend class orm;
+  update_builder(orm& db, std::string table);
 
-  connection* conn_;
+  orm* orm_;
   std::string table_;
   std::vector<std::pair<std::string, sql_value>> set_;
   std::string where_;
   params where_params_;
 };
 
-// Fluent dynamic DELETE, obtained via connection::remove(table).
+// Fluent dynamic DELETE, obtained via orm::remove(table).
 class UNIORM_API remove_builder {
 public:
   remove_builder& where(std::string_view clause, params p = {});
   std::size_t execute();
 
 private:
-  friend class connection;
-  remove_builder(connection& conn, std::string table);
+  friend class orm;
+  remove_builder(orm& db, std::string table);
 
-  connection* conn_;
+  orm* orm_;
   std::string table_;
   std::string where_;
   params where_params_;

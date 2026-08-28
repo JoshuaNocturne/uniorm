@@ -9,7 +9,7 @@
 
 #include <uniorm/detail/connection.hpp>
 #include "uniorm/mapping/registry.hpp"
-#include "uniorm/query/builder.hpp"
+#include "uniorm/builder/builder.hpp"
 
 // The checked-in golden header was produced by uniorm-gen against the
 // fixture tables below; regenerate it with:

@@ -7,7 +7,7 @@
 
 #include <uniorm/dialect.hpp>
 #include <uniorm/error.hpp>
-#include <uniorm/query/expression.hpp>
+#include <uniorm/builder/expression.hpp>
 
 using namespace uniorm;
 

@@ -42,8 +42,8 @@ add_library(uniorm SHARED
     src/pool.cpp
     src/backend/error.cpp
     src/backend/registry.cpp
-    src/query/expression.cpp
-    src/query/builder.cpp
+    src/builder/expression.cpp
+    src/builder/builder.cpp
     src/mapping/registry.cpp
     src/orm.cpp
 )

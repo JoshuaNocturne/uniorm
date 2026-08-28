@@ -1,4 +1,4 @@
-#include "uniorm/query/builder.hpp"
+#include "uniorm/builder/builder.hpp"
 
 namespace uniorm {
 

@@ -14,10 +14,11 @@
 
 #include <uniorm/backend/backend.hpp>
 #include <uniorm/detail/projection.hpp>
+#include <uniorm/detail/time.hpp>
 #include <uniorm/detail/traits.hpp>
 #include <uniorm/error.hpp>
 #include <uniorm/export.hpp>
-#include <uniorm/query/expression.hpp>
+#include <uniorm/builder/expression.hpp>
 #include <uniorm/row.hpp>
 #include <uniorm/value.hpp>
 
@@ -143,7 +144,6 @@ column_meta make_column_meta(
       }
       auto const& value = *field;
       if constexpr (std::is_same_v<typename M::value_type, std::string>) {
-        // Copy string data to buffer at row * stride offset
         std::memcpy(static_cast<char*>(buffer) + row * stride, value.data(),
           value.size());
         indicators[row] = static_cast<std::int64_t>(value.size());
@@ -152,6 +152,11 @@ column_meta make_column_meta(
         std::memcpy(static_cast<char*>(buffer) + row * stride, value.data(),
           value.size());
         indicators[row] = static_cast<std::int64_t>(value.size());
+      } else if constexpr (std::is_same_v<typename M::value_type, timestamp>) {
+        auto parts = detail::break_timestamp(value);
+        std::memcpy(static_cast<char*>(buffer) + row * stride, &parts,
+          sizeof(parts));
+        indicators[row] = sizeof(parts);
       } else {
         indicators[row] = sizeof(value);
         using value_type = typename M::value_type;
@@ -159,7 +164,6 @@ column_meta make_column_meta(
       }
       return member_buffer_type<M>();
     } else {
-      // Non-optional type
       if constexpr (std::is_same_v<U, std::string>) {
         std::memcpy(static_cast<char*>(buffer) + row * stride, field.data(),
           field.size());
@@ -168,6 +172,11 @@ column_meta make_column_meta(
         std::memcpy(static_cast<char*>(buffer) + row * stride, field.data(),
           field.size());
         indicators[row] = static_cast<std::int64_t>(field.size());
+      } else if constexpr (std::is_same_v<U, timestamp>) {
+        auto parts = detail::break_timestamp(field);
+        std::memcpy(static_cast<char*>(buffer) + row * stride, &parts,
+          sizeof(parts));
+        indicators[row] = sizeof(parts);
       } else {
         indicators[row] = sizeof(field);
         static_cast<U*>(buffer)[row] = field;

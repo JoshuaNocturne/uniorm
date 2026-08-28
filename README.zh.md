@@ -213,7 +213,7 @@ include/uniorm/       公共头文件
   odbc/               ODBC 句柄 RAII 封装（environment/connection/statement）
   detail/             pfr-lite、投影绑定、语句缓存、chrono 工具
   mapping/            实体映射注册表
-  query/              谓词表达式与查询构建器
+  builder/            谓词表达式与流式查询/更新/删除构建器
 src/                  实现（构建为 libuniorm.so）
   backend/            scheme 解析与 backend 注册表
   odbc/               ODBC backend（适配器、句柄封装、错误）

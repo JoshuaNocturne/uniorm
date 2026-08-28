@@ -235,7 +235,7 @@ include/uniorm/       public headers
   odbc/               RAII wrappers for ODBC handles (environment/connection/statement)
   detail/             pfr-lite, projection bindings, statement cache, chrono helpers
   mapping/            entity mapping registry
-  query/              predicate expressions and the query builder
+  builder/            predicate expressions and the fluent query/update/delete builders
 src/                  implementation (built into libuniorm.so)
   backend/            scheme parsing and the backend registry
   odbc/               ODBC backend (adapter, handle wrappers, errors)

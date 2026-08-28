@@ -22,8 +22,8 @@ public:
   void bind_parameter(std::size_t index, sql_value const& value) override;
   void bind_column(
     std::size_t index, backend::column_buffer const& buffer) override;
-  void bind_param_array(
-    std::size_t index, backend::param_array_buffer const& buffer) override;
+  void bind_batch_params(std::vector<params> const& rows) override;
+  backend::batch_writer_iface& prepare_batch() override;
   void reset_parameters() override;
   void execute() override;
   bool fetch() override;
@@ -42,6 +42,27 @@ private:
   // deque, not vector: bind_parameter hands the driver pointers into
   // existing slots, and appending further slots must not relocate them.
   std::deque<param_slot> slots_;
+
+  // Column buffers for batch parameter binding. Owned by the backend so
+  // callers don't need to know the physical layout.
+  struct batch_col {
+    backend::buffer_type type = backend::buffer_type::chars;
+    std::vector<unsigned char> bit_vals;
+    std::vector<std::int16_t> i16_vals;
+    std::vector<std::int32_t> i32_vals;
+    std::vector<std::int64_t> i64_vals;
+    std::vector<double> f64_vals;
+    std::vector<backend::timestamp_parts> ts_vals;
+    std::vector<char> var_buf;
+    std::size_t stride = 0;
+    std::vector<std::int64_t> indicators;
+    std::size_t count = 0;
+  };
+  std::vector<batch_col> batch_cols_;
+
+  // Direct-write batch writer. Owns no data itself — references batch_cols_.
+  class odbc_batch_writer;
+  std::unique_ptr<odbc_batch_writer> batch_writer_;
 };
 
 class backend_connection : public backend::connection_iface {

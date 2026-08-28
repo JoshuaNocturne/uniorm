@@ -20,8 +20,6 @@ namespace uniorm::odbc {
 
 namespace {
 
-// The neutral indicator word is handed straight to the driver manager;
-// the date/time staging structs are bound zero-copy.
 static_assert(sizeof(std::int64_t) == sizeof(SQLLEN));
 static_assert(
   sizeof(backend::timestamp_parts) == sizeof(SQL_TIMESTAMP_STRUCT));
@@ -58,9 +56,6 @@ SQLSMALLINT c_type_for(backend::buffer_type t) {
   throw backend::backend_error("odbc", "unsupported buffer type", {});
 }
 
-// Some drivers (e.g. MariaDB Connector/ODBC) return the FULL value from
-// SQLGetData after a truncated bound-column fetch, not just the tail.
-// Callers replace the partial bound buffer with the returned value.
 std::string get_data_char(odbc::statement& stmt, SQLUSMALLINT column) {
   std::string out;
   for (;;) {
@@ -75,7 +70,6 @@ std::string get_data_char(odbc::statement& stmt, SQLUSMALLINT column) {
     odbc::throw_if_error(
       rc, SQL_HANDLE_STMT, stmt.native(), "read long character data");
     out.append(chunk, std::strlen(chunk));
-    // SQL_SUCCESS_WITH_INFO (01004) means the chunk was truncated; keep going.
     if (rc != SQL_SUCCESS_WITH_INFO) {
       return out;
     }
@@ -97,7 +91,7 @@ std::vector<std::byte> get_data_binary(
       rc, SQL_HANDLE_STMT, stmt.native(), "read long binary data");
     std::size_t take;
     if (rc == SQL_SUCCESS_WITH_INFO || chunk_ind == SQL_NO_TOTAL) {
-      take = sizeof(chunk);  // truncated: buffer is full
+      take = sizeof(chunk);
     } else {
       take = std::min<SQLLEN>(chunk_ind, static_cast<SQLLEN>(sizeof(chunk)));
     }
@@ -106,6 +100,58 @@ std::vector<std::byte> get_data_binary(
       return out;
     }
   }
+}
+
+SQLSMALLINT sql_type_for(backend::buffer_type t) {
+  switch (t) {
+  case backend::buffer_type::bit:
+    return SQL_BIT;
+  case backend::buffer_type::int8:
+    return SQL_TINYINT;
+  case backend::buffer_type::int16:
+    return SQL_SMALLINT;
+  case backend::buffer_type::int32:
+    return SQL_INTEGER;
+  case backend::buffer_type::int64:
+    return SQL_BIGINT;
+  case backend::buffer_type::float32:
+    return SQL_FLOAT;
+  case backend::buffer_type::float64:
+    return SQL_DOUBLE;
+  case backend::buffer_type::chars:
+    return SQL_VARCHAR;
+  case backend::buffer_type::bytes:
+    return SQL_VARBINARY;
+  case backend::buffer_type::timestamp_parts:
+    return SQL_TYPE_TIMESTAMP;
+  case backend::buffer_type::date_parts:
+    return SQL_TYPE_DATE;
+  case backend::buffer_type::time_parts:
+    return SQL_TYPE_TIME;
+  }
+  throw backend::backend_error("odbc", "unsupported buffer type", {});
+}
+
+backend::buffer_type buffer_type_for(sql_value const& v) {
+  if (std::holds_alternative<std::monostate>(v))
+    return backend::buffer_type::chars;
+  if (std::holds_alternative<bool>(v))
+    return backend::buffer_type::bit;
+  if (std::holds_alternative<std::int16_t>(v))
+    return backend::buffer_type::int16;
+  if (std::holds_alternative<std::int32_t>(v))
+    return backend::buffer_type::int32;
+  if (std::holds_alternative<std::int64_t>(v))
+    return backend::buffer_type::int64;
+  if (std::holds_alternative<double>(v))
+    return backend::buffer_type::float64;
+  if (std::holds_alternative<std::string>(v))
+    return backend::buffer_type::chars;
+  if (std::holds_alternative<std::vector<std::byte>>(v))
+    return backend::buffer_type::bytes;
+  if (std::holds_alternative<timestamp>(v))
+    return backend::buffer_type::timestamp_parts;
+  return backend::buffer_type::chars;
 }
 
 }  // namespace
@@ -187,67 +233,317 @@ void backend_statement::bind_column(
     reinterpret_cast<SQLLEN*>(buffer.indicator));
 }
 
-namespace {
-
-// Map buffer_type to the SQL type for parameter array binding.
-SQLSMALLINT sql_type_for(backend::buffer_type t) {
-  switch (t) {
-  case backend::buffer_type::bit:
-    return SQL_BIT;
-  case backend::buffer_type::int8:
-    return SQL_TINYINT;
-  case backend::buffer_type::int16:
-    return SQL_SMALLINT;
-  case backend::buffer_type::int32:
-    return SQL_INTEGER;
-  case backend::buffer_type::int64:
-    return SQL_BIGINT;
-  case backend::buffer_type::float32:
-    return SQL_FLOAT;
-  case backend::buffer_type::float64:
-    return SQL_DOUBLE;
-  case backend::buffer_type::chars:
-    return SQL_VARCHAR;
-  case backend::buffer_type::bytes:
-    return SQL_VARBINARY;
-  case backend::buffer_type::timestamp_parts:
-    return SQL_TYPE_TIMESTAMP;
-  case backend::buffer_type::date_parts:
-    return SQL_TYPE_DATE;
-  case backend::buffer_type::time_parts:
-    return SQL_TYPE_TIME;
+void backend_statement::bind_batch_params(std::vector<params> const& rows) {
+  if (rows.empty()) {
+    return;
   }
-  throw backend::backend_error("odbc", "unsupported buffer type", {});
-}
+  std::size_t const n = rows.size();
+  std::size_t const num_cols = rows[0].size();
 
-}  // namespace
+  batch_cols_.clear();
+  batch_cols_.resize(num_cols);
 
-void backend_statement::bind_param_array(
-  std::size_t index, backend::param_array_buffer const& buffer) {
-  auto odbc_index = static_cast<SQLUSMALLINT>(index);
-  SQLSMALLINT c_type = c_type_for(buffer.type);
-  SQLSMALLINT sql_type = sql_type_for(buffer.type);
-  SQLULEN column_size = static_cast<SQLULEN>(buffer.stride);
-  SQLSMALLINT decimal_digits = 0;
-  if (buffer.type == backend::buffer_type::timestamp_parts) {
-    column_size = 26;
-    decimal_digits = 6;
-  } else if (buffer.type == backend::buffer_type::chars ||
-             buffer.type == backend::buffer_type::bytes) {
-    column_size = std::max(column_size, SQLULEN(255));
+  for (std::size_t c = 0; c < num_cols; ++c) {
+    auto& col = batch_cols_[c];
+    col.count = n;
+
+    backend::buffer_type btype = backend::buffer_type::chars;
+    for (std::size_t r = 0; r < n; ++r) {
+      auto const& v = rows[r].at(c);
+      if (!std::holds_alternative<std::monostate>(v)) {
+        btype = buffer_type_for(v);
+        break;
+      }
+    }
+    col.type = btype;
+    col.indicators.resize(n, backend::null_indicator);
+
+    switch (btype) {
+    case backend::buffer_type::bit:
+      col.bit_vals.resize(n, 0);
+      col.stride = sizeof(unsigned char);
+      for (std::size_t r = 0; r < n; ++r) {
+        if (auto* p = std::get_if<bool>(&rows[r].at(c))) {
+          col.bit_vals[r] = *p ? 1 : 0;
+          col.indicators[r] = sizeof(unsigned char);
+        }
+      }
+      break;
+    case backend::buffer_type::int16:
+      col.i16_vals.resize(n, 0);
+      col.stride = sizeof(std::int16_t);
+      for (std::size_t r = 0; r < n; ++r) {
+        if (auto* p = std::get_if<std::int16_t>(&rows[r].at(c))) {
+          col.i16_vals[r] = *p;
+          col.indicators[r] = sizeof(std::int16_t);
+        }
+      }
+      break;
+    case backend::buffer_type::int32:
+      col.i32_vals.resize(n, 0);
+      col.stride = sizeof(std::int32_t);
+      for (std::size_t r = 0; r < n; ++r) {
+        if (auto* p = std::get_if<std::int32_t>(&rows[r].at(c))) {
+          col.i32_vals[r] = *p;
+          col.indicators[r] = sizeof(std::int32_t);
+        }
+      }
+      break;
+    case backend::buffer_type::int64:
+      col.i64_vals.resize(n, 0);
+      col.stride = sizeof(std::int64_t);
+      for (std::size_t r = 0; r < n; ++r) {
+        if (auto* p = std::get_if<std::int64_t>(&rows[r].at(c))) {
+          col.i64_vals[r] = *p;
+          col.indicators[r] = sizeof(std::int64_t);
+        }
+      }
+      break;
+    case backend::buffer_type::float64:
+      col.f64_vals.resize(n, 0);
+      col.stride = sizeof(double);
+      for (std::size_t r = 0; r < n; ++r) {
+        if (auto* p = std::get_if<double>(&rows[r].at(c))) {
+          col.f64_vals[r] = *p;
+          col.indicators[r] = sizeof(double);
+        }
+      }
+      break;
+    case backend::buffer_type::chars: {
+      std::size_t max_len = 1;
+      for (std::size_t r = 0; r < n; ++r) {
+        if (auto* p = std::get_if<std::string>(&rows[r].at(c))) {
+          max_len = std::max(max_len, p->size() + 1);
+        }
+      }
+      col.stride = max_len;
+      col.var_buf.resize(n * max_len, '\0');
+      for (std::size_t r = 0; r < n; ++r) {
+        if (auto* p = std::get_if<std::string>(&rows[r].at(c))) {
+          std::memcpy(&col.var_buf[r * max_len], p->data(), p->size());
+          col.indicators[r] = static_cast<SQLLEN>(p->size());
+        }
+      }
+      break;
+    }
+    case backend::buffer_type::bytes: {
+      std::size_t max_len = 1;
+      for (std::size_t r = 0; r < n; ++r) {
+        if (auto* p = std::get_if<std::vector<std::byte>>(&rows[r].at(c))) {
+          max_len = std::max(max_len, p->size());
+        }
+      }
+      col.stride = max_len;
+      col.var_buf.resize(n * max_len, '\0');
+      for (std::size_t r = 0; r < n; ++r) {
+        if (auto* p = std::get_if<std::vector<std::byte>>(&rows[r].at(c))) {
+          std::memcpy(&col.var_buf[r * max_len], p->data(), p->size());
+          col.indicators[r] = static_cast<SQLLEN>(p->size());
+        }
+      }
+      break;
+    }
+    case backend::buffer_type::timestamp_parts:
+      col.ts_vals.resize(n);
+      col.stride = sizeof(backend::timestamp_parts);
+      for (std::size_t r = 0; r < n; ++r) {
+        if (auto* p = std::get_if<timestamp>(&rows[r].at(c))) {
+          auto parts = uniorm::detail::break_timestamp(*p);
+          auto& ts = col.ts_vals[r];
+          ts.year = static_cast<std::int16_t>(parts.year);
+          ts.month = static_cast<std::uint16_t>(parts.month);
+          ts.day = static_cast<std::uint16_t>(parts.day);
+          ts.hour = static_cast<std::uint16_t>(parts.hour);
+          ts.minute = static_cast<std::uint16_t>(parts.minute);
+          ts.second = static_cast<std::uint16_t>(parts.second);
+          ts.fraction_ns = parts.fraction_ns;
+          col.indicators[r] = sizeof(backend::timestamp_parts);
+        }
+      }
+      break;
+    default:
+      col.stride = 1;
+      break;
+    }
   }
-  SQLRETURN rc = SQLBindParameter(stmt_.native(), odbc_index, SQL_PARAM_INPUT,
-    c_type, sql_type, column_size, decimal_digits, buffer.data,
-    static_cast<SQLLEN>(buffer.stride),
-    reinterpret_cast<SQLLEN*>(buffer.indicators));
-  odbc::throw_if_error(
-    rc, SQL_HANDLE_STMT, stmt_.native(), "bind parameter array");
+
+  for (std::size_t c = 0; c < num_cols; ++c) {
+    auto& col = batch_cols_[c];
+    auto odbc_index = static_cast<SQLUSMALLINT>(c + 1);
+    SQLSMALLINT c_type = c_type_for(col.type);
+    SQLSMALLINT sql_type = sql_type_for(col.type);
+    SQLULEN column_size = 0;
+    SQLSMALLINT decimal_digits = 0;
+    if (col.type == backend::buffer_type::timestamp_parts) {
+      column_size = 26;
+      decimal_digits = 6;
+    } else if (col.type == backend::buffer_type::chars ||
+               col.type == backend::buffer_type::bytes) {
+      column_size = std::max(static_cast<SQLULEN>(col.stride), SQLULEN(255));
+    }
+
+    bool has_ind = (col.type == backend::buffer_type::chars ||
+                    col.type == backend::buffer_type::bytes ||
+                    col.type == backend::buffer_type::timestamp_parts);
+    SQLLEN* ind_ptr = has_ind
+      ? reinterpret_cast<SQLLEN*>(col.indicators.data())
+      : nullptr;
+
+    void* data_ptr = nullptr;
+    switch (col.type) {
+    case backend::buffer_type::bit:
+      data_ptr = col.bit_vals.data();
+      break;
+    case backend::buffer_type::int16:
+      data_ptr = col.i16_vals.data();
+      break;
+    case backend::buffer_type::int32:
+      data_ptr = col.i32_vals.data();
+      break;
+    case backend::buffer_type::int64:
+      data_ptr = col.i64_vals.data();
+      break;
+    case backend::buffer_type::float64:
+      data_ptr = col.f64_vals.data();
+      break;
+    case backend::buffer_type::timestamp_parts:
+      data_ptr = col.ts_vals.data();
+      break;
+    default:
+      data_ptr = col.var_buf.data();
+      break;
+    }
+
+    SQLRETURN rc = SQLBindParameter(stmt_.native(), odbc_index, SQL_PARAM_INPUT,
+      c_type, sql_type, column_size, decimal_digits, data_ptr,
+      static_cast<SQLLEN>(col.stride), ind_ptr);
+    odbc::throw_if_error(
+      rc, SQL_HANDLE_STMT, stmt_.native(), "bind parameter array");
+  }
 }
 
 void backend_statement::reset_parameters() {
   SQLRETURN rc = SQLFreeStmt(stmt_.native(), SQL_RESET_PARAMS);
   odbc::throw_if_error(
     rc, SQL_HANDLE_STMT, stmt_.native(), "reset statement parameters");
+}
+
+class backend_statement::odbc_batch_writer
+  : public backend::batch_writer_iface {
+public:
+  explicit odbc_batch_writer(backend_statement& stmt) : stmt_(stmt) {}
+
+  std::size_t add_column(backend::buffer_type type, std::size_t count,
+    std::size_t element_size) override {
+    auto idx = stmt_.batch_cols_.size();
+    stmt_.batch_cols_.emplace_back();
+    auto& col = stmt_.batch_cols_.back();
+    col.type = type;
+    col.count = count;
+    col.stride = element_size;
+    col.indicators.resize(count, backend::null_indicator);
+
+    switch (type) {
+    case backend::buffer_type::bit:
+      col.bit_vals.resize(count, 0);
+      break;
+    case backend::buffer_type::int16:
+      col.i16_vals.resize(count, 0);
+      break;
+    case backend::buffer_type::int32:
+      col.i32_vals.resize(count, 0);
+      break;
+    case backend::buffer_type::int64:
+      col.i64_vals.resize(count, 0);
+      break;
+    case backend::buffer_type::float64:
+      col.f64_vals.resize(count, 0);
+      break;
+    case backend::buffer_type::chars:
+    case backend::buffer_type::bytes:
+      col.var_buf.resize(count * element_size, '\0');
+      break;
+    case backend::buffer_type::timestamp_parts:
+      col.ts_vals.resize(count);
+      break;
+    default:
+      break;
+    }
+    return idx;
+  }
+
+  void* data(std::size_t column) override {
+    auto& col = stmt_.batch_cols_[column];
+    switch (col.type) {
+    case backend::buffer_type::bit:
+      return col.bit_vals.data();
+    case backend::buffer_type::int16:
+      return col.i16_vals.data();
+    case backend::buffer_type::int32:
+      return col.i32_vals.data();
+    case backend::buffer_type::int64:
+      return col.i64_vals.data();
+    case backend::buffer_type::float64:
+      return col.f64_vals.data();
+    case backend::buffer_type::timestamp_parts:
+      return col.ts_vals.data();
+    default:
+      return col.var_buf.data();
+    }
+  }
+
+  std::size_t element_size(std::size_t column) override {
+    return stmt_.batch_cols_[column].stride;
+  }
+
+  std::int64_t* indicators(std::size_t column) override {
+    return stmt_.batch_cols_[column].indicators.data();
+  }
+
+  void finish() override {
+    SQLFreeStmt(stmt_.stmt_.native(), SQL_RESET_PARAMS);
+    for (std::size_t c = 0; c < stmt_.batch_cols_.size(); ++c) {
+      auto& col = stmt_.batch_cols_[c];
+      auto odbc_index = static_cast<SQLUSMALLINT>(c + 1);
+      SQLSMALLINT c_type = c_type_for(col.type);
+      SQLSMALLINT sql_type = sql_type_for(col.type);
+      auto stride = static_cast<SQLLEN>(col.stride);
+      SQLULEN column_size = 0;
+      SQLSMALLINT decimal_digits = 0;
+      if (col.type == backend::buffer_type::timestamp_parts) {
+        column_size = 26;
+        decimal_digits = 6;
+      } else if (col.type == backend::buffer_type::chars ||
+                 col.type == backend::buffer_type::bytes) {
+        column_size = std::max(static_cast<SQLULEN>(col.stride), SQLULEN(255));
+      }
+
+      bool has_ind = (col.type == backend::buffer_type::chars ||
+                      col.type == backend::buffer_type::bytes ||
+                      col.type == backend::buffer_type::timestamp_parts);
+      SQLLEN* ind_ptr = has_ind
+        ? reinterpret_cast<SQLLEN*>(col.indicators.data())
+        : nullptr;
+
+      void* data_ptr = data(c);
+      SQLRETURN rc = SQLBindParameter(stmt_.stmt_.native(), odbc_index,
+        SQL_PARAM_INPUT, c_type, sql_type, column_size, decimal_digits,
+        data_ptr, stride, ind_ptr);
+      odbc::throw_if_error(
+        rc, SQL_HANDLE_STMT, stmt_.stmt_.native(), "bind parameter array");
+    }
+  }
+
+private:
+  backend_statement& stmt_;
+};
+
+backend::batch_writer_iface& backend_statement::prepare_batch() {
+  batch_cols_.clear();
+  if (!batch_writer_) {
+    batch_writer_ = std::make_unique<odbc_batch_writer>(*this);
+  }
+  return *batch_writer_;
 }
 
 void backend_statement::execute() {
@@ -312,6 +608,9 @@ std::vector<std::byte> backend_statement::read_long_bytes(
 
 void backend_statement::reset() {
   slots_.clear();
+  batch_cols_.clear();
+  batch_cols_.shrink_to_fit();
+  batch_writer_.reset();
   stmt_.reset();
 }
 
@@ -390,11 +689,8 @@ void backend_connection::rollback() {
 }
 
 backend::capabilities backend_connection::caps() const noexcept {
-  // Bound-column streaming fetch plus SQLGetData continuation reads
-  // count as streaming; parameter array binding (SQL_ATTR_PARAMSET_SIZE)
-  // is supported for batch inserts.
   return {/*streaming=*/true, /*async_io=*/false, /*copy_protocol=*/false,
-    /*notifications=*/false, /*array_binding=*/true};
+    /*notifications=*/false, /*columnar_batch=*/true};
 }
 
 std::string backend_connection::dbms_name() const {

@@ -16,6 +16,7 @@
 #include <typeindex>
 #include <vector>
 
+#include <uniorm/params.hpp>
 #include <uniorm/types.hpp>
 #include <uniorm/value.hpp>
 
@@ -80,17 +81,6 @@ struct column_buffer {
   std::int64_t* indicator;
 };
 
-// Caller-owned parameter-array binding for batch inserts. `data` points
-// to a contiguous buffer of `count` elements, each `stride` bytes apart.
-// `indicators` has `count` entries. The buffer must outlive execute().
-struct param_array_buffer {
-  buffer_type type;
-  void* data;
-  std::size_t stride;  // bytes per element
-  std::int64_t* indicators;
-  std::size_t count;
-};
-
 // What a backend implementation offers. Core features requiring an
 // absent capability throw capability_not_supported; they never degrade
 // silently.
@@ -99,7 +89,30 @@ struct capabilities {
   bool async_io;
   bool copy_protocol;
   bool notifications;
-  bool array_binding;
+  bool columnar_batch;
+};
+
+// Direct-write batch interface. The backend allocates column buffers;
+// the caller writes values into the raw buffers and indicators, then
+// calls finish() to bind and prepare for execution. This avoids the
+// sql_value intermediate layer for maximum throughput.
+struct batch_writer_iface {
+  virtual ~batch_writer_iface() = default;
+
+  // Allocate a column buffer for `count` rows of the given type.
+  // Returns the column index.
+  virtual std::size_t add_column(buffer_type type, std::size_t count,
+    std::size_t element_size) = 0;
+
+  // Raw buffer access for the given column. The caller writes values
+  // at data()[row * element_size()] and sets indicators()[row].
+  virtual void* data(std::size_t column) = 0;
+  virtual std::size_t element_size(std::size_t column) = 0;
+  virtual std::int64_t* indicators(std::size_t column) = 0;
+
+  // Bind the accumulated buffers and prepare for execution. After this
+  // call, the statement can be executed with set_paramset_size + execute.
+  virtual void finish() = 0;
 };
 
 struct statement_iface {
@@ -116,10 +129,16 @@ struct statement_iface {
 
   virtual void bind_column(std::size_t index, column_buffer const& buffer) = 0;
 
-  // Batch parameter binding: bind an array of `count` values for parameter
-  // `index`. The data buffer and indicators must outlive execute().
-  virtual void bind_param_array(
-    std::size_t index, param_array_buffer const& buffer) = 0;
+  // Batch parameter binding: takes row-oriented data by const reference.
+  // The backend internally converts to its preferred physical layout
+  // (e.g. columnar for ODBC, pointer arrays for libpq).
+  virtual void bind_batch_params(std::vector<params> const& rows) = 0;
+
+  // Direct-write batch: returns a batch_writer that allocates column
+  // buffers owned by this statement. The caller writes values directly
+  // into the buffers, then calls finish() to bind. The batch_writer is
+  // valid until the next reset() or prepare_batch() call.
+  virtual batch_writer_iface& prepare_batch() = 0;
 
   // Reset all parameter bindings. Must be called before rebinding parameters
   // when reusing a statement for multiple executions.

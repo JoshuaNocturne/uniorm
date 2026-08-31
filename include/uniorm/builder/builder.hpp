@@ -123,7 +123,7 @@ public:
   }
 
   connection& conn() const {
-    return orm_->conn();
+    return orm_->native_connection();
   }
   orm& get_orm() const {
     return *orm_;

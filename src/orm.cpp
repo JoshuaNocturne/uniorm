@@ -143,7 +143,7 @@ std::size_t update_builder::execute() {
   if (blank(where_)) {
     throw uniorm_error("update: refusing to execute without a WHERE clause");
   }
-  dialect const d = dialect::detect(orm_->dbms_name());
+  dialect const d = dialect::detect(orm_->native_connection().dbms_name());
   std::string sql = "UPDATE " + d.quote_identifier(table_) + " SET ";
   std::vector<sql_value> values;
   values.reserve(set_.size() + where_params_.size());
@@ -173,7 +173,7 @@ std::size_t remove_builder::execute() {
   if (blank(where_)) {
     throw uniorm_error("remove: refusing to execute without a WHERE clause");
   }
-  dialect const d = dialect::detect(orm_->dbms_name());
+  dialect const d = dialect::detect(orm_->native_connection().dbms_name());
   std::string sql =
     "DELETE FROM " + d.quote_identifier(table_) + " WHERE " + where_;
   return orm_->execute_update(sql, where_params_);
@@ -291,7 +291,7 @@ bool has_variable_columns(entity_meta const& m) {
 }  // namespace
 
 std::size_t orm::update_single_impl(connection& conn,
-  entity_meta const& m, std::string const& dbms,
+  entity_meta const& m,
   std::vector<std::string> const& set_columns,
   std::vector<sql_value> const& set_values,
   std::vector<std::string> const& where_fields,
@@ -307,7 +307,7 @@ std::size_t orm::update_single_impl(connection& conn,
     }
   }
 
-  dialect const d = dialect::detect(dbms);
+  dialect const d = dialect::detect(conn.dbms_name());
 
   std::string where_sql;
   for (std::size_t i = 0; i < where_fields.size(); ++i) {
@@ -343,7 +343,7 @@ std::size_t orm::update_single_impl(connection& conn,
 }
 
 std::size_t orm::update_batch_impl(connection& conn,
-  entity_meta const& m, std::string const& dbms,
+  entity_meta const& m,
   std::vector<std::string> const& set_columns,
   std::vector<std::string> const& where_fields,
   std::vector<std::vector<sql_value>> const& rows,
@@ -357,7 +357,7 @@ std::size_t orm::update_batch_impl(connection& conn,
   }
 
   std::size_t const batch_size = default_batch_size > 0 ? default_batch_size : 1000;
-  dialect const d = dialect::detect(dbms);
+  dialect const d = dialect::detect(conn.dbms_name());
 
   std::string sql = "UPDATE " + d.quote_identifier(m.table) + " SET ";
   for (std::size_t i = 0; i < set_columns.size(); ++i) {
@@ -517,7 +517,7 @@ std::size_t orm::insert_columnar_impl(connection& conn,
 // --- Columnar batch update (non-template core) ---
 
 std::size_t orm::update_columnar_impl(connection& conn,
-  entity_meta const& m, std::string const& dbms,
+  entity_meta const& m,
   std::vector<std::string> const& set_columns,
   std::vector<std::size_t> const& set_col_indices,
   std::vector<std::string> const& where_fields,
@@ -540,7 +540,7 @@ std::size_t orm::update_columnar_impl(connection& conn,
     param_to_col[pi++] = ci;
   }
 
-  dialect const d = dialect::detect(dbms);
+  dialect const d = dialect::detect(conn.dbms_name());
   std::string sql = "UPDATE " + d.quote_identifier(m.table) + " SET ";
   for (std::size_t i = 0; i < set_columns.size(); ++i) {
     if (i != 0) {

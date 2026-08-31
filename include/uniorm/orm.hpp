@@ -100,15 +100,18 @@ public:
   // Validate mappings against live schema.
   void validate(validation_mode mode = validation_mode::strict);
 
-  // --- Entity operations ---
+  // ========================================================================
+  // CREATE (Insert)
+  // ========================================================================
+
   template <class Entity>
   std::size_t insert(std::vector<Entity> const& rows) {
     ensure_connected();
     entity_meta const& m = meta<Entity>();
     std::optional<transaction> txn;
-    if (auto_commit_) txn.emplace(conn().begin());
+    if (auto_commit_) txn.emplace(native_connection().begin());
     std::size_t result;
-    if (conn().caps().columnar_batch) {
+    if (native_connection().caps().columnar_batch) {
       auto string_size = +[](void const* meta, void const* entity,
                           std::size_t col) -> std::size_t {
         return static_cast<entity_meta const*>(meta)
@@ -126,7 +129,7 @@ public:
                         std::size_t i) -> void const* {
         return &(*static_cast<std::vector<Entity> const*>(data))[i];
       };
-      result = insert_columnar_impl(conn(), m, rows.size(),
+      result = insert_columnar_impl(native_connection(), m, rows.size(),
         paramset_size_ > 0 ? paramset_size_ : 1000,
         &rows, string_size, write_row, entity_at);
     } else {
@@ -140,13 +143,51 @@ public:
         }
         extracted.push_back(std::move(vals));
       }
-      result = insert_rowwise_impl(conn(), m, extracted, paramset_size_);
+      result = insert_rowwise_impl(native_connection(), m, extracted, paramset_size_);
     }
     if (txn) txn->commit();
     return result;
   }
 
-public:
+  // ========================================================================
+  // READ (Query)
+  // ========================================================================
+
+  // --- Entity query entry point ---
+  query_gateway query();
+
+  // Typed aggregate projection query
+  template <detail::aggregate_projection T>
+  std::vector<T> query(std::string_view sql, params const& p = {}) {
+    ensure_connected();
+    std::string key(sql);
+    auto& c = native_connection();
+    auto stmt = c.acquire_statement(key);
+    stmt->bind_params(p);
+    stmt->execute();
+    stmt->set_row_array_size(row_array_size_);
+    detail::projection<T> proj;
+    proj.set_row_array_size(row_array_size_);
+    proj.bind(*stmt);
+    std::vector<T> out;
+    while (stmt->fetch()) {
+      std::size_t rows_fetched = stmt->rows_fetched();
+      for (std::size_t i = 0; i < rows_fetched; ++i) {
+        out.push_back(proj.take(i));
+      }
+    }
+    c.release_statement(key, std::move(stmt));
+    return out;
+  }
+
+  // ========================================================================
+  // UPDATE
+  // ========================================================================
+
+  // Dynamic update builder for tables without entity mapping
+  update_builder update(std::string_view table);
+
+  // Single entity update (uses primary key)
   template <class Entity>
     requires(!std::is_convertible_v<Entity const&, std::string_view>)
   std::size_t update(Entity const& entity) {
@@ -166,6 +207,7 @@ public:
     return update(entity, std::vector<std::string>{ pk });
   }
 
+  // Single entity update with explicit where fields
   template <class Entity>
     requires(!std::is_convertible_v<Entity const&, std::string_view>)
   std::size_t update(
@@ -185,10 +227,11 @@ public:
       }
     }
     return update_single_impl(
-      conn(), m, dbms_name(), set_columns, set_values,
+      native_connection(), m, set_columns, set_values,
       where_fields, where_values);
   }
 
+  // Batch entity update (uses primary key)
   template <class Entity>
   std::size_t update(std::vector<Entity> const& entities) {
     ensure_connected();
@@ -207,6 +250,7 @@ public:
     return update(entities, std::vector<std::string>{ pk });
   }
 
+  // Batch entity update with explicit where fields
   template <class Entity>
   std::size_t update(std::vector<Entity> const& entities,
     std::vector<std::string> const& where_fields) {
@@ -234,7 +278,7 @@ public:
       }
     }
 
-    if (conn().caps().columnar_batch) {
+    if (native_connection().caps().columnar_batch) {
       auto string_size = +[](void const* meta, void const* entity,
                           std::size_t col) -> std::size_t {
         return static_cast<entity_meta const*>(meta)
@@ -253,8 +297,8 @@ public:
         return &(*static_cast<std::vector<Entity> const*>(data))[i];
       };
       std::optional<transaction> txn;
-      if (auto_commit_) txn.emplace(conn().begin());
-      auto result = update_columnar_impl(conn(), m, dbms_name(),
+      if (auto_commit_) txn.emplace(native_connection().begin());
+      auto result = update_columnar_impl(native_connection(), m,
         set_columns, set_col_indices,
         where_fields, where_col_indices,
         entities.size(), paramset_size_ > 0 ? paramset_size_ : 1000,
@@ -277,45 +321,26 @@ public:
       rows.push_back(std::move(rv));
     }
     std::optional<transaction> txn;
-    if (auto_commit_) txn.emplace(conn().begin());
+    if (auto_commit_) txn.emplace(native_connection().begin());
     auto result = update_batch_impl(
-      conn(), m, dbms_name(), set_columns, where_fields, rows, paramset_size_);
+      native_connection(), m, set_columns, where_fields, rows, paramset_size_);
     if (txn) txn->commit();
     return result;
   }
 
-  // --- Entity query entry point ---
-  query_gateway query();
+  // ========================================================================
+  // DELETE (Remove)
+  // ========================================================================
 
-  // --- Raw SQL operations ---
+  // Dynamic remove builder for tables without entity mapping
+  remove_builder remove(std::string_view table);
+
+  // ========================================================================
+  // RAW SQL OPERATIONS
+  // ========================================================================
+
   result_set execute(std::string_view sql, params const& p = {});
   std::size_t execute_update(std::string_view sql, params const& p = {});
-
-  template <detail::aggregate_projection T>
-  std::vector<T> query(std::string_view sql, params const& p = {}) {
-    ensure_connected();
-    std::string key(sql);
-    auto& c = conn();
-    auto stmt = c.acquire_statement(key);
-    stmt->bind_params(p);
-    stmt->execute();
-    stmt->set_row_array_size(row_array_size_);
-    detail::projection<T> proj;
-    proj.set_row_array_size(row_array_size_);
-    proj.bind(*stmt);
-    std::vector<T> out;
-    while (stmt->fetch()) {
-      std::size_t rows_fetched = stmt->rows_fetched();
-      for (std::size_t i = 0; i < rows_fetched; ++i) {
-        out.push_back(proj.take(i));
-      }
-    }
-    c.release_statement(key, std::move(stmt));
-    return out;
-  }
-
-  update_builder update(std::string_view table);
-  remove_builder remove(std::string_view table);
 
   // --- Transaction ---
   transaction begin();
@@ -335,31 +360,19 @@ public:
   std::size_t statement_cache_size() const;
   void clear_statement_cache();
 
-  // --- Escape hatches ---
-  template <class T>
-  T* native_handle() noexcept {
-    return pooled_conn_ ? pooled_conn_->get().native_handle<T>() : nullptr;
-  }
-
-  template <class T>
-  T* extension() noexcept {
-    return pooled_conn_ ? pooled_conn_->get().extension<T>() : nullptr;
+  // --- Escape hatch ---
+  // Access the underlying connection for low-level operations.
+  // Use this when you need backend-specific features like native handles
+  // or extensions that are not exposed through the high-level orm API.
+  connection& native_connection() {
+    ensure_connected();
+    return pooled_conn_->get();
   }
 
 private:
   friend class query_gateway;
   friend class update_builder;
   friend class remove_builder;
-
-  connection& conn() {
-    ensure_connected();
-    return pooled_conn_->get();
-  }
-
-  std::string dbms_name() const {
-    ensure_connected();
-    return pooled_conn_->get().dbms_name();
-  }
 
   std::optional<pooled_connection> pooled_conn_;
   std::unordered_map<std::type_index, entity_meta> entities_;
@@ -370,14 +383,14 @@ private:
   void ensure_connected() const;
 
   static std::size_t update_single_impl(connection& conn,
-    entity_meta const& m, std::string const& dbms,
+    entity_meta const& m,
     std::vector<std::string> const& set_columns,
     std::vector<sql_value> const& set_values,
     std::vector<std::string> const& where_fields,
     std::vector<sql_value> const& where_values);
 
   static std::size_t update_batch_impl(connection& conn,
-    entity_meta const& m, std::string const& dbms,
+    entity_meta const& m,
     std::vector<std::string> const& set_columns,
     std::vector<std::string> const& where_fields,
     std::vector<std::vector<sql_value>> const& rows,
@@ -401,7 +414,7 @@ private:
     void const* (*entity_at)(void const* data, std::size_t i));
 
   static std::size_t update_columnar_impl(connection& conn,
-    entity_meta const& m, std::string const& dbms,
+    entity_meta const& m,
     std::vector<std::string> const& set_columns,
     std::vector<std::size_t> const& set_col_indices,
     std::vector<std::string> const& where_fields,

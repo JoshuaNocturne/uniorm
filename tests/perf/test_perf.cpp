@@ -257,7 +257,7 @@ void run_benchmarks(connection& conn, orm& registry, std::size_t n) {
   std::size_t proj_rows = 0;
   report("query aggregate projection", n,
     best_of(
-      [&] { proj_rows = registry.query<bench_row>(select_all).size(); }, runs),
+      [&] { proj_rows = conn.query<bench_row>(select_all).size(); }, runs),
     runs);
   if (proj_rows != n) {
     std::printf("FATAL: projection returned %zu rows\n", proj_rows);

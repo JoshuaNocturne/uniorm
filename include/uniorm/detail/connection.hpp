@@ -60,27 +60,6 @@ public:
 
   std::size_t execute_update(std::string_view sql, params const& p = {});
 
-  template <detail::aggregate_projection T>
-  std::vector<T> query(std::string_view sql, params const& p = {}) {
-    std::string key(sql);
-    auto stmt = acquire_cached(key);
-    bind_parameters(*stmt, p);
-    stmt->execute();
-    stmt->set_row_array_size(row_array_size_);
-    detail::projection<T> proj;
-    proj.set_row_array_size(row_array_size_);
-    proj.bind(*stmt);
-    std::vector<T> out;
-    while (stmt->fetch()) {
-      std::size_t rows_fetched = stmt->rows_fetched();
-      for (std::size_t i = 0; i < rows_fetched; ++i) {
-        out.push_back(proj.take(i));
-      }
-    }
-    stmt_cache_->release(key, std::move(stmt));
-    return out;
-  }
-
   transaction begin();
 
   // Database product name reported by the backend.
@@ -118,6 +97,27 @@ private:
   friend class transaction;
   template <class T>
   friend class query;
+
+  template <detail::aggregate_projection T>
+  std::vector<T> query(std::string_view sql, params const& p = {}) {
+    std::string key(sql);
+    auto stmt = acquire_cached(key);
+    bind_parameters(*stmt, p);
+    stmt->execute();
+    stmt->set_row_array_size(row_array_size_);
+    detail::projection<T> proj;
+    proj.set_row_array_size(row_array_size_);
+    proj.bind(*stmt);
+    std::vector<T> out;
+    while (stmt->fetch()) {
+      std::size_t rows_fetched = stmt->rows_fetched();
+      for (std::size_t i = 0; i < rows_fetched; ++i) {
+        out.push_back(proj.take(i));
+      }
+    }
+    stmt_cache_->release(key, std::move(stmt));
+    return out;
+  }
 
   static void bind_parameters(backend::statement_iface& stmt, params const& p) {
     for (std::size_t i = 0; i < p.size(); ++i) {

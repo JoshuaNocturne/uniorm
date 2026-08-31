@@ -153,10 +153,17 @@ column_meta make_column_meta(
           value.size());
         indicators[row] = static_cast<std::int64_t>(value.size());
       } else if constexpr (std::is_same_v<typename M::value_type, timestamp>) {
-        auto parts = detail::break_timestamp(value);
-        std::memcpy(static_cast<char*>(buffer) + row * stride, &parts,
-          sizeof(parts));
-        indicators[row] = sizeof(parts);
+        auto src = detail::break_timestamp(value);
+        auto* dst = reinterpret_cast<backend::timestamp_parts*>(
+          static_cast<char*>(buffer) + row * stride);
+        dst->year = static_cast<std::int16_t>(src.year);
+        dst->month = static_cast<std::uint16_t>(src.month);
+        dst->day = static_cast<std::uint16_t>(src.day);
+        dst->hour = static_cast<std::uint16_t>(src.hour);
+        dst->minute = static_cast<std::uint16_t>(src.minute);
+        dst->second = static_cast<std::uint16_t>(src.second);
+        dst->fraction_ns = static_cast<std::uint32_t>(src.fraction_ns);
+        indicators[row] = sizeof(backend::timestamp_parts);
       } else {
         indicators[row] = sizeof(value);
         using value_type = typename M::value_type;
@@ -173,10 +180,17 @@ column_meta make_column_meta(
           field.size());
         indicators[row] = static_cast<std::int64_t>(field.size());
       } else if constexpr (std::is_same_v<U, timestamp>) {
-        auto parts = detail::break_timestamp(field);
-        std::memcpy(static_cast<char*>(buffer) + row * stride, &parts,
-          sizeof(parts));
-        indicators[row] = sizeof(parts);
+        auto src = detail::break_timestamp(field);
+        auto* dst = reinterpret_cast<backend::timestamp_parts*>(
+          static_cast<char*>(buffer) + row * stride);
+        dst->year = static_cast<std::int16_t>(src.year);
+        dst->month = static_cast<std::uint16_t>(src.month);
+        dst->day = static_cast<std::uint16_t>(src.day);
+        dst->hour = static_cast<std::uint16_t>(src.hour);
+        dst->minute = static_cast<std::uint16_t>(src.minute);
+        dst->second = static_cast<std::uint16_t>(src.second);
+        dst->fraction_ns = static_cast<std::uint32_t>(src.fraction_ns);
+        indicators[row] = sizeof(backend::timestamp_parts);
       } else {
         indicators[row] = sizeof(field);
         static_cast<U*>(buffer)[row] = field;

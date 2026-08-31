@@ -222,7 +222,7 @@ void backend_statement::bind_parameter(
     slot.ts.fraction = static_cast<SQLUINTEGER>(parts.fraction_ns);
     slot.indicator = sizeof(slot.ts);
     stmt_.bind_parameter(odbc_index, SQL_C_TYPE_TIMESTAMP,
-      SQL_TYPE_TIMESTAMP, &slot.ts, sizeof(slot.ts), &slot.indicator, 26, 6);
+      SQL_TYPE_TIMESTAMP, &slot.ts, sizeof(slot.ts), &slot.indicator, 19, 0);
   }
 }
 
@@ -375,19 +375,14 @@ void backend_statement::bind_batch_params(std::vector<params> const& rows) {
     SQLULEN column_size = 0;
     SQLSMALLINT decimal_digits = 0;
     if (col.type == backend::buffer_type::timestamp_parts) {
-      column_size = 26;
-      decimal_digits = 6;
+      column_size = 19;
+      decimal_digits = 0;
     } else if (col.type == backend::buffer_type::chars ||
                col.type == backend::buffer_type::bytes) {
       column_size = std::max(static_cast<SQLULEN>(col.stride), SQLULEN(255));
     }
 
-    bool has_ind = (col.type == backend::buffer_type::chars ||
-                    col.type == backend::buffer_type::bytes ||
-                    col.type == backend::buffer_type::timestamp_parts);
-    SQLLEN* ind_ptr = has_ind
-      ? reinterpret_cast<SQLLEN*>(col.indicators.data())
-      : nullptr;
+    SQLLEN* ind_ptr = reinterpret_cast<SQLLEN*>(col.indicators.data());
 
     void* data_ptr = nullptr;
     switch (col.type) {
@@ -511,19 +506,14 @@ public:
       SQLULEN column_size = 0;
       SQLSMALLINT decimal_digits = 0;
       if (col.type == backend::buffer_type::timestamp_parts) {
-        column_size = 26;
-        decimal_digits = 6;
+        column_size = 19;
+        decimal_digits = 0;
       } else if (col.type == backend::buffer_type::chars ||
                  col.type == backend::buffer_type::bytes) {
         column_size = std::max(static_cast<SQLULEN>(col.stride), SQLULEN(255));
       }
 
-      bool has_ind = (col.type == backend::buffer_type::chars ||
-                      col.type == backend::buffer_type::bytes ||
-                      col.type == backend::buffer_type::timestamp_parts);
-      SQLLEN* ind_ptr = has_ind
-        ? reinterpret_cast<SQLLEN*>(col.indicators.data())
-        : nullptr;
+      SQLLEN* ind_ptr = reinterpret_cast<SQLLEN*>(col.indicators.data());
 
       void* data_ptr = data(c);
       SQLRETURN rc = SQLBindParameter(stmt_.stmt_.native(), odbc_index,

@@ -173,38 +173,47 @@ public:
   std::vector<T> all() {
     std::vector<sql_value> bound;
     std::string sql = render_select(limit_, bound);
-    return gw_->conn().execute_with(
-      sql, params(std::move(bound)), [this](backend::statement_iface& stmt) {
-        std::size_t ras = gw_->row_array_size();
-        stmt.set_row_array_size(ras);
-        detail::entity_binding<T> binding(*meta_);
-        binding.set_row_array_size(ras);
-        binding.bind(stmt);
-        std::vector<T> out;
-        while (stmt.fetch()) {
-          std::size_t rows_fetched = stmt.rows_fetched();
-          for (std::size_t i = 0; i < rows_fetched; ++i) {
-            out.push_back(binding.take(i));
-          }
-        }
-        return out;
-      });
+    auto& c = gw_->conn();
+    std::string key(sql);
+    auto stmt = c.acquire_statement(key);
+    params p(std::move(bound));
+    stmt->bind_params(p);
+    stmt->execute();
+    std::size_t ras = gw_->row_array_size();
+    stmt->set_row_array_size(ras);
+    detail::entity_binding<T> binding(*meta_);
+    binding.set_row_array_size(ras);
+    binding.bind(*stmt);
+    std::vector<T> out;
+    while (stmt->fetch()) {
+      std::size_t rows_fetched = stmt->rows_fetched();
+      for (std::size_t i = 0; i < rows_fetched; ++i) {
+        out.push_back(binding.take(i));
+      }
+    }
+    c.release_statement(key, std::move(stmt));
+    return out;
   }
 
   std::optional<T> one() {
     std::vector<sql_value> bound;
     std::string sql = render_select(std::size_t{ 1 }, bound);
-    return gw_->conn().execute_with(sql, params(std::move(bound)),
-      [this](backend::statement_iface& stmt) -> std::optional<T> {
-        stmt.set_row_array_size(1);
-        detail::entity_binding<T> binding(*meta_);
-        binding.set_row_array_size(1);
-        binding.bind(stmt);
-        if (!stmt.fetch()) {
-          return std::nullopt;
-        }
-        return binding.take(0);
-      });
+    auto& c = gw_->conn();
+    std::string key(sql);
+    auto stmt = c.acquire_statement(key);
+    params p(std::move(bound));
+    stmt->bind_params(p);
+    stmt->execute();
+    stmt->set_row_array_size(1);
+    detail::entity_binding<T> binding(*meta_);
+    binding.set_row_array_size(1);
+    binding.bind(*stmt);
+    std::optional<T> result;
+    if (stmt->fetch()) {
+      result = binding.take(0);
+    }
+    c.release_statement(key, std::move(stmt));
+    return result;
   }
 
   std::int64_t count() {

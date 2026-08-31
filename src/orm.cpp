@@ -40,10 +40,7 @@ std::unordered_map<std::string, schema_column> load_table_schema(
 
 orm::orm(std::string_view connection_string)
   : pooled_conn_(
-      connection_pool_registry::instance().acquire(std::string(connection_string))) {
-  pooled_conn_->get().row_array_size(row_array_size_);
-  pooled_conn_->get().paramset_size(paramset_size_);
-}
+      connection_pool_registry::instance().acquire(std::string(connection_string))) {}
 
 orm::orm(connection_pool& pool)
   : pooled_conn_(pool.acquire()) {}
@@ -57,8 +54,6 @@ orm& orm::operator=(orm&&) noexcept = default;
 void orm::connect(std::string_view connection_string) {
   pooled_conn_ =
     connection_pool_registry::instance().acquire(std::string(connection_string));
-  pooled_conn_->get().row_array_size(row_array_size_);
-  pooled_conn_->get().paramset_size(paramset_size_);
 }
 
 void orm::disconnect() {
@@ -113,7 +108,7 @@ query_gateway orm::query() {
 
 result_set orm::execute(std::string_view sql, params const& p) {
   ensure_connected();
-  return pooled_conn_->get().execute(sql, p);
+  return pooled_conn_->get().execute(sql, p, row_array_size_);
 }
 
 std::size_t orm::execute_update(std::string_view sql, params const& p) {
@@ -237,9 +232,6 @@ void orm::clear_statement_cache() {
 
 void orm::paramset_size(std::size_t size) noexcept {
   paramset_size_ = size;
-  if (pooled_conn_) {
-    pooled_conn_->get().paramset_size(size);
-  }
 }
 
 // --- Non-template impl helpers ---
@@ -384,7 +376,7 @@ std::size_t orm::update_batch_impl(connection& conn,
 
   std::size_t affected = 0;
   std::string key(sql);
-  auto stmt = conn.acquire_cached(key);
+  auto stmt = conn.acquire_statement(key);
 
   for (std::size_t start = 0; start < rows.size(); start += batch_size) {
     std::size_t count = std::min(batch_size, rows.size() - start);
@@ -399,7 +391,7 @@ std::size_t orm::update_batch_impl(connection& conn,
     affected += stmt->affected_rows();
   }
 
-  conn.stmt_cache_->release(key, std::move(stmt));
+  conn.release_statement(key, std::move(stmt));
   return affected;
 }
 
@@ -413,7 +405,7 @@ std::size_t orm::insert_rowwise_impl(connection& conn,
 
   std::size_t inserted = 0;
   std::string key(sql);
-  auto stmt = conn.acquire_cached(key);
+  auto stmt = conn.acquire_statement(key);
 
   for (std::size_t start = 0; start < rows.size(); start += batch_size) {
     std::size_t count = std::min(batch_size, rows.size() - start);
@@ -428,7 +420,7 @@ std::size_t orm::insert_rowwise_impl(connection& conn,
     inserted += stmt->affected_rows();
   }
 
-  conn.stmt_cache_->release(key, std::move(stmt));
+  conn.release_statement(key, std::move(stmt));
   return inserted;
 }
 
@@ -449,7 +441,7 @@ std::size_t orm::insert_columnar_impl(connection& conn,
   std::string sql = build_insert_sql(d, m);
 
   std::string key(sql);
-  auto stmt = conn.acquire_cached(key);
+  auto stmt = conn.acquire_statement(key);
 
   // Pre-scan for max string/binary size only if needed
   std::vector<std::size_t> max_sizes(num_cols, 1);
@@ -518,7 +510,7 @@ std::size_t orm::insert_columnar_impl(connection& conn,
     inserted += count;
   }
 
-  conn.stmt_cache_->release(key, std::move(stmt));
+  conn.release_statement(key, std::move(stmt));
   return inserted;
 }
 
@@ -565,7 +557,7 @@ std::size_t orm::update_columnar_impl(connection& conn,
   }
 
   std::string key(sql);
-  auto stmt = conn.acquire_cached(key);
+  auto stmt = conn.acquire_statement(key);
 
   // Pre-scan for max string/binary size only if needed
   std::vector<std::size_t> max_sizes(num_params, 1);
@@ -641,7 +633,7 @@ std::size_t orm::update_columnar_impl(connection& conn,
     updated += count;
   }
 
-  conn.stmt_cache_->release(key, std::move(stmt));
+  conn.release_statement(key, std::move(stmt));
   return updated;
 }
 

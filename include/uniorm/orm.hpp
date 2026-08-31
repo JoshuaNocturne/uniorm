@@ -16,6 +16,7 @@
 
 #include <uniorm/backend/backend.hpp>
 #include <uniorm/detail/connection.hpp>
+#include <uniorm/detail/projection.hpp>
 #include <uniorm/mapping/registry.hpp>
 #include <uniorm/pool.hpp>
 #include <uniorm/transaction.hpp>
@@ -293,7 +294,24 @@ public:
   template <detail::aggregate_projection T>
   std::vector<T> query(std::string_view sql, params const& p = {}) {
     ensure_connected();
-    return pooled_conn_->get().query<T>(sql, p);
+    std::string key(sql);
+    auto& c = conn();
+    auto stmt = c.acquire_statement(key);
+    stmt->bind_params(p);
+    stmt->execute();
+    stmt->set_row_array_size(row_array_size_);
+    detail::projection<T> proj;
+    proj.set_row_array_size(row_array_size_);
+    proj.bind(*stmt);
+    std::vector<T> out;
+    while (stmt->fetch()) {
+      std::size_t rows_fetched = stmt->rows_fetched();
+      for (std::size_t i = 0; i < rows_fetched; ++i) {
+        out.push_back(proj.take(i));
+      }
+    }
+    c.release_statement(key, std::move(stmt));
+    return out;
   }
 
   update_builder update(std::string_view table);

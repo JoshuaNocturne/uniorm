@@ -33,23 +33,38 @@ bool connection::is_open() const noexcept {
   return backend_ && backend_->is_open();
 }
 
-result_set connection::execute(std::string_view sql, params const& p) {
+result_set connection::execute(std::string_view sql, params const& p,
+  std::size_t row_array_size) {
   std::string key(sql);
-  auto stmt = acquire_cached(key);
-  bind_parameters(*stmt, p);
+  auto stmt = acquire_statement(key);
+  stmt->bind_params(p);
   stmt->execute();
   return result_set::from_statement(
-    std::move(stmt), make_releaser(key), row_array_size_);
+    std::move(stmt), make_releaser(key), row_array_size);
 }
 
 std::size_t connection::execute_update(std::string_view sql, params const& p) {
   std::string key(sql);
-  auto stmt = acquire_cached(key);
-  bind_parameters(*stmt, p);
+  auto stmt = acquire_statement(key);
+  stmt->bind_params(p);
   stmt->execute();
   std::size_t affected = stmt->affected_rows();
-  stmt_cache_->release(key, std::move(stmt));
+  release_statement(key, std::move(stmt));
   return affected;
+}
+
+std::unique_ptr<backend::statement_iface> connection::acquire_statement(
+  std::string const& sql) {
+  return stmt_cache_->acquire(sql, [this](std::string const& s) {
+    auto stmt = backend_->create_statement();
+    stmt->prepare(s);
+    return stmt;
+  });
+}
+
+void connection::release_statement(std::string const& key,
+  std::unique_ptr<backend::statement_iface> stmt) {
+  stmt_cache_->release(key, std::move(stmt));
 }
 
 std::function<void(std::unique_ptr<backend::statement_iface>)>

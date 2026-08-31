@@ -127,6 +127,13 @@ struct statement_iface {
   // may bind pointers into it zero-copy.
   virtual void bind_parameter(std::size_t index, sql_value const& value) = 0;
 
+  // Bind all params in order (1-based indexing).
+  void bind_params(params const& p) {
+    for (std::size_t i = 0; i < p.size(); ++i) {
+      bind_parameter(i + 1, p.at(i));
+    }
+  }
+
   virtual void bind_column(std::size_t index, column_buffer const& buffer) = 0;
 
   // Batch parameter binding: takes row-oriented data by const reference.

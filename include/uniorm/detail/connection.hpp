@@ -11,82 +11,57 @@
 
 #include <uniorm/backend/backend.hpp>
 #include <uniorm/detail/pfr.hpp>
-#include <uniorm/detail/projection.hpp>
 #include <uniorm/detail/statement_cache.hpp>
 #include <uniorm/dialect.hpp>
 #include <uniorm/export.hpp>
 #include <uniorm/params.hpp>
 #include <uniorm/result_set.hpp>
 
-#include <set>
-
 namespace uniorm {
 
-class orm;
-class query_gateway;
 class transaction;
-template <class T>
-class query;
 
-// High-level connection: owns a backend connection (chosen by the
+// Low-level connection: owns a backend connection (chosen by the
 // connection-string scheme at construction) and offers statement
-// execution plus typed aggregate projection queries.
+// execution, statement caching, and transaction control.
+// orm is the high-level entry point; connection provides the primitives.
 class UNIORM_API connection {
 public:
   explicit connection(std::string_view connection_string);
   ~connection();
 
   connection(connection&&) noexcept;
-
   connection& operator=(connection&&) noexcept;
 
   connection(connection const&) = delete;
-
   connection& operator=(connection const&) = delete;
 
   void close();
-
   bool is_open() const noexcept;
 
-  // --- Block fetching configuration ---
-  std::size_t row_array_size() const noexcept { return row_array_size_; }
-  void row_array_size(std::size_t size) noexcept { row_array_size_ = size; }
-
-  // --- Batch operation configuration (insert/update/delete) ---
-  std::size_t paramset_size() const noexcept { return paramset_size_; }
-  void paramset_size(std::size_t size) noexcept { paramset_size_ = size; }
-
-  result_set execute(std::string_view sql, params const& p = {});
-
+  // --- Simple execution ---
+  result_set execute(std::string_view sql, params const& p = {},
+    std::size_t row_array_size = 1);
   std::size_t execute_update(std::string_view sql, params const& p = {});
 
-  template <detail::aggregate_projection T>
-  std::vector<T> query(std::string_view sql, params const& p = {}) {
-    std::string key(sql);
-    auto stmt = acquire_cached(key);
-    bind_parameters(*stmt, p);
-    stmt->execute();
-    stmt->set_row_array_size(row_array_size_);
-    detail::projection<T> proj;
-    proj.set_row_array_size(row_array_size_);
-    proj.bind(*stmt);
-    std::vector<T> out;
-    while (stmt->fetch()) {
-      std::size_t rows_fetched = stmt->rows_fetched();
-      for (std::size_t i = 0; i < rows_fetched; ++i) {
-        out.push_back(proj.take(i));
-      }
-    }
-    stmt_cache_->release(key, std::move(stmt));
-    return out;
-  }
-
+  // --- Transaction control ---
   transaction begin();
+  void set_autocommit(bool enabled);
+  void commit();
+  void rollback();
 
-  // Database product name reported by the backend.
+  // --- Statement cache primitives ---
+  // Acquire a prepared statement for the given SQL (from cache or newly
+  // prepared). The caller must return it via release_statement().
+  std::unique_ptr<backend::statement_iface> acquire_statement(
+    std::string const& sql);
+
+  // Return a statement to the cache under the given key.
+  void release_statement(std::string const& key,
+    std::unique_ptr<backend::statement_iface> stmt);
+
+  // --- Metadata ---
   std::string dbms_name() const;
-
-  // Backend capabilities (columnar_batch, streaming, etc.).
   backend::capabilities caps() const noexcept { return backend_->caps(); }
 
   // Prepared-statement cache observability (keyed by SQL text, LRU).
@@ -95,10 +70,9 @@ public:
   std::size_t statement_cache_size() const;
   void clear_statement_cache();
 
-  // Escape hatches (design doc 5.3): the caller names the expected
-  // native handle type (void for ODBC's SQLHDBC, PGconn for libpq, ...)
-  // knowing which backend it connected to; uniorm keeps owning the
-  // connection and transaction lifecycle.
+  // Escape hatches: the caller names the expected native handle type
+  // (void* for ODBC's SQLHDBC, PGconn for libpq, ...) knowing which
+  // backend it connected to.
   template <class T>
   T* native_handle() noexcept {
     return backend_ ? static_cast<T*>(backend_->native_handle()) : nullptr;
@@ -114,53 +88,14 @@ public:
   }
 
 private:
-  friend class orm;
-  friend class transaction;
-  template <class T>
-  friend class query;
-
-  static void bind_parameters(backend::statement_iface& stmt, params const& p) {
-    for (std::size_t i = 0; i < p.size(); ++i) {
-      stmt.bind_parameter(i + 1, p.at(i));
-    }
-  }
-
-  // Prepare, bind parameters, execute, then hand the live statement to fn
-  // so entity queries can bind result columns directly onto entity fields.
-  template <class Fn>
-  auto execute_with(std::string_view sql, params const& p, Fn&& fn) {
-    std::string key(sql);
-    auto stmt = acquire_cached(key);
-    bind_parameters(*stmt, p);
-    stmt->execute();
-    auto result = fn(*stmt);
-    stmt_cache_->release(key, std::move(stmt));
-    return result;
-  }
-
-  std::unique_ptr<backend::statement_iface> acquire_cached(
-    std::string const& key) {
-    return stmt_cache_->acquire(key, [this](std::string const& s) {
-      auto stmt = backend_->create_statement();
-      stmt->prepare(s);
-      return stmt;
-    });
-  }
-
   std::function<void(std::unique_ptr<backend::statement_iface>)> make_releaser(
     std::string key);
-
-  void set_autocommit(bool enabled);
-  void commit();
-  void rollback();
 
   // Declared before stmt_cache_ so cached statements are destroyed first.
   std::unique_ptr<backend::connection_iface> backend_;
   // Shared so result_set check-in closures can hold weak references that
   // survive even if the connection is moved.
   std::shared_ptr<detail::statement_cache> stmt_cache_;
-  std::size_t row_array_size_ = 100;  // Default block fetch size
-  std::size_t paramset_size_ = 1000;  // Default batch insert size
 };
 
 }  // namespace uniorm

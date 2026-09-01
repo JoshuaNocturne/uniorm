@@ -560,6 +560,13 @@ std::size_t backend_statement::affected_rows() const {
   return stmt_.affected_rows();
 }
 
+std::size_t backend_statement::result_row_estimate() const {
+  // SQLRowCount reports the full row count for buffered result sets
+  // (MariaDB/MySQL use buffered cursors by default). Drivers without
+  // this capability return -1, which affected_rows maps to 0.
+  return stmt_.affected_rows();
+}
+
 std::vector<column_info> backend_statement::column_meta() const {
   SQLSMALLINT count = static_cast<SQLSMALLINT>(stmt_.column_count());
   std::vector<column_info> meta;

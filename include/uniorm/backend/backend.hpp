@@ -160,6 +160,11 @@ struct statement_iface {
   virtual void set_row_array_size(std::size_t size) = 0;
   virtual std::size_t rows_fetched() const = 0;
 
+  // Estimated total rows of the current result set, if the backend can
+  // tell before fetching (e.g. buffered result sets). 0 when unknown;
+  // callers use it only to pre-size result vectors.
+  virtual std::size_t result_row_estimate() const { return 0; }
+
   // Batch insert support: set the number of parameter sets per SQLExecute.
   virtual void set_paramset_size(std::size_t size) = 0;
 

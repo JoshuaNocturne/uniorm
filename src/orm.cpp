@@ -609,7 +609,7 @@ std::size_t orm::update_columnar_impl(connection& conn,
   writer.finish();
   stmt->set_paramset_size(first_count);
   stmt->execute();
-  std::size_t updated = first_count;
+  std::size_t updated = stmt->affected_rows();
 
   for (std::size_t start = batch_size; start < row_count; start += batch_size) {
     std::size_t count = std::min(batch_size, row_count - start);
@@ -630,11 +630,184 @@ std::size_t orm::update_columnar_impl(connection& conn,
       stmt->set_paramset_size(count);
     }
     stmt->execute();
-    updated += count;
+    updated += stmt->affected_rows();
   }
 
   conn.release_statement(key, std::move(stmt));
   return updated;
+}
+
+// --- Delete operations ---
+
+std::size_t orm::delete_single_impl(connection& conn,
+  entity_meta const& m,
+  std::vector<std::string> const& where_fields,
+  std::vector<sql_value> const& where_values) {
+  if (where_fields.empty()) {
+    throw uniorm_error("remove: no WHERE fields specified");
+  }
+
+  dialect const d = dialect::detect(conn.dbms_name());
+
+  std::string sql = "DELETE FROM " + d.quote_identifier(m.table) + " WHERE ";
+  for (std::size_t i = 0; i < where_fields.size(); ++i) {
+    if (i != 0) {
+      sql += " AND ";
+    }
+    sql += d.quote_identifier(where_fields[i]) + " = ?";
+  }
+
+  return conn.execute_update(sql, params(where_values));
+}
+
+std::size_t orm::delete_batch_impl(connection& conn,
+  entity_meta const& m,
+  std::vector<std::string> const& where_fields,
+  std::vector<std::vector<sql_value>> const& rows,
+  std::size_t default_batch_size) {
+  if (where_fields.empty()) {
+    throw uniorm_error("remove: no WHERE fields specified");
+  }
+
+  std::size_t const batch_size = default_batch_size > 0 ? default_batch_size : 1000;
+  dialect const d = dialect::detect(conn.dbms_name());
+
+  std::string sql = "DELETE FROM " + d.quote_identifier(m.table) + " WHERE ";
+  for (std::size_t i = 0; i < where_fields.size(); ++i) {
+    if (i != 0) {
+      sql += " AND ";
+    }
+    sql += d.quote_identifier(where_fields[i]) + " = ?";
+  }
+
+  std::size_t affected = 0;
+  std::string key(sql);
+  auto stmt = conn.acquire_statement(key);
+
+  for (std::size_t start = 0; start < rows.size(); start += batch_size) {
+    std::size_t count = std::min(batch_size, rows.size() - start);
+    std::vector<params> batch;
+    batch.reserve(count);
+    for (std::size_t r = 0; r < count; ++r) {
+      batch.emplace_back(rows[start + r]);
+    }
+    stmt->set_paramset_size(count);
+    stmt->bind_batch_params(batch);
+    stmt->execute();
+    affected += stmt->affected_rows();
+  }
+
+  conn.release_statement(key, std::move(stmt));
+  return affected;
+}
+
+std::size_t orm::delete_columnar_impl(connection& conn,
+  entity_meta const& m,
+  std::vector<std::string> const& where_fields,
+  std::vector<std::size_t> const& where_col_indices,
+  std::size_t row_count, std::size_t batch_size,
+  void const* rows_data,
+  string_size_fn string_size, write_row_fn write_row,
+  void const* (*entity_at)(void const* data, std::size_t i)) {
+  if (row_count == 0) {
+    return 0;
+  }
+
+  std::size_t const num_params = where_col_indices.size();
+  std::vector<std::size_t> param_to_col(num_params);
+  std::size_t pi = 0;
+  for (auto ci : where_col_indices) {
+    param_to_col[pi++] = ci;
+  }
+
+  dialect const d = dialect::detect(conn.dbms_name());
+  std::string sql = "DELETE FROM " + d.quote_identifier(m.table) + " WHERE ";
+  for (std::size_t i = 0; i < where_fields.size(); ++i) {
+    if (i != 0) {
+      sql += " AND ";
+    }
+    sql += d.quote_identifier(where_fields[i]) + " = ?";
+  }
+
+  std::string key(sql);
+  auto stmt = conn.acquire_statement(key);
+
+  // Pre-scan for max string/binary size only if needed
+  std::vector<std::size_t> max_sizes(num_params, 1);
+  bool has_var = false;
+  for (std::size_t p = 0; p < num_params; ++p) {
+    auto bt = m.columns[param_to_col[p]].buffer_type;
+    if (bt == backend::buffer_type::chars || bt == backend::buffer_type::bytes) {
+      has_var = true;
+      break;
+    }
+  }
+  if (has_var) {
+    for (std::size_t p = 0; p < num_params; ++p) {
+      auto const& col = m.columns[param_to_col[p]];
+      if (col.buffer_type == backend::buffer_type::chars ||
+          col.buffer_type == backend::buffer_type::bytes) {
+        for (std::size_t r = 0; r < row_count; ++r) {
+          void const* entity = entity_at(rows_data, r);
+          max_sizes[p] = std::max(max_sizes[p], string_size(&m, entity, param_to_col[p]));
+        }
+      }
+    }
+  }
+
+  std::size_t const alloc_count = std::min(batch_size, row_count);
+  auto& writer = stmt->prepare_batch();
+
+  std::vector<std::size_t> col_indices(num_params);
+  for (std::size_t p = 0; p < num_params; ++p) {
+    auto btype = m.columns[param_to_col[p]].buffer_type;
+    std::size_t elem_size = element_size_for(btype, max_sizes[p]);
+    col_indices[p] = writer.add_column(btype, alloc_count, elem_size);
+  }
+
+  std::size_t const first_count = alloc_count;
+  for (std::size_t p = 0; p < num_params; ++p) {
+    auto col_idx = col_indices[p];
+    void* buf = writer.data(col_idx);
+    std::size_t stride = writer.element_size(col_idx);
+    auto* inds = writer.indicators(col_idx);
+    std::size_t entity_col = param_to_col[p];
+    for (std::size_t r = 0; r < first_count; ++r) {
+      void const* entity = entity_at(rows_data, r);
+      write_row(&m, entity, r, entity_col, buf, stride, inds);
+    }
+  }
+
+  // Bind once — buffer pointers are stable across batches
+  writer.finish();
+  stmt->set_paramset_size(first_count);
+  stmt->execute();
+  std::size_t deleted = stmt->affected_rows();
+
+  for (std::size_t start = batch_size; start < row_count; start += batch_size) {
+    std::size_t count = std::min(batch_size, row_count - start);
+
+    for (std::size_t p = 0; p < num_params; ++p) {
+      auto col_idx = col_indices[p];
+      void* buf = writer.data(col_idx);
+      std::size_t stride = writer.element_size(col_idx);
+      auto* inds = writer.indicators(col_idx);
+      std::size_t entity_col = param_to_col[p];
+      for (std::size_t r = 0; r < count; ++r) {
+        void const* entity = entity_at(rows_data, start + r);
+        write_row(&m, entity, r, entity_col, buf, stride, inds);
+      }
+    }
+
+    if (count != first_count) {
+      stmt->set_paramset_size(count);
+    }
+    stmt->execute();
+    deleted += stmt->affected_rows();
+  }
+
+  conn.release_statement(key, std::move(stmt));
+  return deleted;
 }
 
 }  // namespace uniorm

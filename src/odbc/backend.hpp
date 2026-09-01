@@ -28,6 +28,7 @@ public:
   void execute() override;
   bool fetch() override;
   std::size_t affected_rows() const override;
+  std::size_t result_row_estimate() const override;
   std::vector<column_info> column_meta() const override;
   void set_row_array_size(std::size_t size) override;
   std::size_t rows_fetched() const override;

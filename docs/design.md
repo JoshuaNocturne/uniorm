@@ -525,12 +525,18 @@ auto opt = conn.query(orm).of<User>()
 事务语义自然跟随连接（在 `transaction` 作用域内执行的查询即处于该事务中）。
 
 物化路径：`all()`/`one()` 不经过 `result_set`/`row`/`sql_value`，而是把结果列
-**直接 `SQLBindCol` 到实体字段上**。注册时 `column_meta` 除 `write`/`read` 闭包外
-再生成 `make_binding` 工厂（`detail::make_field_binding` 按成员类型选择数值直绑、
-字符串/二进制定长缓冲 + 截断重读、时间戳暂存、`std::optional` 空值复位等绑定策略）。
-`render_select` 保证 SELECT 列序与 `meta.columns` 注册序一致，`entity_binding<T>`
-按序号绑定到一个原型对象；每次 `SQLFetch` 后 `finalize()` + `std::move(proto_)`
-产出一行（与聚合投影 `projection<T>::take()` 同一机制）。
+**直接 `SQLBindCol` 到暂存缓冲，再按字段偏移直写目标实体**。注册时 `column_meta`
+除 `write`/`read` 闭包外再生成 `make_binding` 工厂（`detail::make_field_binding`
+按成员类型选择数值直绑、字符串/二进制定长缓冲 + 截断重读、时间戳暂存、
+`std::optional` 空值复位等绑定策略）。变长列的暂存槽宽按 `column_meta()` 声明的
+`display_size` 自适应（字符列 ×4 兜底 UTF-8，上限 4096），使一个块的缓存占用
+与列宽成比例；超槽的值退回 `read_long_text`/`read_long_bytes` 整读。
+`render_select` 保证 SELECT 列序与 `meta.columns` 注册序一致；每个绑定在构造期
+捕获字段在实体内的**字节偏移**，`finalize(row, entity)` 把某行的暂存数据直接写入
+任意实体实例。`all()` 因此可以 `resize` 出块大小的 vector 存储后逐行
+`fill_into(out[i])`，无原型对象中转、每字段一次赋值即完成物化；`one()` 仍经
+`take()` + `proto_` 返回。结果向量在 execute 后按 `result_row_estimate()`
+（ODBC 下为缓冲结果集的 `SQLRowCount`，不可用时为 0）预分配容量。
 `connection` 提供私有逃生舱 `execute_with(sql, params, fn)`：
 prepare → 绑定参数 → execute，随后把活动语句交给 `fn`（`query<T>` 为友元）。
 相比经 `row` 物化，每行省去 `sql_value` 构造与按名查找，数值列零拷贝、

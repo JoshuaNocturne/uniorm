@@ -128,7 +128,7 @@ column_meta make_column_meta(
     }
   };
   c.make_binding = [member](void* obj) {
-    return make_field_binding(static_cast<T*>(obj)->*member);
+    return make_field_binding(static_cast<T*>(obj)->*member, obj);
   };
   c.write_to_param_buffer = [member](void const* obj, std::size_t row,
                                       void* buffer, std::size_t stride,

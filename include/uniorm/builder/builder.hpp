@@ -54,9 +54,18 @@ public:
 
   T take(std::size_t row_index) {
     for (auto& binding : bindings_) {
-      binding->finalize(row_index);
+      binding->finalize(row_index, &proto_);
     }
     return std::move(proto_);
+  }
+
+  // Materialize one row directly into `dest` (vector storage). Bindings
+  // write at captured member offsets, so no prototype round trip or
+  // per-row move of small (SSO) strings is needed.
+  void fill_into(T& dest, std::size_t row_index) {
+    for (auto& binding : bindings_) {
+      binding->finalize(row_index, &dest);
+    }
   }
 
 private:
@@ -185,10 +194,20 @@ public:
     binding.set_row_array_size(ras);
     binding.bind(*stmt);
     std::vector<T> out;
+    if (std::size_t est = stmt->result_row_estimate()) out.reserve(est);
     while (stmt->fetch()) {
       std::size_t rows_fetched = stmt->rows_fetched();
-      for (std::size_t i = 0; i < rows_fetched; ++i) {
-        out.push_back(binding.take(i));
+      // Materialize rows directly into the vector's storage; the bindings
+      // write at captured member offsets, avoiding per-row string moves.
+      std::size_t old_size = out.size();
+      out.resize(out.size() + rows_fetched);
+      try {
+        for (std::size_t i = 0; i < rows_fetched; ++i) {
+          binding.fill_into(out[old_size + i], i);
+        }
+      } catch (...) {
+        out.resize(old_size);
+        throw;
       }
     }
     c.release_statement(key, std::move(stmt));

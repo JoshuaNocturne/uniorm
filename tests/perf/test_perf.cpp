@@ -76,12 +76,72 @@ std::vector<Bench> make_rows(std::size_t n) {
   return rows;
 }
 
+struct bench_result {
+  std::string name;
+  std::size_t rows;
+  double ms;
+};
+
 void report(
-  char const* name, std::size_t rows, perf_clock::duration elapsed, int runs) {
+  char const* name, std::size_t rows, perf_clock::duration elapsed, int runs,
+  std::vector<bench_result>* collect = nullptr) {
   double ms = std::chrono::duration<double, std::milli>(elapsed).count();
   double per_run_rows = static_cast<double>(rows) / runs;
   double krows_per_s = per_run_rows / ms;  // rows/ms == krows/s
   std::printf("%-34s %10.2f ms %12.1f krows/s\n", name, ms, krows_per_s);
+  if (collect) {
+    collect->push_back({ name, rows, ms });
+  }
+}
+
+void print_comparison_table(
+  std::vector<bench_result> const& orm_results,
+  std::vector<bench_result> const& raw_results) {
+  std::printf("\n%-28s %10s %12s %10s %12s %6s\n",
+    "benchmark", "ORM (ms)", "ORM (k/s)", "Raw (ms)", "Raw (k/s)", "Ratio");
+  std::printf("%-28s %10s %12s %10s %12s %6s\n",
+    std::string(28, '-').c_str(),
+    std::string(10, '-').c_str(),
+    std::string(12, '-').c_str(),
+    std::string(10, '-').c_str(),
+    std::string(12, '-').c_str(),
+    std::string(6, '-').c_str());
+
+  for (auto const& orm : orm_results) {
+    // Find matching raw result
+    auto raw_it = std::find_if(raw_results.begin(), raw_results.end(),
+      [&](auto const& r) { return r.name == orm.name; });
+
+    double orm_krows = (orm.rows / orm.ms);
+    std::string name = orm.name;
+    if (name.length() > 28) {
+      name = name.substr(0, 25) + "...";
+    }
+    if (raw_it != raw_results.end()) {
+      double raw_krows = (raw_it->rows / raw_it->ms);
+      double ratio = raw_it->ms / orm.ms;  // >1 means ORM is faster
+      std::printf("%-28s %8.2f ms %10.1f k/s %8.2f ms %10.1f k/s %5.2fx\n",
+        name.c_str(), orm.ms, orm_krows, raw_it->ms, raw_krows, ratio);
+    } else {
+      std::printf("%-28s %8.2f ms %10.1f k/s %10s %12s %6s\n",
+        name.c_str(), orm.ms, orm_krows, "-", "-", "-");
+    }
+  }
+
+  // Print raw-only results
+  for (auto const& raw : raw_results) {
+    auto orm_it = std::find_if(orm_results.begin(), orm_results.end(),
+      [&](auto const& o) { return o.name == raw.name; });
+    if (orm_it == orm_results.end()) {
+      double raw_krows = (raw.rows / raw.ms);
+      std::string name = raw.name;
+      if (name.length() > 28) {
+        name = name.substr(0, 25) + "...";
+      }
+      std::printf("%-28s %10s %12s %8.2f ms %10.1f k/s %6s\n",
+        name.c_str(), "-", "-", raw.ms, raw_krows, "-");
+    }
+  }
 }
 
 template <class Fn>
@@ -98,7 +158,8 @@ perf_clock::duration best_of(Fn&& fn, int runs) {
   return best;
 }
 
-void run_benchmarks(connection& conn, orm& registry, std::size_t n) {
+std::vector<bench_result> run_benchmarks(connection& conn, orm& registry, std::size_t n) {
+  std::vector<bench_result> results;
   int const runs = 3;
   std::printf("rows per case: %zu (best of %d runs)\n", n, runs);
   std::printf("\n[uniorm]\n");
@@ -136,7 +197,7 @@ void run_benchmarks(connection& conn, orm& registry, std::size_t n) {
         best = elapsed;
       }
     }
-    report("insert (batch)", n, best, 1);
+    report("insert (batch)", n, best, 1, &results);
   }
   if (inserted != n) {
     std::printf("FATAL: inserted %zu of %zu rows\n", inserted, n);
@@ -166,7 +227,7 @@ void run_benchmarks(connection& conn, orm& registry, std::size_t n) {
         best = elapsed;
       }
     }
-    report("update (batch)", n, best, 1);
+    report("update (batch)", n, best, 1, &results);
   }
   if (updated != n) {
     std::printf("FATAL: updated %zu of %zu rows\n", updated, n);
@@ -176,10 +237,12 @@ void run_benchmarks(connection& conn, orm& registry, std::size_t n) {
   // Batch delete benchmark: delete half the rows
   std::size_t deleted = 0;
   {
-    // Prepare keys for deletion: delete rows with even IDs
-    std::vector<std::int64_t> delete_ids;
+    // Prepare entities for deletion: delete rows with even IDs
+    std::vector<Bench> delete_entities;
     for (std::size_t i = 0; i < n; i += 2) {
-      delete_ids.push_back(static_cast<std::int64_t>(i));
+      Bench b;
+      b.id = static_cast<std::int64_t>(i);
+      delete_entities.push_back(b);
     }
     perf_clock::duration best = perf_clock::duration::max();
     for (int i = 0; i < runs; ++i) {
@@ -199,18 +262,13 @@ void run_benchmarks(connection& conn, orm& registry, std::size_t n) {
         registry.insert(reinsert_rows);
       }
       auto start = perf_clock::now();
-      deleted = 0;
-      for (auto id : delete_ids) {
-        deleted += conn.execute_update(
-          "DELETE FROM " + std::string(k_table) + " WHERE id = ?",
-          params{ id });
-      }
+      deleted = registry.remove(delete_entities);
       auto elapsed = perf_clock::now() - start;
       if (elapsed < best) {
         best = elapsed;
       }
     }
-    report("delete (batch)", delete_ids.size(), best, 1);
+    report("delete (batch)", delete_entities.size(), best, 1, &results);
   }
   std::size_t expected_deleted = (n + 1) / 2;  // ceiling division
   if (deleted != expected_deleted) {
@@ -242,7 +300,7 @@ void run_benchmarks(connection& conn, orm& registry, std::size_t n) {
     best_of(
       [&] { entity_rows = registry.query().of<Bench>().all().size(); },
       runs),
-    runs);
+    runs, &results);
   if (entity_rows != n) {
     std::printf("FATAL: entity query returned %zu rows\n", entity_rows);
     std::exit(1);
@@ -255,12 +313,27 @@ void run_benchmarks(connection& conn, orm& registry, std::size_t n) {
     std::optional<std::string> note;
   };
   std::size_t proj_rows = 0;
-  report("query aggregate projection", n,
+  report("query projection (with string)", n,
     best_of(
       [&] { proj_rows = registry.query<bench_row>(select_all).size(); }, runs),
-    runs);
+    runs, &results);
   if (proj_rows != n) {
     std::printf("FATAL: projection returned %zu rows\n", proj_rows);
+    std::exit(1);
+  }
+
+  // Simple POD projection without std::string
+  struct bench_simple {
+    std::int64_t id;
+    std::int32_t score;
+  };
+  std::size_t simple_rows = 0;
+  report("query projection (POD only)", n,
+    best_of(
+      [&] { simple_rows = registry.query<bench_simple>("SELECT id, score FROM " + std::string(k_table)).size(); }, runs),
+    runs, &results);
+  if (simple_rows != n) {
+    std::printf("FATAL: simple projection returned %zu rows\n", simple_rows);
     std::exit(1);
   }
 
@@ -278,7 +351,7 @@ void run_benchmarks(connection& conn, orm& registry, std::size_t n) {
         }
       },
       runs),
-    runs);
+    runs, &results);
   if (dynamic_rows != n) {
     std::printf("FATAL: dynamic query returned %zu rows\n", dynamic_rows);
     std::exit(1);
@@ -293,17 +366,18 @@ void run_benchmarks(connection& conn, orm& registry, std::size_t n) {
         }
       },
       runs),
-    runs);
+    runs, &results);
 
   std::int64_t count = 0;
   report("query count()", 1,
     best_of([&] { count = registry.query().of<Bench>().count(); }, runs),
-    runs);
+    runs, &results);
   if (count != static_cast<std::int64_t>(n)) {
     std::printf("FATAL: count() returned %" PRId64 "\n", count);
     std::exit(1);
   }
   (void)id_sum;
+  return results;
 }
 
 // ---- raw ODBC baseline: same ODBC call patterns as uniorm -----------
@@ -377,7 +451,8 @@ struct raw_statement {
   }
 };
 
-void run_raw_benchmarks(std::string const& conn_string, std::size_t n) {
+std::vector<bench_result> run_raw_benchmarks(std::string const& conn_string, std::size_t n) {
+  std::vector<bench_result> results;
   int const runs = 3;
   std::printf("\n[raw ODBC baseline]\n");
   std::printf("%-34s %12s %14s\n", "benchmark", "time", "throughput");
@@ -394,7 +469,7 @@ void run_raw_benchmarks(std::string const& conn_string, std::size_t n) {
   }
 
   std::size_t batch_inserted = 0;
-  report("insert (paramset)", n,
+  report("insert (batch)", n,
     best_of(
       [&] {
         SQLSetConnectAttr(
@@ -464,7 +539,7 @@ void run_raw_benchmarks(std::string const& conn_string, std::size_t n) {
           rc.dbc, SQL_ATTR_AUTOCOMMIT, (SQLPOINTER)SQL_AUTOCOMMIT_ON, 0);
       },
       1),
-    1);
+    1, &results);
   if (batch_inserted != n) {
     std::printf(
       "FATAL: raw batch inserted %zu of %zu rows\n", batch_inserted, n);
@@ -473,7 +548,7 @@ void run_raw_benchmarks(std::string const& conn_string, std::size_t n) {
 
   // --- Batch update using SQL_ATTR_PARAMSET_SIZE ---
   std::size_t batch_updated = 0;
-  report("update (paramset)", n,
+  report("update (batch)", n,
     best_of(
       [&] {
         std::vector<SQLINTEGER> scores(batch_size);
@@ -515,7 +590,7 @@ void run_raw_benchmarks(std::string const& conn_string, std::size_t n) {
         }
       },
       runs),
-    runs);
+    runs, &results);
   if (batch_updated != n) {
     std::printf("FATAL: raw batch updated %zu of %zu rows\n", batch_updated, n);
     std::exit(1);
@@ -586,7 +661,7 @@ void run_raw_benchmarks(std::string const& conn_string, std::size_t n) {
         }
       },
       runs),
-    runs);
+    runs, &results);
   if (batch_updated_varchar != n) {
     std::printf("FATAL: raw batch updated (varchar) %zu of %zu rows\n", batch_updated_varchar, n);
     std::exit(1);
@@ -660,7 +735,7 @@ void run_raw_benchmarks(std::string const& conn_string, std::size_t n) {
         SQLFreeHandle(SQL_HANDLE_STMT, reuse_stmt);
       },
       runs),
-    runs);
+    runs, &results);
   if (batch_updated_reuse != n) {
     std::printf("FATAL: raw batch updated (reuse) %zu of %zu rows\n", batch_updated_reuse, n);
     std::exit(1);
@@ -668,7 +743,8 @@ void run_raw_benchmarks(std::string const& conn_string, std::size_t n) {
 
   // --- Batch delete using SQL_ATTR_PARAMSET_SIZE ---
   std::size_t batch_deleted = 0;
-  report("delete (paramset)", n,
+  std::size_t const delete_count = (n + 1) / 2;  // ceiling division, matches ORM
+  report("delete (batch)", delete_count,
     best_of(
       [&] {
         std::vector<SQLBIGINT> ids(batch_size);
@@ -687,8 +763,9 @@ void run_raw_benchmarks(std::string const& conn_string, std::size_t n) {
           SQL_HANDLE_STMT, del.stmt, "bind paramset id");
 
         batch_deleted = 0;
-        for (std::size_t start = 0; start < n; start += batch_size) {
-          std::size_t count = std::min(batch_size, n - start);
+        for (std::size_t start = 0; start < n; start += 2 * batch_size) {
+          std::size_t count = std::min(batch_size, (n - start + 1) / 2);
+          if (count == 0) break;
           if (count != batch_size) {
             paramset = count;
             odbc_check(SQLSetStmtAttr(del.stmt, SQL_ATTR_PARAMSET_SIZE,
@@ -696,7 +773,7 @@ void run_raw_benchmarks(std::string const& conn_string, std::size_t n) {
               SQL_HANDLE_STMT, del.stmt, "set paramset size (tail)");
           }
           for (std::size_t i = 0; i < count; ++i) {
-            ids[i] = static_cast<SQLBIGINT>(start + i);
+            ids[i] = static_cast<SQLBIGINT>(start + 2 * i);  // even IDs only
           }
           odbc_check(SQLExecute(del.stmt), SQL_HANDLE_STMT, del.stmt,
             "execute paramset delete");
@@ -704,13 +781,13 @@ void run_raw_benchmarks(std::string const& conn_string, std::size_t n) {
         }
       },
       runs),
-    runs);
-  if (batch_deleted != n) {
-    std::printf("FATAL: raw batch deleted %zu of %zu rows\n", batch_deleted, n);
+    runs, &results);
+  if (batch_deleted != delete_count) {
+    std::printf("FATAL: raw batch deleted %zu of %zu rows\n", batch_deleted, delete_count);
     std::exit(1);
   }
 
-  // Re-insert data for query benchmarks
+  // Re-insert deleted even-ID rows for query benchmarks
   {
     raw_statement ins(rc.dbc,
       std::string("INSERT INTO ") + k_table + " (id, name, score, note) "
@@ -744,8 +821,10 @@ void run_raw_benchmarks(std::string const& conn_string, std::size_t n) {
                      65, note_inds.data()),
       SQL_HANDLE_STMT, ins.stmt, "bind paramset note");
 
-    for (std::size_t start = 0; start < n; start += batch_size) {
-      std::size_t count = std::min(batch_size, n - start);
+    std::size_t reinserted = 0;
+    for (std::size_t start = 0; start < n; start += 2 * batch_size) {
+      std::size_t count = std::min(batch_size, (n - start + 1) / 2);
+      if (count == 0) break;
       if (count != batch_size) {
         paramset = count;
         odbc_check(SQLSetStmtAttr(ins.stmt, SQL_ATTR_PARAMSET_SIZE,
@@ -753,7 +832,7 @@ void run_raw_benchmarks(std::string const& conn_string, std::size_t n) {
           SQL_HANDLE_STMT, ins.stmt, "set paramset size (tail)");
       }
       for (std::size_t i = 0; i < count; ++i) {
-        std::size_t row = start + i;
+        std::size_t row = start + 2 * i;  // even IDs only
         ids[i] = static_cast<SQLBIGINT>(row);
         std::snprintf(&names[i * 65], 65, "row-%zu", row);
         scores[i] = static_cast<SQLINTEGER>(row % 1000);
@@ -773,9 +852,9 @@ void run_raw_benchmarks(std::string const& conn_string, std::size_t n) {
     std::string("SELECT id, name, score, note FROM ") + k_table;
 
   // --- Block fetch using SQL_ATTR_ROW_ARRAY_SIZE ---
-  std::size_t const fetch_size = 100;
+  std::size_t const fetch_size = 1000;
   std::size_t block_rows = 0;
-  report("query (block fetch)", n,
+  report("query entity all (fetch only)", n,
     best_of(
       [&] {
         raw_statement q(rc.dbc, select_all);
@@ -819,14 +898,81 @@ void run_raw_benchmarks(std::string const& conn_string, std::size_t n) {
         }
       },
       runs),
-    runs);
+    runs, &results);
   if (block_rows != n) {
     std::printf("FATAL: raw block fetch returned %zu rows\n", block_rows);
     std::exit(1);
   }
 
+  // Same block fetch, but also assemble Bench entities from the staging
+  // buffers — the fair lower bound for what the ORM entity path does.
+  std::size_t assembled = 0;
+  std::vector<Bench> raw_entities;
+  report("query entity all() (direct bind)", n,
+    best_of(
+      [&] {
+        raw_statement q(rc.dbc, select_all);
+
+        std::vector<SQLBIGINT> ids(fetch_size);
+        std::vector<char> names(fetch_size * 65);
+        std::vector<SQLINTEGER> scores(fetch_size);
+        std::vector<char> notes(fetch_size * 65);
+        std::vector<SQLLEN> id_inds(fetch_size);
+        std::vector<SQLLEN> name_inds(fetch_size);
+        std::vector<SQLLEN> score_inds(fetch_size);
+        std::vector<SQLLEN> note_inds(fetch_size);
+        SQLULEN rows_fetched = 0;
+
+        odbc_check(SQLSetStmtAttr(q.stmt, SQL_ATTR_ROW_ARRAY_SIZE,
+                       reinterpret_cast<SQLPOINTER>(fetch_size), 0),
+          SQL_HANDLE_STMT, q.stmt, "set row array size");
+        odbc_check(SQLSetStmtAttr(q.stmt, SQL_ATTR_ROWS_FETCHED_PTR,
+                       &rows_fetched, 0),
+          SQL_HANDLE_STMT, q.stmt, "set rows fetched ptr");
+
+        odbc_check(SQLBindCol(q.stmt, 1, SQL_C_SBIGINT, ids.data(),
+                       sizeof(SQLBIGINT), id_inds.data()),
+          SQL_HANDLE_STMT, q.stmt, "bindcol 1");
+        odbc_check(SQLBindCol(q.stmt, 2, SQL_C_CHAR, names.data(),
+                       65, name_inds.data()),
+          SQL_HANDLE_STMT, q.stmt, "bindcol 2");
+        odbc_check(SQLBindCol(q.stmt, 3, SQL_C_SLONG, scores.data(),
+                       sizeof(SQLINTEGER), score_inds.data()),
+          SQL_HANDLE_STMT, q.stmt, "bindcol 3");
+        odbc_check(SQLBindCol(q.stmt, 4, SQL_C_CHAR, notes.data(),
+                       65, note_inds.data()),
+          SQL_HANDLE_STMT, q.stmt, "bindcol 4");
+
+        q.execute();
+        raw_entities.clear();
+        raw_entities.reserve(n);
+        SQLRETURN fetch_rc = SQLFetch(q.stmt);
+        while (fetch_rc == SQL_SUCCESS || fetch_rc == SQL_SUCCESS_WITH_INFO) {
+          for (SQLULEN i = 0; i < rows_fetched; ++i) {
+            Bench b;
+            b.id = ids[i];
+            b.name.assign(&names[i * 65],
+              static_cast<std::size_t>(name_inds[i]));
+            b.score = scores[i];
+            if (note_inds[i] != SQL_NULL_DATA) {
+              b.note = std::string(&notes[i * 65],
+                static_cast<std::size_t>(note_inds[i]));
+            }
+            raw_entities.push_back(std::move(b));
+          }
+          fetch_rc = SQLFetch(q.stmt);
+        }
+        assembled = raw_entities.size();
+      },
+      runs),
+    runs, &results);
+  if (assembled != n) {
+    std::printf("FATAL: raw assemble returned %zu rows\n", assembled);
+    std::exit(1);
+  }
+
   // Single-row fetch, mirroring one() (LIMIT 1 + one SQLFetch).
-  report("query single row (LIMIT 1)", 1,
+  report("query one() (direct bind)", 1,
     best_of(
       [&] {
         raw_statement q(rc.dbc, select_all + " LIMIT 1");
@@ -845,7 +991,8 @@ void run_raw_benchmarks(std::string const& conn_string, std::size_t n) {
         }
       },
       runs),
-    runs);
+    runs, &results);
+  return results;
 }
 
 }  // namespace
@@ -885,8 +1032,10 @@ int main() {
     connection conn(conn_string);
     prepare_schema(conn);
     orm registry = build_registry(conn_string);
-    run_benchmarks(conn, registry, n);
-    run_raw_benchmarks(conn_string, n);
+    registry.row_array_size(1000);
+    auto orm_results = run_benchmarks(conn, registry, n);
+    auto raw_results = run_raw_benchmarks(conn_string, n);
+    print_comparison_table(orm_results, raw_results);
     conn.execute_update(std::string("DROP TABLE ") + k_table);
   } catch (std::exception const& e) {
     std::printf("FATAL: unexpected exception: %s\n", e.what());

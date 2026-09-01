@@ -170,10 +170,19 @@ public:
     proj.set_row_array_size(row_array_size_);
     proj.bind(*stmt);
     std::vector<T> out;
+    if (std::size_t est = stmt->result_row_estimate()) out.reserve(est);
     while (stmt->fetch()) {
       std::size_t rows_fetched = stmt->rows_fetched();
-      for (std::size_t i = 0; i < rows_fetched; ++i) {
-        out.push_back(proj.take(i));
+      // Construct rows directly in the vector storage; see fill_into.
+      std::size_t old_size = out.size();
+      out.resize(out.size() + rows_fetched);
+      try {
+        for (std::size_t i = 0; i < rows_fetched; ++i) {
+          proj.fill_into(out[old_size + i], i);
+        }
+      } catch (...) {
+        out.resize(old_size);
+        throw;
       }
     }
     c.release_statement(key, std::move(stmt));
@@ -335,6 +344,133 @@ public:
   // Dynamic remove builder for tables without entity mapping
   remove_builder remove(std::string_view table);
 
+  // Single entity remove (uses primary key)
+  template <class Entity>
+    requires(!std::is_convertible_v<Entity const&, std::string_view>)
+  std::size_t remove(Entity const& entity) {
+    ensure_connected();
+    entity_meta const& m = meta<Entity>();
+    std::string pk;
+    for (auto const& c : m.columns) {
+      if (c.is_primary_key) {
+        pk = c.column;
+        break;
+      }
+    }
+    if (pk.empty()) {
+      throw uniorm_error(
+        "remove: entity has no primary key; specify where_fields explicitly");
+    }
+    return remove(entity, std::vector<std::string>{ pk });
+  }
+
+  // Single entity remove with explicit where fields
+  template <class Entity>
+    requires(!std::is_convertible_v<Entity const&, std::string_view>)
+  std::size_t remove(Entity const& entity,
+    std::vector<std::string> const& where_fields) {
+    ensure_connected();
+    entity_meta const& m = meta<Entity>();
+    std::vector<std::string> qualified_fields;
+    std::vector<sql_value> qualified_values;
+    std::set<std::string> where_set(where_fields.begin(), where_fields.end());
+    for (auto const& c : m.columns) {
+      if (where_set.count(c.column)) {
+        qualified_fields.push_back(c.column);
+        qualified_values.push_back(c.read(&entity));
+      }
+    }
+    if (qualified_fields.empty()) {
+      throw uniorm_error("remove: no WHERE fields specified");
+    }
+    return delete_single_impl(native_connection(), m, qualified_fields, qualified_values);
+  }
+
+  // Batch entity remove (uses primary key)
+  template <class Entity>
+  std::size_t remove(std::vector<Entity> const& entities) {
+    ensure_connected();
+    entity_meta const& m = meta<Entity>();
+    std::string pk;
+    for (auto const& c : m.columns) {
+      if (c.is_primary_key) {
+        pk = c.column;
+        break;
+      }
+    }
+    if (pk.empty()) {
+      throw uniorm_error(
+        "remove: entity has no primary key; specify where_fields explicitly");
+    }
+    return remove(entities, std::vector<std::string>{ pk });
+  }
+
+  // Batch entity remove with explicit where fields
+  template <class Entity>
+  std::size_t remove(std::vector<Entity> const& entities,
+    std::vector<std::string> const& where_fields) {
+    ensure_connected();
+    if (entities.empty()) {
+      return 0;
+    }
+    entity_meta const& m = meta<Entity>();
+    std::set<std::string> where_set(where_fields.begin(), where_fields.end());
+    std::vector<std::string> qualified_fields;
+    std::vector<std::size_t> qualified_col_indices;
+    for (std::size_t ci = 0; ci < m.columns.size(); ++ci) {
+      if (where_set.count(m.columns[ci].column)) {
+        qualified_fields.push_back(m.columns[ci].column);
+        qualified_col_indices.push_back(ci);
+      }
+    }
+    if (qualified_fields.empty()) {
+      throw uniorm_error("remove: no WHERE fields specified");
+    }
+
+    if (native_connection().caps().columnar_batch) {
+      auto string_size = +[](void const* meta, void const* entity,
+                          std::size_t col) -> std::size_t {
+        return static_cast<entity_meta const*>(meta)->columns[col].get_string_size(entity);
+      };
+      auto write_row = +[](void const* meta, void const* entity,
+                        std::size_t row, std::size_t col,
+                        void* buf, std::size_t stride, std::int64_t* inds) {
+        static_cast<entity_meta const*>(meta)
+          ->columns[col]
+          .write_to_param_buffer(entity, row, buf, stride, inds);
+      };
+      auto entity_at = +[](void const* data,
+                        std::size_t i) -> void const* {
+        return &(*static_cast<std::vector<Entity> const*>(data))[i];
+      };
+      std::optional<transaction> txn;
+      if (auto_commit_) txn.emplace(native_connection().begin());
+      auto result = delete_columnar_impl(native_connection(), m,
+        qualified_fields, qualified_col_indices,
+        entities.size(), paramset_size_ > 0 ? paramset_size_ : 1000,
+        &entities, string_size, write_row, entity_at);
+      if (txn) txn->commit();
+      return result;
+    }
+
+    std::vector<std::vector<sql_value>> rows;
+    rows.reserve(entities.size());
+    for (auto const& e : entities) {
+      std::vector<sql_value> rv;
+      rv.reserve(qualified_fields.size());
+      for (auto ci : qualified_col_indices) {
+        rv.push_back(m.columns[ci].read(&e));
+      }
+      rows.push_back(std::move(rv));
+    }
+    std::optional<transaction> txn;
+    if (auto_commit_) txn.emplace(native_connection().begin());
+    auto result = delete_batch_impl(
+      native_connection(), m, qualified_fields, rows, paramset_size_);
+    if (txn) txn->commit();
+    return result;
+  }
+
   // ========================================================================
   // RAW SQL OPERATIONS
   // ========================================================================
@@ -417,6 +553,26 @@ private:
     entity_meta const& m,
     std::vector<std::string> const& set_columns,
     std::vector<std::size_t> const& set_col_indices,
+    std::vector<std::string> const& where_fields,
+    std::vector<std::size_t> const& where_col_indices,
+    std::size_t row_count, std::size_t batch_size,
+    void const* rows_data,
+    string_size_fn string_size, write_row_fn write_row,
+    void const* (*entity_at)(void const* data, std::size_t i));
+
+  static std::size_t delete_single_impl(connection& conn,
+    entity_meta const& m,
+    std::vector<std::string> const& where_fields,
+    std::vector<sql_value> const& where_values);
+
+  static std::size_t delete_batch_impl(connection& conn,
+    entity_meta const& m,
+    std::vector<std::string> const& where_fields,
+    std::vector<std::vector<sql_value>> const& rows,
+    std::size_t default_batch_size);
+
+  static std::size_t delete_columnar_impl(connection& conn,
+    entity_meta const& m,
     std::vector<std::string> const& where_fields,
     std::vector<std::size_t> const& where_col_indices,
     std::size_t row_count, std::size_t batch_size,

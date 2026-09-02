@@ -1,6 +1,7 @@
 #include "check.hpp"
 
 void test_odbc_handles();
+void test_odbc_error_is_backend_error();
 #ifdef UNIORM_TEST_GEN
 void test_gen_config();
 void test_gen_output();
@@ -8,6 +9,7 @@ void test_gen_output();
 
 int main() {
   test_odbc_handles();
+  test_odbc_error_is_backend_error();
 #ifdef UNIORM_TEST_GEN
   test_gen_config();
   test_gen_output();

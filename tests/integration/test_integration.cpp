@@ -12,6 +12,7 @@
 
 #include "../unit/check.hpp"
 
+#include <uniorm/backend/error.hpp>
 #include <uniorm/connection.hpp>
 #include <uniorm/detail/time.hpp>
 #include <uniorm/mapping/registry.hpp>
@@ -469,6 +470,28 @@ void test_statement_cache(orm& db) {
   CHECK(db.statement_cache_size() > 0);
 }
 
+void test_error_reporting(orm& db) {
+  // A driver failure surfaces as a backend_error: the ODBC layer throws
+  // odbc_error, which derives from it, so callers never need the private
+  // header to classify SQL errors or read their SQLSTATE.
+  bool reported = false;
+  try {
+    db.execute("SELECT * FROM uniorm_it_no_such_table");
+  } catch (backend::backend_error const& e) {
+    reported = true;
+    CHECK(e.backend_name() == "odbc");
+    CHECK(!e.diagnostics().empty());
+    if (!e.diagnostics().empty()) {
+      auto const& first = e.diagnostics()[0];
+      CHECK(first.state.size() == 5);
+      CHECK(!first.message.empty());
+      CHECK(std::string(e.what()).find("[" + first.state + "]") !=
+            std::string::npos);
+    }
+  }
+  CHECK(reported);
+}
+
 void test_pool(std::string const& conn_string) {
   pool_options opts;
   opts.connection_string = conn_string;
@@ -601,6 +624,7 @@ int main() {
     test_remove(db);
     test_entity_update(db);
     test_statement_cache(db);
+    test_error_reporting(db);
     test_pool(conn_string);
     test_pool_maintenance(conn_string);
 

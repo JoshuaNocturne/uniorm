@@ -4,15 +4,7 @@ namespace uniorm::odbc {
 
 odbc_error::odbc_error(
   std::string const& context, std::vector<diagnostic> diags)
-  : uniorm_error([&] {
-      std::string msg = context;
-      for (auto const& d : diags) {
-        msg += "\n  [" + d.state + "] (" + std::to_string(d.native_code) +
-               ") " + d.message;
-      }
-      return msg;
-    }()),
-    diags_(std::move(diags)) {}
+  : backend::backend_error("odbc", context, std::move(diags)) {}
 
 std::vector<odbc_error::diagnostic> collect_diagnostics(
   SQLSMALLINT handle_type, SQLHANDLE handle) {

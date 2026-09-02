@@ -1,36 +1,26 @@
 #pragma once
 
 // Private header: ODBC diagnostics and error mapping. Not installed;
-// outside libuniorm these surface only through the uniorm::uniorm_error base.
+// SQL failures are classifiable through uniorm::backend::backend_error,
+// which this header's type derives from.
 
-#include <cstdint>
 #include <string>
 #include <vector>
 
 #include <sql.h>
 #include <sqlext.h>
 
-#include <uniorm/error.hpp>
+#include <uniorm/backend/error.hpp>
 #include <uniorm/export.hpp>
 
 namespace uniorm::odbc {
 
-class UNIORM_API odbc_error : public uniorm_error {
+// Carries the driver's diagnostic records under the backend name "odbc".
+class UNIORM_API odbc_error : public backend::backend_error {
 public:
-  struct diagnostic {
-    std::string state;  // 5-char SQLSTATE
-    std::int64_t native_code = 0;
-    std::string message;
-  };
+  using diagnostic = backend::backend_error::diagnostic;
 
   odbc_error(std::string const& context, std::vector<diagnostic> diags);
-
-  std::vector<diagnostic> const& diagnostics() const noexcept {
-    return diags_;
-  }
-
-private:
-  std::vector<diagnostic> diags_;
 };
 
 // Collect all diagnostic records attached to a handle.

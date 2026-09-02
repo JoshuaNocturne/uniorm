@@ -133,15 +133,11 @@ RAII、move-only 的句柄包装，屏蔽所有 `SQLFreeHandle` / 错误提取�
 ```cpp
 namespace uniorm::odbc {
 
-class odbc_error : public uniorm_error {
+class odbc_error : public backend::backend_error {   // backend 名固定 "odbc"
 public:
-    struct diagnostic {
-        std::string state;      // SQLSTATE，5 字符
-        std::int64_t native_code = 0;
-        std::string message;
-    };
+    using diagnostic = backend::backend_error::diagnostic;  // {state, native_code, message}
     odbc_error(std::string const& context, std::vector<diagnostic> diags);
-    std::vector<diagnostic> const& diagnostics() const noexcept;
+    // diagnostics() 继承自 backend_error
 };
 
 // 错误提取辅助（error.hpp）
@@ -772,8 +768,8 @@ struct schema_metadata { /* table_columns(table) —— 最小元数据扩展，
   `libuniorm.so`，加载即达）。
 
 **错误体系**：`backend_error : uniorm_error`（backend 名 + context +
-`diagnostic{state, native_code, message}`）；`odbc_error` 改为其派生
-（backend 名固定 "odbc"），现有 catch 站点不受影响；另有
+`diagnostic{state, native_code, message}`）；`odbc_error` 为其派生
+（backend 名固定 "odbc"），故现有 catch 站点不受影响；另有
 `capability_not_supported` 与 `unknown_scheme`。
 
 **构建门禁**：`option(UNIORM_BACKEND_ODBC ON)`；ODBC 由 PUBLIC 收紧为
@@ -870,16 +866,17 @@ uniorm_error : std::runtime_error    // 基类（error.hpp）
 
 backend::backend_error : uniorm_error    // backend 层（backend/error.hpp），
 │                                        // backend 名 + context + diagnostics
-├── backend::capability_not_supported    // 能力缺失（不静默降级）
-└── backend::unknown_scheme              // 连接串 scheme 未注册
+└── odbc::odbc_error                     // ODBC 句柄层（src/odbc/error.hpp，私有头），
+                                         // backend 名固定 "odbc"
 
-odbc::odbc_error : uniorm_error          // ODBC 句柄层（src/odbc/error.hpp，私有头）
+backend::capability_not_supported : uniorm_error   // 能力缺失（不静默降级）
+backend::unknown_scheme : uniorm_error             // 连接串 scheme 未注册
 ```
 
-`odbc_error` 与 `backend_error` 是平级的：适配器不做异常翻译，故底层驱动失败会原样
-穿过 backend 契约抛出。它是私有头里的类型，公开侧只能按 `uniorm::uniorm_error` 捕获
-（`what()` 已渲染完整 diagnostics 文本）；若需要按驱动错误分类，走 `SQLSTATE` 文本
-或后续补一层翻译。
+所有 ODBC 失败都经 `throw_if_error` 这一处收口抛 `odbc_error`，而它就是
+`backend_error`：公开侧按 `uniorm::backend::backend_error` 捕获即可拿
+`backend_name()` 与 SQLSTATE 诊断记录，不需要私有头，适配器也不再需要二次翻译。
+集成测试 `test_error_reporting` 钉住这条跨层契约。
 
 ## 8. 测试策略
 
@@ -893,7 +890,8 @@ odbc::odbc_error : uniorm_error          // ODBC 句柄层（src/odbc/error.hpp�
   `uniorm_odbc_unit_tests` 链接 ODBC——`test_odbc_handles`（句柄 RAII）、
   `test_gen_config`（TOML 子集解析正例/错误行号/非法键）、
   `test_gen_output`（命名转换边界 + 生成器快照与覆写/跳表/错误路径）；
-- **集成测试**（已实现，DSN/凭据由 `UNIORM_IT_DSN` / `UNIORM_IT_USER` / `UNIORM_IT_PWD` 指定，凭据以 `UID`/`PWD` 写进连接串；连不上时 ctest SKIP）：execute/params 往返、动态行、聚合投影（含长字符串与 timestamp）、orm validate（含 strict 失败路径）、查询构建器全谓词与分页、事务 commit/rollback/析构回滚、批量插入（实体版含 NULL/超批分批、动态版、参数个数校验）、语句缓存（hit/miss 计数、流式 result_set 借出期间并发 miss、清空）、连接池借还与超时、连接池维护（心跳保活计数、空闲超时驱逐、失败心跳丢弃）；后续按库加条件标签覆盖方言与类型怪癖；
+- **集成测试**（已实现，DSN/凭据由 `UNIORM_IT_DSN` / `UNIORM_IT_USER` / `UNIORM_IT_PWD` 指定，凭据以 `UID`/`PWD` 写进连接串；连不上时 ctest SKIP）：execute/params 往返、动态行、聚合投影（含长字符串与 timestamp）、orm validate（含 strict 失败路径）、查询构建器全谓词与分页、事务 commit/rollback/析构回滚、批量插入（实体版含 NULL/超批分批、动态版、参数个数校验）、语句缓存（hit/miss 计数、流式 result_set 借出期间并发 miss、清空）、跨层错误上报（驱动失败以 `backend_error` 捕获，核对 `backend_name()`
+与 SQLSTATE 诊断）、连接池借还与超时、连接池维护（心跳保活计数、空闲超时驱逐、失败心跳丢弃）；后续按库加条件标签覆盖方言与类型怪癖；
 - **性能基准**（已实现，ctest 标签 `perf`，`tests/perf/test_perf.cpp`）：
   连不上库时 SKIP；行数由 `UNIORM_PERF_ROWS` 指定（默认 10000）。
   覆盖批量插入吞吐，以及三条查询物化路径的对比：实体直绑

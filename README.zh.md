@@ -210,7 +210,7 @@ ctest --test-dir build --output-on-failure
 ```
 include/uniorm/       公共头文件（消费者唯一需要的 include 根）
   backend/            驱动中立的 backend 接口、注册表、错误体系
-  detail/             connection、pfr-lite、投影绑定、chrono 工具
+  detail/             pfr-lite、投影绑定、chrono 工具
   mapping/            实体映射注册表
   builder/            谓词表达式与流式查询/更新/删除构建器
 src/                  实现（构建为 libuniorm.so）；私有头贴着对应 .cpp 存放，

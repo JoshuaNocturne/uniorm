@@ -232,7 +232,7 @@ ctest --test-dir build --output-on-failure
 ```
 include/uniorm/       public headers (the only include root consumers need)
   backend/            driver-neutral backend interface, registry, errors
-  detail/             connection, pfr-lite, projection bindings, chrono helpers
+  detail/             pfr-lite, projection bindings, chrono helpers
   mapping/            entity mapping registry
   builder/            predicate expressions and the fluent query/update/delete builders
 src/                  implementation (built into libuniorm.so); private headers

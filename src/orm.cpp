@@ -11,7 +11,7 @@
 #include <sqlext.h>
 
 #include "uniorm/backend/backend.hpp"
-#include <uniorm/detail/connection.hpp>
+#include <uniorm/connection.hpp>
 #include "uniorm/dialect.hpp"
 #include "uniorm/builder/builder.hpp"
 #include "uniorm/result_set.hpp"

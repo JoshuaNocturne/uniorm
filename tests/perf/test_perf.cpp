@@ -19,7 +19,7 @@
 #include <sql.h>
 #include <sqlext.h>
 
-#include <uniorm/detail/connection.hpp>
+#include <uniorm/connection.hpp>
 #include <uniorm/mapping/registry.hpp>
 #include <uniorm/builder/builder.hpp>
 

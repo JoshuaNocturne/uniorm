@@ -15,7 +15,7 @@
 #include <vector>
 
 #include <uniorm/backend/backend.hpp>
-#include <uniorm/detail/connection.hpp>
+#include <uniorm/connection.hpp>
 #include <uniorm/detail/projection.hpp>
 #include <uniorm/mapping/registry.hpp>
 #include <uniorm/pool.hpp>

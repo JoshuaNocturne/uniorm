@@ -12,7 +12,7 @@
 
 #include "../unit/check.hpp"
 
-#include <uniorm/detail/connection.hpp>
+#include <uniorm/connection.hpp>
 #include <uniorm/detail/time.hpp>
 #include <uniorm/mapping/registry.hpp>
 #include <uniorm/orm.hpp>

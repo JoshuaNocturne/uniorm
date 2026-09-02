@@ -1,6 +1,6 @@
 #include "uniorm/transaction.hpp"
 
-#include <uniorm/detail/connection.hpp>
+#include <uniorm/connection.hpp>
 
 namespace uniorm {
 

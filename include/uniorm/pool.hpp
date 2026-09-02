@@ -15,7 +15,7 @@
 #include <mutex>
 #include <string>
 
-#include <uniorm/detail/connection.hpp>
+#include <uniorm/connection.hpp>
 #include <uniorm/error.hpp>
 #include <uniorm/export.hpp>
 

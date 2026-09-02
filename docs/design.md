@@ -70,13 +70,14 @@ uniorm/
 ├── include/uniorm/              # 对外安装的头文件（消费者唯一的 include 根）
 │   ├── uniorm.hpp               # umbrella：README 示例只需它
 │   ├── export.hpp               # UNIORM_API 符号导出宏
-│   ├── error.hpp                # 异常体系（不含 odbc_error）
+│   ├── error.hpp                # 异常体系（backend/odbc 层错误在各自头文件）
 │   ├── value.hpp                # sql_value variant / timestamp
 │   ├── types.hpp                # backend 中立 sql_type 枚举 + sql_type_from_native
 │   ├── converter.hpp            # 自定义类型转换器（concept has_converter，v1 未接线）
 │   ├── row.hpp                  # 动态行 + value_cast
 │   ├── params.hpp               # 参数容器 + make_sql_value 转换
 │   ├── result_set.hpp           # 行式绑定结果集（pimpl）
+│   ├── connection.hpp           # connection：连接前置的 low-level 入口（含语句缓存原语）
 │   ├── transaction.hpp
 │   ├── pool.hpp                 # connection_pool / pooled_connection
 │   ├── dialect.hpp              # 方言特性（引用符、分页）
@@ -85,7 +86,6 @@ uniorm/
 │   │   ├── registry.hpp         # scheme 解析 + backend 注册表（out-of-tree backend 注册入口）
 │   │   └── error.hpp            # backend_error / capability_not_supported / unknown_scheme
 │   ├── detail/
-│   │   ├── connection.hpp       # 高层 connection（含语句缓存原语；名为 detail 实为公开入口）
 │   │   ├── pfr.hpp              # 自实现聚合体反射（字段数探测 + 展开，上限 64）
 │   │   ├── projection.hpp       # 聚合 struct 投影绑定（field_binding 体系）
 │   │   ├── traits.hpp           # is_optional_v 等共享 traits

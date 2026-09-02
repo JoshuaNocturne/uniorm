@@ -1,10 +1,12 @@
 #pragma once
 
+// Private header: ODBC connection handle wrapper. Not installed.
+
 #include <string_view>
 
-#include <uniorm/odbc/detail/handles.hpp>
-#include <uniorm/odbc/environment.hpp>
-#include <uniorm/odbc/error.hpp>
+#include "handles.hpp"
+#include "environment.hpp"
+#include "error.hpp"
 
 namespace uniorm::odbc {
 

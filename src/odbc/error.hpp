@@ -1,5 +1,8 @@
 #pragma once
 
+// Private header: ODBC diagnostics and error mapping. Not installed;
+// outside libuniorm these surface only through the uniorm::uniorm_error base.
+
 #include <cstdint>
 #include <string>
 #include <vector>

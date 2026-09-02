@@ -9,8 +9,8 @@
 #include <vector>
 
 #include <uniorm/backend/backend.hpp>
-#include <uniorm/odbc/connection.hpp>
-#include <uniorm/odbc/statement.hpp>
+#include "connection.hpp"
+#include "statement.hpp"
 
 namespace uniorm::odbc {
 

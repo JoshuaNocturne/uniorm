@@ -11,6 +11,9 @@ add_executable(uniorm_unit_tests
 # Deliberately links no ODBC: any driver-type leak into the public
 # headers above the statement layer fails this target's compile.
 target_link_libraries(uniorm_unit_tests PRIVATE uniorm::uniorm)
+# test_unicode exercises a private header that sits beside its source;
+# src/ is on the include path for no other reason.
+target_include_directories(uniorm_unit_tests PRIVATE ${PROJECT_SOURCE_DIR}/src)
 if(UNIORM_BACKEND_ODBC)
     target_compile_definitions(uniorm_unit_tests PRIVATE UNIORM_TEST_BACKEND_ODBC)
 endif()
@@ -22,6 +25,8 @@ if(UNIORM_BACKEND_ODBC)
         unit/test_odbc_handles.cpp
     )
     target_link_libraries(uniorm_odbc_unit_tests PRIVATE uniorm::uniorm ODBC::ODBC)
+    # White-box test of the private ODBC handle layer (src/odbc/).
+    target_include_directories(uniorm_odbc_unit_tests PRIVATE ${PROJECT_SOURCE_DIR}/src)
     if(UNIORM_BUILD_TOOLS)
         target_sources(uniorm_odbc_unit_tests PRIVATE
             unit/test_gen_config.cpp

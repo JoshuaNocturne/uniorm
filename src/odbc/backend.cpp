@@ -13,8 +13,8 @@
 #include <uniorm/backend/registry.hpp>
 
 #include "uniorm/detail/time.hpp"
-#include "uniorm/odbc/environment.hpp"
-#include "uniorm/odbc/error.hpp"
+#include "environment.hpp"
+#include "error.hpp"
 
 namespace uniorm::odbc {
 

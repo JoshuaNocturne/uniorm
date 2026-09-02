@@ -1,4 +1,4 @@
-#include "uniorm/odbc/error.hpp"
+#include "error.hpp"
 
 namespace uniorm::odbc {
 

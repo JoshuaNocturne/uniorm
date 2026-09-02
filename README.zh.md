@@ -208,15 +208,18 @@ ctest --test-dir build --output-on-failure
 ## 目录结构
 
 ```
-include/uniorm/       公共头文件
+include/uniorm/       公共头文件（消费者唯一需要的 include 根）
   backend/            驱动中立的 backend 接口、注册表、错误体系
-  odbc/               ODBC 句柄 RAII 封装（environment/connection/statement）
-  detail/             pfr-lite、投影绑定、语句缓存、chrono 工具
+  detail/             connection、pfr-lite、投影绑定、chrono 工具
   mapping/            实体映射注册表
   builder/            谓词表达式与流式查询/更新/删除构建器
-src/                  实现（构建为 libuniorm.so）
+src/                  实现（构建为 libuniorm.so）；私有头贴着对应 .cpp 存放，
+                        以相对名引用，不在任何对外 include 路径上
   backend/            scheme 解析与 backend 注册表
-  odbc/               ODBC backend（适配器、句柄封装、错误）
+  odbc/               ODBC backend（适配器、句柄 RAII 封装、错误）
+                        全仓库唯一出现 <sql.h> 之处
+  statement_cache.hpp 预编译语句 LRU 缓存
+  unicode.hpp         UTF-8 <-> UTF-16 工具
 tools/uniorm-gen      代码生成 CLI（schema 提取 + TOML 配置 + 生成器）
 tests/unit            单元测试
 tests/integration     数据库集成测试（含 uniorm-gen 的 golden 头文件）

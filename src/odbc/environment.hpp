@@ -1,7 +1,9 @@
 #pragma once
 
-#include <uniorm/odbc/detail/handles.hpp>
-#include <uniorm/odbc/error.hpp>
+// Private header: ODBC environment handle. Not installed.
+
+#include "handles.hpp"
+#include "error.hpp"
 
 namespace uniorm::odbc {
 

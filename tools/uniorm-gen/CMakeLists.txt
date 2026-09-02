@@ -10,6 +10,9 @@ add_library(uniorm_gen_core STATIC
 )
 target_link_libraries(uniorm_gen_core PUBLIC uniorm::uniorm ODBC::ODBC)
 target_include_directories(uniorm_gen_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+# Reads schema metadata through the private ODBC handle layer (src/odbc/).
+target_include_directories(uniorm_gen_core PRIVATE ${PROJECT_SOURCE_DIR}/src)
 
 add_executable(uniorm-gen main.cpp)
 target_link_libraries(uniorm-gen PRIVATE uniorm_gen_core)
+target_include_directories(uniorm-gen PRIVATE ${PROJECT_SOURCE_DIR}/src)

@@ -1,7 +1,7 @@
 #include <utility>
 
-#include <uniorm/odbc/connection.hpp>
-#include <uniorm/odbc/environment.hpp>
+#include "odbc/connection.hpp"
+#include "odbc/environment.hpp"
 
 #include "check.hpp"
 

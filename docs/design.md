@@ -67,46 +67,46 @@ uniorm 是一个基于 **ODBC**（而非各数据库专有 C 客户端）的现�
 ```
 uniorm/
 ├── CMakeLists.txt
-├── include/uniorm/
+├── include/uniorm/              # 对外安装的头文件（消费者唯一的 include 根）
+│   ├── uniorm.hpp               # umbrella：README 示例只需它
 │   ├── export.hpp               # UNIORM_API 符号导出宏
 │   ├── error.hpp                # 异常体系（不含 odbc_error）
-│   ├── unicode.hpp              # UTF-8 ↔ UTF-16
 │   ├── value.hpp                # sql_value variant / timestamp
 │   ├── types.hpp                # backend 中立 sql_type 枚举 + sql_type_from_native
-│   ├── converter.hpp            # 自定义类型转换器（concept has_converter）
+│   ├── converter.hpp            # 自定义类型转换器（concept has_converter，v1 未接线）
 │   ├── row.hpp                  # 动态行 + value_cast
 │   ├── params.hpp               # 参数容器 + make_sql_value 转换
 │   ├── result_set.hpp           # 行式绑定结果集（pimpl）
-│   ├── connection.hpp           # 高层 connection
 │   ├── transaction.hpp
 │   ├── pool.hpp                 # connection_pool / pooled_connection
 │   ├── dialect.hpp              # 方言特性（引用符、分页）
 │   ├── backend/                 # 驱动中立的 backend 契约（见 §5.2）
 │   │   ├── backend.hpp          # column_buffer / capabilities / statement_iface / connection_iface
-│   │   ├── registry.hpp         # scheme 解析 + backend 注册表
+│   │   ├── registry.hpp         # scheme 解析 + backend 注册表（out-of-tree backend 注册入口）
 │   │   └── error.hpp            # backend_error / capability_not_supported / unknown_scheme
-│   ├── odbc/                    # ODBC 封装层（ODBC backend 的实现基座）
-│   │   ├── environment.hpp
-│   │   ├── connection.hpp
-│   │   ├── statement.hpp
-│   │   ├── error.hpp            # odbc_error / diagnostics
-│   │   └── detail/handles.hpp   # 句柄 RAII、traits
 │   ├── detail/
+│   │   ├── connection.hpp       # 高层 connection（含语句缓存原语；名为 detail 实为公开入口）
 │   │   ├── pfr.hpp              # 自实现聚合体反射（字段数探测 + 展开，上限 64）
 │   │   ├── projection.hpp       # 聚合 struct 投影绑定（field_binding 体系）
-│   │   ├── statement_cache.hpp  # LRU 预编译语句缓存（存 statement_iface）
 │   │   ├── traits.hpp           # is_optional_v 等共享 traits
 │   │   └── time.hpp             # chrono ↔ 日历拆分/组装
-│   ├── mapping/registry.hpp     # 实体映射注册表（含 mapping_builder）
+│   ├── orm.hpp                  # 实体注册与 CRUD 入口
+│   ├── mapping/registry.hpp     # 实体映射注册表（含 mapping_builder；uniorm-gen 产物唯一依赖）
 │   └── builder/
-│       ├── builder.hpp            # query_gateway / query<T> / update_builder / remove_builder
-│       └── expression.hpp         # member_key / predicate / 谓词构造器
-├── src/                         # 对应实现（编译进 libuniorm）
+│       ├── builder.hpp          # query_gateway / query<T> / update_builder / remove_builder
+│       └── expression.hpp       # member_key / predicate / 谓词构造器
+├── src/                         # 对应实现（编译进 libuniorm）；私有头贴着 .cpp 存放
+│   ├── unicode.hpp              # UTF-8 ↔ UTF-16（ODBC 边界用）
+│   ├── statement_cache.hpp      # LRU 预编译语句缓存（存 statement_iface）
 │   ├── backend/                 # scheme 解析与注册表实现
-│   └── odbc/                    # ODBC backend（backend.cpp 适配器，自注册 "odbc"）
+│   └── odbc/                    # ODBC backend（自注册 "odbc"）
+│       ├── backend.hpp          # backend 契约的 ODBC 实现
+│       ├── environment.hpp / connection.hpp / statement.hpp   # 句柄 RAII
+│       ├── handles.hpp          # 句柄 RAII 模板、traits
+│       └── error.hpp            # odbc_error / diagnostics
 ├── tools/uniorm-gen/            # 代码生成 CLI
 │   ├── main.cpp                 # 参数解析与编排
-│   ├── schema_reader.cpp        # ODBC 元数据提取
+│   ├── schema_reader.cpp        # ODBC 元数据提取（直连私有句柄层）
 │   ├── generator.cpp            # model + 配置 → 头文件文本
 │   ├── config.cpp               # TOML 子集解析
 │   └── naming.cpp               # PascalCase/camelCase 标识符转换
@@ -114,6 +114,15 @@ uniorm/
 │                                # odbc_unit_tests 覆盖句柄 RAII 与 uniorm-gen
 └── docs/design.md
 ```
+
+公开/私有边界按"外部消费者是否需要"判定：凡出现在 `uniorm/uniorm.hpp` 或
+`uniorm/mapping/registry.hpp`（生成代码的唯一依赖）传递闭包内的头文件留在 `include/`，
+其余下沉到 `src/`，与自己的实现 `.cpp` 贴邻，用引号相对名互相引用。于是 `src/`
+不在 `uniorm` 目标的任何 include 路径上（同目录引用无需路径），只有确实需要跨目录取用
+私有头的目标显式 `-I src`：`uniorm-gen`（直调 `SQLTables` / `SQLColumns` 等目录函数）
+与两个白盒单测。公开头一旦 `#include` 私有头便无法解析，边界由编译器强制；
+`<sql.h>` 现仅出现在 `src/odbc/` 之下，安装 `include/` 不再把驱动类型与
+ODBC 链接依赖带给消费者。
 
 ## 4. 核心模块设计
 
@@ -861,10 +870,16 @@ uniorm_error : std::runtime_error    // 基类（error.hpp）
 
 backend::backend_error : uniorm_error    // backend 层（backend/error.hpp），
 │                                        // backend 名 + context + diagnostics
-│   └── odbc::odbc_error                 // ODBC 层（odbc/error.hpp），backend 名固定 "odbc"
 ├── backend::capability_not_supported    // 能力缺失（不静默降级）
 └── backend::unknown_scheme              // 连接串 scheme 未注册
+
+odbc::odbc_error : uniorm_error          // ODBC 句柄层（src/odbc/error.hpp，私有头）
 ```
+
+`odbc_error` 与 `backend_error` 是平级的：适配器不做异常翻译，故底层驱动失败会原样
+穿过 backend 契约抛出。它是私有头里的类型，公开侧只能按 `uniorm::uniorm_error` 捕获
+（`what()` 已渲染完整 diagnostics 文本）；若需要按驱动错误分类，走 `SQLSTATE` 文本
+或后续补一层翻译。
 
 ## 8. 测试策略
 

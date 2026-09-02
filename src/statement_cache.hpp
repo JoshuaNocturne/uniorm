@@ -1,5 +1,7 @@
 #pragma once
 
+// Private header: not installed; only src/connection.cpp touches the cache.
+
 // Per-connection LRU cache of prepared statements keyed by SQL text.
 // Statements are checked out for use and returned when the consumer is
 // done, so the cache only ever holds idle handles. Not thread-safe; the

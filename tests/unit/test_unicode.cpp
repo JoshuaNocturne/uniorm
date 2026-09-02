@@ -1,6 +1,6 @@
 #include <string>
 
-#include <uniorm/unicode.hpp>
+#include "unicode.hpp"
 
 #include "check.hpp"
 

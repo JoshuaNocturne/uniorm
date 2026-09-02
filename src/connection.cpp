@@ -7,6 +7,7 @@
 #include "uniorm/backend/registry.hpp"
 #include "uniorm/dialect.hpp"
 #include "uniorm/builder/builder.hpp"
+#include "statement_cache.hpp"
 #include "uniorm/transaction.hpp"
 
 namespace uniorm {

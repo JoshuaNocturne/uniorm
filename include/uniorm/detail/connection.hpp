@@ -11,7 +11,6 @@
 
 #include <uniorm/backend/backend.hpp>
 #include <uniorm/detail/pfr.hpp>
-#include <uniorm/detail/statement_cache.hpp>
 #include <uniorm/dialect.hpp>
 #include <uniorm/export.hpp>
 #include <uniorm/params.hpp>
@@ -20,6 +19,11 @@
 namespace uniorm {
 
 class transaction;
+namespace detail {
+// Defined in src/statement_cache.hpp (private header); the
+// member below is only ever manipulated in connection.cpp.
+struct statement_cache;
+}  // namespace detail
 
 // Low-level connection: owns a backend connection (chosen by the
 // connection-string scheme at construction) and offers statement

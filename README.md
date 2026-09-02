@@ -230,15 +230,18 @@ ctest --test-dir build --output-on-failure
 ## Directory layout
 
 ```
-include/uniorm/       public headers
+include/uniorm/       public headers (the only include root consumers need)
   backend/            driver-neutral backend interface, registry, errors
-  odbc/               RAII wrappers for ODBC handles (environment/connection/statement)
-  detail/             pfr-lite, projection bindings, statement cache, chrono helpers
+  detail/             connection, pfr-lite, projection bindings, chrono helpers
   mapping/            entity mapping registry
   builder/            predicate expressions and the fluent query/update/delete builders
-src/                  implementation (built into libuniorm.so)
+src/                  implementation (built into libuniorm.so); private headers
+                        sit beside their .cpp and are reached by relative name
   backend/            scheme parsing and the backend registry
-  odbc/               ODBC backend (adapter, handle wrappers, errors)
+  odbc/               ODBC backend: adapter, handle wrappers, errors
+                        (the only <sql.h> in the tree)
+  statement_cache.hpp prepared-statement LRU cache
+  unicode.hpp         UTF-8 <-> UTF-16 helpers
 tools/uniorm-gen      code-generation CLI (schema extraction + TOML config + generator)
 tests/unit            unit tests
 tests/integration     database integration tests (+ golden header for uniorm-gen)

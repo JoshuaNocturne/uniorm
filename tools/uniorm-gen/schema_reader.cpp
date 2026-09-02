@@ -8,9 +8,9 @@
 #include <sqlext.h>
 
 #include "uniorm/error.hpp"
-#include "uniorm/odbc/connection.hpp"
-#include "uniorm/odbc/error.hpp"
-#include "uniorm/odbc/statement.hpp"
+#include "odbc/connection.hpp"
+#include "odbc/error.hpp"
+#include "odbc/statement.hpp"
 
 namespace uniorm::gen {
 

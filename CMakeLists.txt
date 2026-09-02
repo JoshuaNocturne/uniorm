@@ -53,6 +53,8 @@ target_include_directories(uniorm PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
 )
+# Private headers sit beside their sources in src/ and are included by relative
+# name, so src/ is on no include path; consumers cannot reach them.
 # ODBC is PRIVATE: the backend contract keeps driver types out of the
 # installed headers, so consumers never see them.
 target_link_libraries(uniorm PRIVATE Threads::Threads)

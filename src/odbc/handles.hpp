@@ -1,11 +1,13 @@
 #pragma once
 
+// Private header: ODBC handle RAII templates. Not installed.
+
 #include <utility>
 
 #include <sql.h>
 #include <sqlext.h>
 
-#include <uniorm/odbc/error.hpp>
+#include "error.hpp"
 
 namespace uniorm::odbc::detail {
 

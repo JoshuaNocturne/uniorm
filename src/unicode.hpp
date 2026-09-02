@@ -1,5 +1,7 @@
 #pragma once
 
+// Private header: not installed; UTF-8 <-> UTF-16 helpers for the ODBC boundary.
+
 #include <string>
 #include <string_view>
 

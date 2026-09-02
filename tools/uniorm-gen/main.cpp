@@ -13,8 +13,8 @@
 #include "naming.hpp"
 #include "schema_reader.hpp"
 #include "uniorm/error.hpp"
-#include "uniorm/odbc/connection.hpp"
-#include "uniorm/odbc/environment.hpp"
+#include "odbc/connection.hpp"
+#include "odbc/environment.hpp"
 
 namespace {
 

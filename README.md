@@ -13,8 +13,8 @@ See [docs/design.md](docs/design.md) for the full design.
 
 - **Synchronous API with an exception-based error hierarchy** — every failure
   throws from the `uniorm_error` tree
-- **UTF-8 everywhere internally** — conversions happen only at the ODBC
-  boundary (UTF-16)
+- **UTF-8 everywhere internally** — string binding is narrow (`SQL_C_CHAR`);
+  the UTF-16 path at the ODBC boundary is declared but not wired yet
 - **Prepared statements + bind variables** — user values always go through
   `SQLBindParameter`; no string interpolation, no injection
 - **Transparent statement cache** — an LRU cache keyed by SQL text skips

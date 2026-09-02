@@ -11,7 +11,8 @@ ODBC 接口访问任意提供 ODBC 驱动的数据库，在通用层之上提供
 ## 特性
 
 - **同步 API + 异常错误体系**：所有失败以异常抛出（`uniorm_error` 派生树）
-- **内部统一 UTF-8**：转换仅发生在 ODBC 边界（UTF-16）
+- **内部统一 UTF-8**：字符串一律以窄字符（`SQL_C_CHAR`）绑定；ODBC 边界的
+  UTF-16 路径已声明但未接线
 - **预编译 + 绑定变量**：用户值一律经 `SQLBindParameter`，杜绝拼接注入
 - **透明的语句缓存**：按 SQL 文本的 LRU 缓存，重复执行免 prepare
   （观测：`statement_cache_hits()/misses()/size()`）

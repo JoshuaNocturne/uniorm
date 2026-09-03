@@ -35,11 +35,18 @@ struct User {
   std::optional<timestamp> created;
 };
 
+struct Pair {
+  std::int64_t grp = 0;
+  std::int64_t idx = 0;
+  std::string label;
+};
+
 }  // namespace uniorm
 
 namespace {
 
 char const* k_table = "uniorm_it_user";
+char const* k_pair_table = "uniorm_it_pair";
 std::string const long_note(1000, 'x');
 
 void prepare_schema(orm& db) {
@@ -51,6 +58,12 @@ void prepare_schema(orm& db) {
                       " balance DOUBLE NOT NULL,"
                       " note VARCHAR(2000) NULL,"
                       " created DATETIME NULL)");
+  db.execute_update(std::string("DROP TABLE IF EXISTS ") + k_pair_table);
+  db.execute_update(std::string("CREATE TABLE ") + k_pair_table +
+                      " (grp BIGINT NOT NULL,"
+                      " idx BIGINT NOT NULL,"
+                      " label VARCHAR(64) NOT NULL,"
+                      " PRIMARY KEY (grp, idx))");
 }
 
 void seed_rows(orm& db) {
@@ -88,6 +101,25 @@ void test_dynamic_rows(orm& db) {
   CHECK(r.is_null("age"));
   CHECK(r.get<std::string>("note").size() == long_note.size());
   CHECK(!rs.next());
+}
+
+void test_zero_block_fetch_size(orm& db) {
+  // A zero block fetch size made the driver hand back an empty result set
+  // without an error, and the row-slot arithmetic below divides by it.
+  result_set rs = db.native_connection().execute(
+    "SELECT id, name, note FROM uniorm_it_user ORDER BY id", params{}, 0);
+  std::size_t rows = 0;
+  std::size_t note_chars = 0;
+  while (rs.next()) {
+    row r = rs.current();
+    CHECK(!r.is_null("name"));
+    if (!r.is_null("note")) {
+      note_chars += r.get<std::string>("note").size();
+    }
+    ++rows;
+  }
+  CHECK(rows == 3);
+  CHECK(note_chars == long_note.size() + 5);  // "short" on the third row
 }
 
 void test_projection(orm& db) {
@@ -129,6 +161,10 @@ orm build_registry(std::string_view conn_string) {
     .column("balance", &User::balance)
     .column("note", &User::note)
     .column("created", &User::created);
+  db.map<Pair>(k_pair_table)
+    .primary_key("grp", &Pair::grp)
+    .primary_key("idx", &Pair::idx)
+    .column("label", &Pair::label);
   return db;
 }
 
@@ -260,6 +296,136 @@ void test_transaction(orm& db) {
   db.execute_update(
     "DELETE FROM uniorm_it_user WHERE id = ?", params{ std::int64_t{ 101 } });
   CHECK(db.query().of<User>().count() == 3);
+}
+
+// auto_commit is the connection's commit mode, so it governs every write here:
+// off, nothing is durable until commit(); on, each statement is.
+void test_auto_commit_scope(orm& db, std::string const& conn_string) {
+  CHECK(db.auto_commit());
+  auto mine = [&db] {
+    return db.query()
+      .of<User>()
+      .where(ge(&User::id, std::int64_t{ 700 }))
+      .count();
+  };
+  auto visible = std::string(
+    "SELECT COUNT(*) FROM uniorm_it_user WHERE id >= 700");
+  auto seen_elsewhere = [&](orm& other) {
+    result_set rs = other.execute(visible);
+    rs.next();
+    return rs.current().get<std::int64_t>(0);
+  };
+  auto put = [](orm& db, std::int64_t id) {
+    db.execute_update(
+      "INSERT INTO uniorm_it_user (id, name, age, balance) VALUES (?, ?, ?, ?)",
+      params{ id, std::string("leaked"), nullptr, 0.0 });
+  };
+  std::vector<User> batch{
+    User{ 700, "henry", std::nullopt, 0.0, std::nullopt, std::nullopt },
+    User{ 701, "iris", std::nullopt, 0.0, std::nullopt, std::nullopt }
+  };
+
+  // A caller transaction covers all three write shapes: rolling it back must
+  // erase the batch too, which it used not to.
+  {
+    transaction tx = db.begin();
+    CHECK(db.insert(batch) == 2);
+    User renamed = batch[1];
+    renamed.name = "rita";
+    CHECK(db.update(renamed) == 1);
+    db.execute_update(
+      "INSERT INTO uniorm_it_user (id, name, age, balance) VALUES (?, ?, ?, ?)",
+      params{ std::int64_t{ 702 }, std::string("june"), nullptr, 0.0 });
+    CHECK(mine() == 3);  // all three visible inside the transaction
+    tx.rollback();
+  }
+  CHECK(mine() == 0);
+  CHECK(!db.native_connection().in_transaction());  // mode given back
+
+  // Same shape committed.
+  {
+    transaction tx = db.begin();
+    CHECK(db.insert(batch) == 2);
+    tx.commit();
+  }
+  CHECK(mine() == 2);
+  CHECK(db.remove(batch) == 2);
+  CHECK(mine() == 0);
+
+  // Autocommitting, single-row and batch writes are durable on return.
+  CHECK(db.insert(batch) == 2);
+  CHECK(mine() == 2);
+  CHECK(db.remove(batch) == 2);
+  CHECK(mine() == 0);
+
+  // Manual mode defers every kind of write, not just the batch one.
+  db.auto_commit(false);
+  CHECK(!db.auto_commit());
+  CHECK(db.native_connection().in_transaction());
+  orm other(conn_string);
+  CHECK(db.insert(batch) == 2);
+  User renamed = batch[0];
+  renamed.name = "kate";
+  CHECK(db.update(renamed) == 1);
+  CHECK(mine() == 2);        // this connection sees its own pending work
+  CHECK(seen_elsewhere(other) == 0);
+  db.commit();
+  CHECK(seen_elsewhere(other) == 2);  // durable at last
+
+  // A rollback discards a sweep and a single-row delete alike.
+  CHECK(db.remove(batch) == 2);
+  CHECK(mine() == 0);
+  CHECK(seen_elsewhere(other) == 2);
+  db.rollback();
+  CHECK(mine() == 2);
+  CHECK(seen_elsewhere(other) == 2);
+
+  // Switching the mode back on does not discard: it commits what is pending.
+  std::vector<User> extra{
+    User{ 702, "june", std::nullopt, 0.0, std::nullopt, std::nullopt }
+  };
+  CHECK(db.insert(extra) == 1);
+  CHECK(mine() == 3);
+  CHECK(seen_elsewhere(other) == 2);
+  db.auto_commit(true);
+  CHECK(seen_elsewhere(other) == 3);
+  CHECK(db.remove(extra) == 1);
+  CHECK(mine() == 2);
+  db.execute_update("DELETE FROM uniorm_it_user WHERE id >= 700");
+  CHECK(mine() == 0);
+
+  // A lease that ends in manual mode leaves the next borrower mid-transaction;
+  // those rows are discarded, whichever mode the borrower wants.
+  {
+    orm leaker(conn_string);
+    leaker.auto_commit(false);
+    put(leaker, 703);
+  }
+  {
+    orm fresh(conn_string);
+    CHECK(!fresh.native_connection().in_transaction());
+    put(fresh, 704);
+    CHECK(mine() == 1);  // 704 durable, 703 gone
+  }
+  {
+    orm leaker(conn_string);
+    leaker.auto_commit(false);
+    put(leaker, 705);
+  }
+  {
+    orm manual;
+    manual.auto_commit(false);
+    manual.connect(conn_string);
+    CHECK(manual.native_connection().in_transaction());
+    put(manual, 706);
+    CHECK(seen_elsewhere(manual) == 2);  // 704 durable, plus its own 706
+    CHECK(seen_elsewhere(other) == 1);   // just 704 so far
+    manual.commit();
+    CHECK(seen_elsewhere(other) == 2);
+  }
+
+  db.execute_update("DELETE FROM uniorm_it_user WHERE id >= 700");
+  CHECK(mine() == 0);
 }
 
 void test_insert(orm& db) {
@@ -423,6 +589,60 @@ void test_entity_update(orm& db) {
   db.execute_update(
     "DELETE FROM uniorm_it_user WHERE id >= ?", params{ std::int64_t{ 500 } });
   CHECK(db.query().of<User>().count() == 3);
+}
+
+void test_composite_key_and_where_fields(orm& db) {
+  std::vector<Pair> pairs{ { 7, 1, "a" }, { 7, 2, "b" }, { 8, 1, "c" } };
+  CHECK(db.insert(pairs) == 3);
+
+  auto label_of = [&db](std::int64_t grp, std::int64_t idx) {
+    std::string sql =
+      std::string("SELECT label FROM ") + k_pair_table +
+      " WHERE grp = ? AND idx = ?";
+    result_set rs = db.execute(sql, params{ grp, idx });
+    if (!rs.next()) {
+      return std::string("<missing>");
+    }
+    return rs.current().get<std::string>("label");
+  };
+
+  // Keying on the leading column alone would have rewritten every row of
+  // group 7.
+  Pair updated{ 7, 2, "b2" };
+  CHECK(db.update(updated) == 1);
+  CHECK(label_of(7, 2) == "b2");
+  CHECK(label_of(7, 1) == "a");
+
+  std::vector<Pair> rebased{ { 8, 1, "c2" } };
+  CHECK(db.update(rebased) == 1);
+  CHECK(label_of(8, 1) == "c2");
+  CHECK(label_of(7, 1) == "a");
+
+  CHECK(db.remove(Pair{ 7, 1, "a" }) == 1);
+  CHECK(label_of(7, 1) == "<missing>");
+  CHECK(label_of(7, 2) == "b2");
+
+  std::vector<Pair> doomed{ { 7, 2, "b2" }, { 8, 1, "c2" } };
+  CHECK(db.remove(doomed) == 2);
+  CHECK(label_of(7, 2) == "<missing>");
+  CHECK(label_of(8, 1) == "<missing>");
+
+  // Unmapped WHERE fields used to be dropped on the way to the statement,
+  // leaving placeholders without parameters and a misleading driver error.
+  std::vector<User> probe{ User{ 1, "alice", std::nullopt, 0.0, std::nullopt,
+    std::nullopt } };
+  auto const partly_unknown =
+    std::vector<std::string>{ "id", "colour" };
+  CHECK_THROWS(db.update(probe, partly_unknown), mapping_error);
+  CHECK_THROWS(db.remove(probe, partly_unknown), mapping_error);
+  auto const none = std::vector<std::string>{};
+  CHECK_THROWS(db.update(probe, none), uniorm_error);
+  CHECK_THROWS(db.remove(probe, none), uniorm_error);
+  // A WHERE covering every mapped column leaves nothing to assign.
+  auto const everything =
+    std::vector<std::string>{ "id", "name", "age", "balance", "note",
+      "created" };
+  CHECK_THROWS(db.update(probe, everything), uniorm_error);
 }
 
 void test_statement_cache(orm& db) {
@@ -614,21 +834,25 @@ int main() {
     seed_rows(db);
 
     test_dynamic_rows(db);
+    test_zero_block_fetch_size(db);
     test_projection(db);
     test_validate(conn_string);
 
     test_query_builder(db);
     test_transaction(db);
+    test_auto_commit_scope(db, conn_string);
     test_insert(db);
     test_update(db);
     test_remove(db);
     test_entity_update(db);
+    test_composite_key_and_where_fields(db);
     test_statement_cache(db);
     test_error_reporting(db);
     test_pool(conn_string);
     test_pool_maintenance(conn_string);
 
     db.execute_update(std::string("DROP TABLE ") + k_table);
+    db.execute_update(std::string("DROP TABLE ") + k_pair_table);
   } catch (std::exception const& e) {
     std::printf("FATAL: unexpected exception: %s\n", e.what());
     ++uniorm::test::failure_count();

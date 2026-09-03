@@ -139,13 +139,14 @@ uniorm/
 │   │   ├── projection.hpp       # 聚合 struct 投影绑定（field_binding 体系）
 │   │   ├── traits.hpp           # is_optional_v 等共享 traits
 │   │   └── time.hpp             # chrono ↔ 日历拆分/组装
-│   ├── orm.hpp                  # 实体注册与 CRUD 入口
+│   ├── orm.hpp                  # 实体注册与 CRUD 入口：除模板外只有声明，实现全在 src/orm.cpp
 │   ├── mapping/registry.hpp     # 实体映射注册表（含 mapping_builder；uniorm-gen 产物唯一依赖）
 │   └── builder/
 │       ├── builder.hpp          # query_gateway / query<T> / update_builder / remove_builder
 │       └── expression.hpp       # member_key / predicate / 谓词构造器
 ├── src/                         # 对应实现（编译进 libuniorm）；私有头贴着 .cpp 存放
 │   ├── unicode.hpp              # UTF-8 ↔ UTF-16（已实现，v1 无库内调用者，见已知缺口）
+│   ├── orm_mapping.hpp          # 实体写的 WHERE 解析与 SET/WHERE 列划分（纯映射规则）
 │   ├── statement_cache.hpp      # LRU 预编译语句缓存（存 statement_iface，容量固定 64）
 │   ├── backend/                 # scheme 解析与注册表实现
 │   └── odbc/                    # ODBC backend（自注册 "odbc"）
@@ -443,16 +444,18 @@ class connection {
     bool is_open() const noexcept;
 
     // 唯一的 result_set 出口。第三个参数是本级别的块取行大小，默认 1
-    // （即逐行）；orm 层按自己的 row_array_size() 传值（见 §4.7）
+    // （即逐行）；0 不被接受，result_set 退回逐行取；orm 层按自己的
+    // row_array_size() 传值（见 §4.7）
     result_set execute(std::string_view sql, params const& p = {},
                        std::size_t row_array_size = 1);
     std::size_t execute_update(std::string_view sql, params const& p = {});
 
     // 事务控制（见 §4.9）
     transaction begin();
-    void set_autocommit(bool enabled);
+    void set_autocommit(bool enabled);   // 关掉即进入事务；打开会提交挂起的工作
     void commit();
     void rollback();
+    bool in_transaction() const noexcept;   // autocommit 已关即为 true
 
     // 语句缓存原语：取出已 prepare 的语句 / 按 key 归还（内部由 execute 路径使用）
     std::unique_ptr<backend::statement_iface> acquire_statement(std::string const& sql);
@@ -488,7 +491,8 @@ class connection {
 
 绑定形态：读侧每个结果列只 `SQLBindCol` 一次，指向调用方持有的列缓冲，
 按块取行（`SQL_ATTR_ROW_ARRAY_SIZE`；`orm::row_array_size()` 默认 100，
-`connection::execute` 的显式参数默认 1）；写侧批量按 `SQL_ATTR_PARAMSET_SIZE`
+`connection::execute` 的显式参数默认 1，块大小为 0 时 `result_set` 退回逐行——
+直连 `connection` 会绕过 `orm` 的 setter）；写侧批量按 `SQL_ATTR_PARAMSET_SIZE`
 分批提交，两条通道并存——行式 `bind_batch_params(std::vector<params>)`
 （backend 内部转置成列存）与列式 `batch_writer_iface`（调用方直接写列缓冲，
 按 `caps().columnar_batch` 选用，ODBC 为 true）。逐行读写只是块大小为 1
@@ -528,14 +532,25 @@ std::size_t u = db.update(people);   // 按主键匹配；可传 where_fields �
 std::size_t r = db.remove(people);   // 同上；无键列可推断且未给 where_fields 则抛错
 ```
 
+主键推断取**全部** `is_primary_key` 列（复合键只用首列会让单实体
+`update`/`remove` 命中同键前缀的其它行）。`where_fields` 在生成语句前先对映射
+逐个解析：未命中的名字抛 `mapping_error`（静默丢弃会让占位符比绑定参数多，
+驱动报的错与真正写错的字段名毫无关系），空列表抛
+`"update|remove: no WHERE fields specified"`，全部列都在 WHERE 里则没有可赋值的列，
+抛 `"update: no columns to set (all mapped columns are in WHERE)"`。
+
 实现要点：
 
 - 语句只含**一行**占位符组：`INSERT INTO <表> (<列…>) VALUES (?, ?, …)`
   （`UPDATE` / `DELETE` 同形），行与行靠**数组参数绑定**展开——
   `SQL_ATTR_PARAMSET_SIZE` 决定每次 `SQLExecute` 提交的参数集个数，分批粒度是
-  `orm::paramset_size()`（默认 1000，传 0 按 1000 处理）。标识符一律经
+  `orm::paramset_size()`（默认 1000；setter 把 0 归一为默认值，getter 因而总是
+  报出实际生效值——列式分批循环以该值为步长，0 会原地打转）。`orm::row_array_size()`
+  同理，两个默认值分别是 `orm::default_paramset_size` /
+  `orm::default_row_array_size`。标识符一律经
   `dialect::quote_identifier`
-- 两条写通道，按 `caps().columnar_batch` 选择（ODBC 为 true）：
+- 两条写通道，按 `caps().columnar_batch` 选择（ODBC 为 true）；选择点在
+  `src/orm.cpp` 的实体写入口，两条通道因此共用同一份语句文本与缓存键：
   - **列式**：backend 经 `batch_writer_iface` 按列分配 typed buffer，变长列 stride
     取该块内最大字节数（字符列 +1，列式路径另有 65 字节下限），实体字段经
     `column_meta::write_to_param_buffer` 直写缓冲，**只 `SQLBindParameter` 一次**，
@@ -543,9 +558,12 @@ std::size_t r = db.remove(people);   // 同上；无键列可推断且未给 whe
   - **行式**：`bind_batch_params(std::vector<params>)` 把行式 `sql_value` 转置成列
     数组，逐块重绑
 - 顺序上先写缓冲后绑定：部分驱动（MariaDB ODBC）在 `SQLBindParameter` 时就会读缓冲内容
-- `orm::auto_commit()`（默认 true）把整批包进一个事务、结束时提交，中途失败由
-  `transaction` 析构回滚；关掉后须自行 `begin()/commit()`。单实体
-  `update`/`remove` 与 `execute`/`execute_update` **不**自动包事务
+- `orm::auto_commit()`（默认 true）就是**连接的 autocommit 属性**，管住这个 orm 的
+  所有写：开着时单实体 `update`/`remove`、`execute`/`execute_update` 与批量都是
+  **调用返回即落盘**，批量额外再包一层事务以取得"整批要么全成、要么全不作废"；关掉时
+  三类写一律挂起，直到调用方 `commit()`。把提交粒度放进连接而不是批量入口，正是为了让
+  单行与批量对外行为一致（见 §4.9）。调用方自己 `begin()` 时批量并入外层事务，
+  由外层决定提交还是回滚
 - 空容器直接返回 0，不取语句；`std::optional` 空值写 indicator =
   `backend::null_indicator`（行式通道把整段 indicator 预置为 NULL，只覆写非空行）
 - 行数语义两条通道不同：列式 insert 统计**提交**的行数，行式路径累加
@@ -645,9 +663,9 @@ class orm {                             // 非线程安全，按线程/会话持
     void disconnect();
 
     // 同名 getter/setter，默认值见括号
-    std::size_t row_array_size() const noexcept;  void row_array_size(std::size_t);  // 100
-    std::size_t paramset_size() const noexcept;   void paramset_size(std::size_t);   // 1000
-    bool auto_commit() const noexcept;            void auto_commit(bool);            // true
+    std::size_t row_array_size() const noexcept;  void row_array_size(std::size_t);  // default_row_array_size = 100
+    std::size_t paramset_size() const noexcept;   void paramset_size(std::size_t);   // default_paramset_size = 1000
+    bool auto_commit() const noexcept;            void auto_commit(bool);            // true：即连接的 autocommit 属性（见 §4.9）
 
     template <class T> mapping_builder<T> map(std::string_view table);  // 重复注册抛 mapping_error
     template <class T> entity_meta const& meta() const;                 // 未注册抛 mapping_error
@@ -663,11 +681,13 @@ class orm {                             // 非线程安全，按线程/会话持
     // 成员类型与 SQL 类型不做比对（见已知缺口）
 
     std::size_t insert(std::vector<Entity> const& rows);                 // 仅批量
-    std::size_t update(Entity const&);                                   // 主键推断
-    std::size_t update(Entity const&, std::vector<std::string> where_fields);
+    std::size_t update(Entity const&);                                   // 主键推断：全部键列
+    std::size_t update(Entity const&, std::vector<std::string> const& where_fields);
     std::size_t update(std::vector<Entity> const&, /*可选 where_fields*/);
     std::size_t remove(Entity const&);                                   // 同上三形
     std::size_t remove(std::vector<Entity> const&, /*可选 where_fields*/);
+    // where_fields 先对映射解析：未命中抛 mapping_error，空列表与
+    // "全部列都进了 WHERE" 抛 uniorm_error（见 4.5.2）
     query_gateway query();                                  // 实体查询：db.query().of<T>()
     template <detail::aggregate_projection T>
     std::vector<T> query(std::string_view sql, params const& p = {});    // 投影
@@ -690,7 +710,18 @@ class orm {                             // 非线程安全，按线程/会话持
 
 单个实体版 `update` / `remove` 用 `requires(!std::is_convertible_v<Entity const&,
 std::string_view>)` 与动态表名版区分；无主键又没给 `where_fields` 时抛
-`uniorm_error`。
+`uniorm_error`。键列推断与 `where_fields` 解析集中在私有头 `src/orm_mapping.hpp`
+的 `detail` 助手（`primary_key_columns` / `resolve_where_columns` /
+`resolve_where` / `set_columns_of`）里，四个实体写入口共用同一套规则，规则本身见
+4.5.2。实体容器经这些模板擦除类型后交给 `src/orm.cpp`——模板只负责传下
+`meta<Entity>()` 与 `(data, sizeof(Entity), size)`，余下的 WHERE 解析、SET/WHERE
+列划分、语句文本、通道选择与事务都编译在库里，`Entity` 本身只在头文件这一层出现。
+同一条纪律也管住了非模板成员：配置访问器（`row_array_size` / `paramset_size` /
+`auto_commit`）、`find` / `size` 与 `native_connection` 都定义在 `src/orm.cpp`，
+头文件里只剩下声明、两个 `default_*` 常量，以及必须由调用方实例化的模板。写路径
+因此并未变慢：批量入口读的是 `paramset_size_` 成员本身，是否自开事务看
+`connection::in_transaction()`（一个缓存的 bool），每行一次的循环里没有新增
+任何跨库调用。
 
 成员指针的类型擦除：注册时经 `make_column_meta` 捕获 `write` 闭包
 （`[member](void* obj, sql_value const& v) { static_cast<T*>(obj)->*member = value_cast<M>(v); }`），
@@ -861,26 +892,49 @@ v1 支持的谓词：`= != < <= > >=`、`&&`、`||`、`in(...)`、`is_null` / `i
 ```cpp
 class transaction {                    // move-only，RAII
 public:
-    explicit transaction(connection& conn);   // 关闭 autocommit，进入事务
+    explicit transaction(connection& conn);   // 仅在 autocommit 还开着时才关掉它
     ~transaction();                    // 仍 active 则 rollback（析构不抛异常）
 
-    void commit();                     // 提交并恢复 autocommit
-    void rollback();                   // 回滚并恢复 autocommit
+    void commit();                     // 提交；自己关掉的 autocommit 才恢复
+    void rollback();                   // 回滚；自己关掉的 autocommit 才恢复
     bool active() const noexcept;
 };
 
 transaction connection::begin();       // 等价于 transaction(conn)
 transaction orm::begin();              // ensure_connected() 后转发到内部连接
+bool connection::in_transaction() const noexcept;   // autocommit 已关即为 true
 ```
 
 `orm` 另有 `commit()` / `rollback()` 直通底层连接（不产生 `transaction` 对象，
-即不接管 autocommit 的恢复）。
+即不接管 autocommit 的恢复）；`orm::auto_commit(false)` 关的就是连接的
+autocommit 属性，所以此后该连接上的**每一条**写——单实体 `update`/`remove`、
+`execute`/`execute_update`、批量——都挂起到调用方 `commit()` 为止。切换这个属性
+本身就是一次连接属性设置：关掉即开启一个事务，打开则把挂起的工作交给驱动提交
+（ODBC 对该属性的规定，MariaDB ODBC 驱动实测如此）。
+
+批量写入口只看 `in_transaction()`：**连接已在手动提交模式就不自行
+begin/commit**，整批并入外层，由外层决定提交还是回滚；否则整批包进一个事务，
+结束提交。这一条不是可选项——`transaction::commit()` 落到的是连接级的
+`SQLTransact`，一次批量结束会把调用方尚未写完的事务一并提交掉。同理，
+`transaction` 只恢复**自己**改动过的提交模式：外层已经手动提交时，内层结束时
+不把 autocommit 强开回来，否则调用方之后的写会悄悄脱离事务。
+`in_transaction()` 读的是 `connection` 缓存的 autocommit 状态（`set_autocommit`
+是唯一写点），所以绕过 `transaction` 手写 `set_autocommit(false)` 同样算"有事务在"。
+代价是该缓存需要准确：`rollback()` 自身抛异常时 autocommit 恢复不到 true，此后
+批量写会持续并入而不提交——比误提交安全，方向上是对的。
 
 v1 不支持嵌套事务/savepoint。`transaction` 只在自身析构时回滚未提交的工作；
 连接归还池时**不做任何状态清理**（`connection_pool::release` 只把连接压回空闲
 列表并 notify，既不 rollback 也不 `set_autocommit(true)`），因此手写
 `set_autocommit(false)` 或让 `transaction` 活得比借出的连接更久，会把状态
 带给下一个借用者——把 `transaction` 关进就地作用域是用法约束，不是池的保障。
+经 `orm` 借出的连接会被兜底：`orm` 在拿到连接的瞬间调用 `adopt_connection()`，
+只要连接还停在手动提交模式就先 `rollback()`——那笔挂起的工作属于一场已经结束、
+没有人再驱动的租约，接过来会变成自己的，而直接 `set_autocommit(true)` 又会把它
+提交掉；这里不看借用者想要什么模式，想要手动提交的借用者同样不该继承别人的行。
+清理只发生在接手租约这一刻：调用方对自己的连接 `auto_commit(true)` 是**提交**挂起
+的工作（驱动的语义），不是丢弃。绕过 `orm` 直接用 `connection_pool::acquire()` 的
+借用者没有这层清理。
 
 ### 4.10 连接池（最小版）
 
@@ -1223,7 +1277,9 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
   输入）、`test_pfr`（字段数探测/展开/concept 负例）、`test_row`
   （value_cast/收窄/optional）、`test_params`（值归一化）、
   `test_expression`（谓词 SQL 生成、方言、分页）、`test_registry`
-  （映射注册/populate/read 闭包/错误路径）、`test_backend_registry`
+  （映射注册/populate/read 闭包/错误路径）、`test_orm_crud_helpers`
+  （实体 CRUD 的映射级归一：全部键列推断、WHERE 字段解析与 SET 分区、
+  `paramset_size` / `row_array_size` 的 0 归一）、`test_backend_registry`
   （scheme 解析边界、注册/重复注册/未注册 scheme；其中真正解析到
   "odbc" backend 的用例在 `UNIORM_TEST_BACKEND_ODBC` 宏内）；
   `uniorm_odbc_unit_tests` 链接 ODBC——`test_odbc_handles`（句柄 RAII）、
@@ -1232,7 +1288,7 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
   `test_gen_output`（命名转换边界 + 生成器快照与覆写/跳表/错误路径）；
   后两个只在 `UNIORM_BUILD_TOOLS` 打开时编入（同时定义 `UNIORM_TEST_GEN`），
   因为它们要链 `uniorm_gen_core`；
-- **集成测试**（已实现，DSN/凭据由 `UNIORM_IT_DSN` / `UNIORM_IT_USER` / `UNIORM_IT_PWD` 指定，凭据以 `UID`/`PWD` 写进连接串；连不上时 ctest SKIP）：execute/params 往返、动态行、聚合投影（含长字符串与 timestamp）、orm validate（含 strict 失败路径）、查询构建器全谓词与分页、事务 commit/rollback/析构回滚、批量插入（含空 optional 写 NULL、1500 行跨 `paramset_size` 分批）、批量 update / 批量 remove（实体版按主键与全字段两种 WHERE，动态版 `orm::update(table)` / `orm::remove(table)`，以及 `query<T>::set/update/remove` 与无 WHERE / 无 SET 的守卫抛错）、语句缓存（hit/miss 计数、流式 result_set 借出期间并发 miss、清空）、跨层错误上报（驱动失败以 `backend_error` 捕获，核对 `backend_name()`
+- **集成测试**（已实现，DSN/凭据由 `UNIORM_IT_DSN` / `UNIORM_IT_USER` / `UNIORM_IT_PWD` 指定，凭据以 `UID`/`PWD` 写进连接串；连不上时 ctest SKIP）：execute/params 往返、动态行（含 `connection::execute` 显式块取行大小 0 退回逐行）、聚合投影（含长字符串与 timestamp）、orm validate（含 strict 失败路径）、查询构建器全谓词与分页、事务 commit/rollback/析构回滚、批量插入（含空 optional 写 NULL、1500 行跨 `paramset_size` 分批）、批量 update / 批量 remove（实体版按主键与全字段两种 WHERE，含一张复合主键表验证单实体与批量都按全部键列命中、非键行不被牵连，动态版 `orm::update(table)` / `orm::remove(table)`，以及 `query<T>::set/update/remove` 与无 WHERE / 无 SET / WHERE 字段未映射的守卫抛错）、语句缓存（hit/miss 计数、流式 result_set 借出期间并发 miss、清空）、跨层错误上报（驱动失败以 `backend_error` 捕获，核对 `backend_name()`
 与 SQLSTATE 诊断）、连接池借还与超时、连接池维护（心跳保活计数、空闲超时驱逐、失败心跳丢弃）；后续按库加条件标签覆盖方言与类型怪癖；
 - **性能基准**（已实现，ctest 标签 `perf`，`tests/perf/test_perf.cpp`）：
   连不上库时 SKIP；行数由 `UNIORM_PERF_ROWS` 指定（默认 10000）。

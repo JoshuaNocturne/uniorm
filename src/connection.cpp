@@ -100,12 +100,21 @@ transaction connection::begin() {
   return transaction(*this);
 }
 
+bool connection::in_transaction() const noexcept {
+  return !autocommit_;
+}
+
 std::string connection::dbms_name() const {
   return backend_->dbms_name();
 }
 
+backend::capabilities connection::caps() const noexcept {
+  return backend_->caps();
+}
+
 void connection::set_autocommit(bool enabled) {
   backend_->set_autocommit(enabled);
+  autocommit_ = enabled;
 }
 
 void connection::commit() {

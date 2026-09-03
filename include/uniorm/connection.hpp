@@ -50,9 +50,15 @@ public:
 
   // --- Transaction control ---
   transaction begin();
+  // Off: nothing is durable until commit()/rollback(). On: commits whatever is
+  // pending, per the ODBC contract for this attribute.
   void set_autocommit(bool enabled);
   void commit();
   void rollback();
+
+  // True in manual-commit mode, whether from begin() or a plain
+  // set_autocommit(false): nothing is durable until commit().
+  bool in_transaction() const noexcept;
 
   // --- Statement cache primitives ---
   // Acquire a prepared statement for the given SQL (from cache or newly
@@ -66,7 +72,7 @@ public:
 
   // --- Metadata ---
   std::string dbms_name() const;
-  backend::capabilities caps() const noexcept { return backend_->caps(); }
+  backend::capabilities caps() const noexcept;
 
   // Prepared-statement cache observability (keyed by SQL text, LRU).
   unsigned long long statement_cache_hits() const;
@@ -100,6 +106,8 @@ private:
   // Shared so result_set check-in closures can hold weak references that
   // survive even if the connection is moved.
   std::shared_ptr<detail::statement_cache> stmt_cache_;
+  // Mirrors the last mode the backend was told; ODBC connects autocommitting.
+  bool autocommit_ = true;
 };
 
 }  // namespace uniorm

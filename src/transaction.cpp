@@ -5,7 +5,12 @@
 namespace uniorm {
 
 transaction::transaction(connection& conn) : conn_(&conn) {
-  conn_->set_autocommit(false);
+  // Only a transaction that switched autocommit off may switch it back on: a
+  // caller who put the connection in manual mode on purpose keeps it.
+  owns_mode_ = !conn.in_transaction();
+  if (owns_mode_) {
+    conn_->set_autocommit(false);
+  }
   active_ = true;
 }
 
@@ -21,9 +26,10 @@ transaction::~transaction() {
 }
 
 transaction::transaction(transaction&& other) noexcept
-  : conn_(other.conn_), active_(other.active_) {
+  : conn_(other.conn_), active_(other.active_), owns_mode_(other.owns_mode_) {
   other.conn_ = nullptr;
   other.active_ = false;
+  other.owns_mode_ = false;
 }
 
 transaction& transaction::operator=(transaction&& other) noexcept {
@@ -36,8 +42,10 @@ transaction& transaction::operator=(transaction&& other) noexcept {
     }
     conn_ = other.conn_;
     active_ = other.active_;
+    owns_mode_ = other.owns_mode_;
     other.conn_ = nullptr;
     other.active_ = false;
+    other.owns_mode_ = false;
   }
   return *this;
 }
@@ -47,7 +55,9 @@ void transaction::commit() {
     return;
   }
   conn_->commit();
-  conn_->set_autocommit(true);
+  if (owns_mode_) {
+    conn_->set_autocommit(true);
+  }
   active_ = false;
 }
 
@@ -56,7 +66,9 @@ void transaction::rollback() {
     return;
   }
   conn_->rollback();
-  conn_->set_autocommit(true);
+  if (owns_mode_) {
+    conn_->set_autocommit(true);
+  }
   active_ = false;
 }
 

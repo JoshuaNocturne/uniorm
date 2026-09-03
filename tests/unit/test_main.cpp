@@ -6,6 +6,7 @@ void test_row();
 void test_params();
 void test_expression();
 void test_registry();
+void test_orm_crud_helpers();
 void test_backend_registry();
 
 int main() {
@@ -15,6 +16,7 @@ int main() {
   test_params();
   test_expression();
   test_registry();
+  test_orm_crud_helpers();
   test_backend_registry();
 
   int failures = uniorm::test::failure_count();

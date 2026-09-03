@@ -6,13 +6,14 @@ add_executable(uniorm_unit_tests
     unit/test_params.cpp
     unit/test_expression.cpp
     unit/test_registry.cpp
+    unit/test_orm_crud_helpers.cpp
     unit/test_backend_registry.cpp
 )
 # Deliberately links no ODBC: any driver-type leak into the public
 # headers above the statement layer fails this target's compile.
 target_link_libraries(uniorm_unit_tests PRIVATE uniorm::uniorm)
-# test_unicode exercises a private header that sits beside its source;
-# src/ is on the include path for no other reason.
+# test_unicode and test_orm_crud_helpers exercise private headers that sit
+# beside their source; src/ is on the include path for no other reason.
 target_include_directories(uniorm_unit_tests PRIVATE ${PROJECT_SOURCE_DIR}/src)
 if(UNIORM_BACKEND_ODBC)
     target_compile_definitions(uniorm_unit_tests PRIVATE UNIORM_TEST_BACKEND_ODBC)

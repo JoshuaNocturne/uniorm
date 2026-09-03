@@ -2,14 +2,11 @@
 
 #include <algorithm>
 #include <cctype>
-#include <chrono>
-#include <set>
+#include <cstddef>
 #include <unordered_map>
 #include <utility>
 
-#include <sql.h>
-#include <sqlext.h>
-
+#include "orm_mapping.hpp"
 #include "uniorm/backend/backend.hpp"
 #include <uniorm/connection.hpp>
 #include "uniorm/dialect.hpp"
@@ -34,16 +31,28 @@ std::unordered_map<std::string, schema_column> load_table_schema(
   return schema;
 }
 
+// Begin a lease in the mode its new owner asked for, discarding any pending
+// work a previous lease left behind: enabling autocommit would commit it.
+void adopt_connection(connection& conn, bool autocommit) {
+  if (conn.in_transaction()) {
+    conn.rollback();
+  }
+  conn.set_autocommit(autocommit);
+}
+
 }  // namespace
 
 // --- Connection lifecycle ---
 
 orm::orm(std::string_view connection_string)
-  : pooled_conn_(
-      connection_pool_registry::instance().acquire(std::string(connection_string))) {}
+  : pooled_conn_(connection_pool_registry::instance().acquire(
+      std::string(connection_string))) {
+  adopt_connection(native_connection(), auto_commit_);
+}
 
-orm::orm(connection_pool& pool)
-  : pooled_conn_(pool.acquire()) {}
+orm::orm(connection_pool& pool) : pooled_conn_(pool.acquire()) {
+  adopt_connection(native_connection(), auto_commit_);
+}
 
 orm::~orm() = default;
 
@@ -54,6 +63,7 @@ orm& orm::operator=(orm&&) noexcept = default;
 void orm::connect(std::string_view connection_string) {
   pooled_conn_ =
     connection_pool_registry::instance().acquire(std::string(connection_string));
+  adopt_connection(native_connection(), auto_commit_);
 }
 
 void orm::disconnect() {
@@ -65,6 +75,22 @@ void orm::ensure_connected() const {
   if (!pooled_conn_ || !pooled_conn_->get().is_open()) {
     throw uniorm_error("orm: not connected; call connect() first");
   }
+}
+
+connection& orm::native_connection() {
+  ensure_connected();
+  return pooled_conn_->get();
+}
+
+// --- Entity mapping registry ---
+
+entity_meta const* orm::find(std::type_index type) const {
+  auto it = entities_.find(type);
+  return it == entities_.end() ? nullptr : &it->second;
+}
+
+std::size_t orm::size() const noexcept {
+  return entities_.size();
 }
 
 // --- Validation ---
@@ -228,13 +254,38 @@ void orm::clear_statement_cache() {
   pooled_conn_->get().clear_statement_cache();
 }
 
-// --- paramset_size setter ---
+// --- Configuration ---
 
-void orm::paramset_size(std::size_t size) noexcept {
-  paramset_size_ = size;
+std::size_t orm::row_array_size() const noexcept {
+  return row_array_size_;
 }
 
-// --- Non-template impl helpers ---
+void orm::row_array_size(std::size_t size) noexcept {
+  row_array_size_ = size > 0 ? size : default_row_array_size;
+}
+
+std::size_t orm::paramset_size() const noexcept {
+  return paramset_size_;
+}
+
+void orm::paramset_size(std::size_t size) noexcept {
+  paramset_size_ = size > 0 ? size : default_paramset_size;
+}
+
+bool orm::auto_commit() const noexcept {
+  return auto_commit_;
+}
+
+void orm::auto_commit(bool enabled) {
+  auto_commit_ = enabled;
+  if (pooled_conn_ && pooled_conn_->get().is_open()) {
+    pooled_conn_->get().set_autocommit(enabled);
+  }
+}
+
+// --- Entity write pipeline ---
+// Storage arrives type-erased as (data, element stride, row count); columns
+// are addressed by index.
 
 namespace {
 
@@ -278,112 +329,119 @@ std::size_t element_size_for(backend::buffer_type type, std::size_t max_var_size
   }
 }
 
-bool has_variable_columns(entity_meta const& m) {
-  for (auto const& col : m.columns) {
-    if (col.buffer_type == backend::buffer_type::chars ||
-        col.buffer_type == backend::buffer_type::bytes) {
-      return true;
-    }
-  }
-  return false;
+// Row `i` of a type-erased entity array. Vector storage is contiguous and
+// sizeof is a multiple of alignof, so row addresses stay aligned.
+void const* row_at(void const* rows, std::size_t row_stride, std::size_t i) {
+  return static_cast<std::byte const*>(rows) + i * row_stride;
 }
 
-}  // namespace
-
-std::size_t orm::update_single_impl(connection& conn,
-  entity_meta const& m,
-  std::vector<std::string> const& set_columns,
-  std::vector<sql_value> const& set_values,
-  std::vector<std::string> const& where_fields,
-  std::vector<sql_value> const& where_values) {
-  if (set_columns.empty()) {
-    throw uniorm_error(
-      "update: no columns to set (all mapped columns are in WHERE)");
+std::vector<std::size_t> all_columns(entity_meta const& m) {
+  std::vector<std::size_t> out(m.columns.size());
+  for (std::size_t ci = 0; ci < out.size(); ++ci) {
+    out[ci] = ci;
   }
-  for (auto const& field : where_fields) {
-    if (!std::any_of(m.columns.begin(), m.columns.end(),
-          [&](column_meta const& c) { return c.column == field; })) {
-      throw uniorm_error("update: WHERE field '" + field + "' is not mapped");
-    }
-  }
-
-  dialect const d = dialect::detect(conn.dbms_name());
-
-  std::string where_sql;
-  for (std::size_t i = 0; i < where_fields.size(); ++i) {
-    auto const& field = where_fields[i];
-    column_meta const* col = nullptr;
-    for (auto const& c : m.columns) {
-      if (c.column == field) {
-        col = &c;
-        break;
-      }
-    }
-    if (i != 0) {
-      where_sql += " AND ";
-    }
-    where_sql += d.quote_identifier(col->column) + " = ?";
-  }
-
-  std::string sql = "UPDATE " + d.quote_identifier(m.table) + " SET ";
-  for (std::size_t i = 0; i < set_columns.size(); ++i) {
-    if (i != 0) {
-      sql += ", ";
-    }
-    sql += d.quote_identifier(set_columns[i]) + " = ?";
-  }
-  sql += " WHERE " + where_sql;
-
-  std::vector<sql_value> all_values;
-  all_values.reserve(set_values.size() + where_values.size());
-  all_values.insert(all_values.end(), set_values.begin(), set_values.end());
-  all_values.insert(all_values.end(), where_values.begin(), where_values.end());
-
-  return conn.execute_update(sql, params(std::move(all_values)));
+  return out;
 }
 
-std::size_t orm::update_batch_impl(connection& conn,
-  entity_meta const& m,
-  std::vector<std::string> const& set_columns,
-  std::vector<std::string> const& where_fields,
-  std::vector<std::vector<sql_value>> const& rows,
-  std::size_t default_batch_size) {
-  if (set_columns.empty()) {
-    throw uniorm_error(
-      "update: no columns to set (all mapped columns are in WHERE)");
-  }
-  if (where_fields.empty()) {
-    throw uniorm_error("update: no WHERE fields specified");
-  }
+std::vector<std::size_t> concat_columns(
+  std::vector<std::size_t> const& head,
+  std::vector<std::size_t> const& tail) {
+  std::vector<std::size_t> out;
+  out.reserve(head.size() + tail.size());
+  out.insert(out.end(), head.begin(), head.end());
+  out.insert(out.end(), tail.begin(), tail.end());
+  return out;
+}
 
-  std::size_t const batch_size = default_batch_size > 0 ? default_batch_size : 1000;
+// `<col> = ?` for each index, joined by sep. Statement text and bound
+// parameters are both spelled from one index list, so the two cannot drift.
+std::string placeholder_group(entity_meta const& m,
+  std::vector<std::size_t> const& col_indices, dialect const& d,
+  std::string_view sep) {
+  std::string out;
+  for (std::size_t i = 0; i < col_indices.size(); ++i) {
+    if (i != 0) {
+      out += sep;
+    }
+    out += d.quote_identifier(m.columns[col_indices[i]].column) + " = ?";
+  }
+  return out;
+}
+
+std::vector<sql_value> extract_row(entity_meta const& m, void const* entity,
+  std::vector<std::size_t> const& col_indices) {
+  std::vector<sql_value> vals;
+  vals.reserve(col_indices.size());
+  for (auto ci : col_indices) {
+    vals.push_back(m.columns[ci].read(entity));
+  }
+  return vals;
+}
+
+// One statement text per operation, so the rowwise and columnar channels of
+// the same write also share a statement-cache key.
+std::string update_statement(entity_meta const& m, dialect const& d,
+  std::vector<std::size_t> const& set_col_indices,
+  std::vector<std::size_t> const& where_col_indices) {
+  return "UPDATE " + d.quote_identifier(m.table) + " SET " +
+    placeholder_group(m, set_col_indices, d, ", ") + " WHERE " +
+    placeholder_group(m, where_col_indices, d, " AND ");
+}
+
+std::string delete_statement(entity_meta const& m, dialect const& d,
+  std::vector<std::size_t> const& where_col_indices) {
+  return "DELETE FROM " + d.quote_identifier(m.table) + " WHERE " +
+    placeholder_group(m, where_col_indices, d, " AND ");
+}
+
+// What a batch adds up per execute(): the rows it bound, or what the driver
+// reported. INSERT counts bound rows; an array-bound SQLExecute reports no
+// per-parameter-set count.
+enum class row_tally { bound_rows, affected_rows };
+
+// --- Single-row statements: one execution, no array binding ---
+
+std::size_t update_single_row(connection& conn, entity_meta const& m,
+  std::vector<std::size_t> const& set_col_indices,
+  std::vector<std::size_t> const& where_col_indices, void const* entity) {
   dialect const d = dialect::detect(conn.dbms_name());
+  std::vector<sql_value> values = extract_row(
+    m, entity, concat_columns(set_col_indices, where_col_indices));
+  return conn.execute_update(
+    update_statement(m, d, set_col_indices, where_col_indices),
+    params(std::move(values)));
+}
 
-  std::string sql = "UPDATE " + d.quote_identifier(m.table) + " SET ";
-  for (std::size_t i = 0; i < set_columns.size(); ++i) {
-    if (i != 0) {
-      sql += ", ";
-    }
-    sql += d.quote_identifier(set_columns[i]) + " = ?";
-  }
-  sql += " WHERE ";
-  for (std::size_t i = 0; i < where_fields.size(); ++i) {
-    if (i != 0) {
-      sql += " AND ";
-    }
-    sql += d.quote_identifier(where_fields[i]) + " = ?";
-  }
+std::size_t delete_single_row(connection& conn, entity_meta const& m,
+  std::vector<std::size_t> const& where_col_indices, void const* entity) {
+  dialect const d = dialect::detect(conn.dbms_name());
+  return conn.execute_update(delete_statement(m, d, where_col_indices),
+    params(extract_row(m, entity, where_col_indices)));
+}
+
+// --- Rowwise batches: one block of row tuples bound per execute() ---
+
+std::size_t update_rowwise(connection& conn, entity_meta const& m,
+  std::vector<std::size_t> const& set_col_indices,
+  std::vector<std::size_t> const& where_col_indices, void const* rows,
+  std::size_t row_stride, std::size_t row_count, std::size_t batch_size) {
+  dialect const d = dialect::detect(conn.dbms_name());
+  std::string sql =
+    update_statement(m, d, set_col_indices, where_col_indices);
+  std::vector<std::size_t> const param_cols =
+    concat_columns(set_col_indices, where_col_indices);
 
   std::size_t affected = 0;
   std::string key(sql);
   auto stmt = conn.acquire_statement(key);
 
-  for (std::size_t start = 0; start < rows.size(); start += batch_size) {
-    std::size_t count = std::min(batch_size, rows.size() - start);
+  for (std::size_t start = 0; start < row_count; start += batch_size) {
+    std::size_t const count = std::min(batch_size, row_count - start);
     std::vector<params> batch;
     batch.reserve(count);
     for (std::size_t r = 0; r < count; ++r) {
-      batch.emplace_back(rows[start + r]);
+      batch.emplace_back(extract_row(
+        m, row_at(rows, row_stride, start + r), param_cols));
     }
     stmt->set_paramset_size(count);
     stmt->bind_batch_params(batch);
@@ -395,24 +453,24 @@ std::size_t orm::update_batch_impl(connection& conn,
   return affected;
 }
 
-std::size_t orm::insert_rowwise_impl(connection& conn,
-  entity_meta const& m,
-  std::vector<std::vector<sql_value>> const& rows,
-  std::size_t default_batch_size) {
-  std::size_t const batch_size = default_batch_size > 0 ? default_batch_size : 1000;
+std::size_t insert_rowwise(connection& conn, entity_meta const& m,
+  void const* rows, std::size_t row_stride, std::size_t row_count,
+  std::size_t batch_size) {
   dialect const d = dialect::detect(conn.dbms_name());
   std::string sql = build_insert_sql(d, m);
+  std::vector<std::size_t> const param_cols = all_columns(m);
 
   std::size_t inserted = 0;
   std::string key(sql);
   auto stmt = conn.acquire_statement(key);
 
-  for (std::size_t start = 0; start < rows.size(); start += batch_size) {
-    std::size_t count = std::min(batch_size, rows.size() - start);
+  for (std::size_t start = 0; start < row_count; start += batch_size) {
+    std::size_t const count = std::min(batch_size, row_count - start);
     std::vector<params> batch;
     batch.reserve(count);
     for (std::size_t r = 0; r < count; ++r) {
-      batch.emplace_back(rows[start + r]);
+      batch.emplace_back(extract_row(
+        m, row_at(rows, row_stride, start + r), param_cols));
     }
     stmt->bind_batch_params(batch);
     stmt->set_paramset_size(count);
@@ -424,272 +482,23 @@ std::size_t orm::insert_rowwise_impl(connection& conn,
   return inserted;
 }
 
-// --- Columnar batch insert (non-template core) ---
-
-std::size_t orm::insert_columnar_impl(connection& conn,
-  entity_meta const& m, std::size_t row_count,
-  std::size_t batch_size, void const* rows_data,
-  string_size_fn string_size, write_row_fn write_row,
-  void const* (*entity_at)(void const*, std::size_t)) {
-  if (row_count == 0) {
-    return 0;
-  }
-
-  std::size_t const num_cols = m.columns.size();
-
+std::size_t delete_rowwise(connection& conn, entity_meta const& m,
+  std::vector<std::size_t> const& where_col_indices, void const* rows,
+  std::size_t row_stride, std::size_t row_count, std::size_t batch_size) {
   dialect const d = dialect::detect(conn.dbms_name());
-  std::string sql = build_insert_sql(d, m);
-
-  std::string key(sql);
-  auto stmt = conn.acquire_statement(key);
-
-  // Pre-scan for max string/binary size only if needed
-  std::vector<std::size_t> max_sizes(num_cols, 1);
-  if (has_variable_columns(m)) {
-    for (std::size_t c = 0; c < num_cols; ++c) {
-      auto const& col = m.columns[c];
-      if (col.buffer_type == backend::buffer_type::chars ||
-          col.buffer_type == backend::buffer_type::bytes) {
-        for (std::size_t r = 0; r < row_count; ++r) {
-          void const* entity = entity_at(rows_data, r);
-          max_sizes[c] = std::max(max_sizes[c], string_size(&m, entity, c));
-        }
-      }
-    }
-  }
-
-  // Allocate batch via backend's batch_writer — backend owns the buffers
-  std::size_t const alloc_count = std::min(batch_size, row_count);
-  auto& writer = stmt->prepare_batch();
-
-  std::vector<std::size_t> col_indices(num_cols);
-  for (std::size_t c = 0; c < num_cols; ++c) {
-    auto btype = m.columns[c].buffer_type;
-    std::size_t elem_size = element_size_for(btype, max_sizes[c]);
-    col_indices[c] = writer.add_column(btype, alloc_count, elem_size);
-  }
-
-  // Write the first batch of data BEFORE binding — some drivers (e.g.
-  // MariaDB ODBC) may inspect buffer contents at SQLBindParameter time.
-  std::size_t const first_count = std::min(batch_size, row_count);
-  for (std::size_t c = 0; c < num_cols; ++c) {
-    auto col_idx = col_indices[c];
-    void* buf = writer.data(col_idx);
-    std::size_t stride = writer.element_size(col_idx);
-    auto* inds = writer.indicators(col_idx);
-    for (std::size_t r = 0; r < first_count; ++r) {
-      void const* entity = entity_at(rows_data, r);
-      write_row(&m, entity, r, c, buf, stride, inds);
-    }
-  }
-
-  // Bind once — buffer pointers are stable across batches
-  writer.finish();
-  stmt->set_paramset_size(first_count);
-  stmt->execute();
-  std::size_t inserted = first_count;
-
-  for (std::size_t start = batch_size; start < row_count; start += batch_size) {
-    std::size_t count = std::min(batch_size, row_count - start);
-
-    for (std::size_t c = 0; c < num_cols; ++c) {
-      auto col_idx = col_indices[c];
-      void* buf = writer.data(col_idx);
-      std::size_t stride = writer.element_size(col_idx);
-      auto* inds = writer.indicators(col_idx);
-      for (std::size_t r = 0; r < count; ++r) {
-        void const* entity = entity_at(rows_data, start + r);
-        write_row(&m, entity, r, c, buf, stride, inds);
-      }
-    }
-
-    if (count != first_count) {
-      stmt->set_paramset_size(count);
-    }
-    stmt->execute();
-    inserted += count;
-  }
-
-  conn.release_statement(key, std::move(stmt));
-  return inserted;
-}
-
-// --- Columnar batch update (non-template core) ---
-
-std::size_t orm::update_columnar_impl(connection& conn,
-  entity_meta const& m,
-  std::vector<std::string> const& set_columns,
-  std::vector<std::size_t> const& set_col_indices,
-  std::vector<std::string> const& where_fields,
-  std::vector<std::size_t> const& where_col_indices,
-  std::size_t row_count, std::size_t batch_size,
-  void const* rows_data,
-  string_size_fn string_size, write_row_fn write_row,
-  void const* (*entity_at)(void const*, std::size_t)) {
-  if (row_count == 0) {
-    return 0;
-  }
-
-  std::size_t const num_params = set_col_indices.size() + where_col_indices.size();
-  std::vector<std::size_t> param_to_col(num_params);
-  std::size_t pi = 0;
-  for (auto ci : set_col_indices) {
-    param_to_col[pi++] = ci;
-  }
-  for (auto ci : where_col_indices) {
-    param_to_col[pi++] = ci;
-  }
-
-  dialect const d = dialect::detect(conn.dbms_name());
-  std::string sql = "UPDATE " + d.quote_identifier(m.table) + " SET ";
-  for (std::size_t i = 0; i < set_columns.size(); ++i) {
-    if (i != 0) {
-      sql += ", ";
-    }
-    sql += d.quote_identifier(set_columns[i]) + " = ?";
-  }
-  sql += " WHERE ";
-  for (std::size_t i = 0; i < where_fields.size(); ++i) {
-    if (i != 0) {
-      sql += " AND ";
-    }
-    sql += d.quote_identifier(where_fields[i]) + " = ?";
-  }
-
-  std::string key(sql);
-  auto stmt = conn.acquire_statement(key);
-
-  // Pre-scan for max string/binary size only if needed
-  std::vector<std::size_t> max_sizes(num_params, 1);
-  bool has_var = false;
-  for (std::size_t p = 0; p < num_params; ++p) {
-    auto bt = m.columns[param_to_col[p]].buffer_type;
-    if (bt == backend::buffer_type::chars || bt == backend::buffer_type::bytes) {
-      has_var = true;
-      break;
-    }
-  }
-  if (has_var) {
-    for (std::size_t p = 0; p < num_params; ++p) {
-      auto const& col = m.columns[param_to_col[p]];
-      if (col.buffer_type == backend::buffer_type::chars ||
-          col.buffer_type == backend::buffer_type::bytes) {
-        for (std::size_t r = 0; r < row_count; ++r) {
-          void const* entity = entity_at(rows_data, r);
-          max_sizes[p] = std::max(max_sizes[p], string_size(&m, entity, param_to_col[p]));
-        }
-      }
-    }
-  }
-
-  std::size_t const alloc_count = std::min(batch_size, row_count);
-  auto& writer = stmt->prepare_batch();
-
-  std::vector<std::size_t> col_indices(num_params);
-  for (std::size_t p = 0; p < num_params; ++p) {
-    auto btype = m.columns[param_to_col[p]].buffer_type;
-    std::size_t elem_size = element_size_for(btype, max_sizes[p]);
-    col_indices[p] = writer.add_column(btype, alloc_count, elem_size);
-  }
-
-  std::size_t const first_count = alloc_count;
-  for (std::size_t p = 0; p < num_params; ++p) {
-    auto col_idx = col_indices[p];
-    void* buf = writer.data(col_idx);
-    std::size_t stride = writer.element_size(col_idx);
-    auto* inds = writer.indicators(col_idx);
-    std::size_t entity_col = param_to_col[p];
-    for (std::size_t r = 0; r < first_count; ++r) {
-      void const* entity = entity_at(rows_data, r);
-      write_row(&m, entity, r, entity_col, buf, stride, inds);
-    }
-  }
-
-  // Bind once — buffer pointers are stable across batches
-  writer.finish();
-  stmt->set_paramset_size(first_count);
-  stmt->execute();
-  std::size_t updated = stmt->affected_rows();
-
-  for (std::size_t start = batch_size; start < row_count; start += batch_size) {
-    std::size_t count = std::min(batch_size, row_count - start);
-
-    for (std::size_t p = 0; p < num_params; ++p) {
-      auto col_idx = col_indices[p];
-      void* buf = writer.data(col_idx);
-      std::size_t stride = writer.element_size(col_idx);
-      auto* inds = writer.indicators(col_idx);
-      std::size_t entity_col = param_to_col[p];
-      for (std::size_t r = 0; r < count; ++r) {
-        void const* entity = entity_at(rows_data, start + r);
-        write_row(&m, entity, r, entity_col, buf, stride, inds);
-      }
-    }
-
-    if (count != first_count) {
-      stmt->set_paramset_size(count);
-    }
-    stmt->execute();
-    updated += stmt->affected_rows();
-  }
-
-  conn.release_statement(key, std::move(stmt));
-  return updated;
-}
-
-// --- Delete operations ---
-
-std::size_t orm::delete_single_impl(connection& conn,
-  entity_meta const& m,
-  std::vector<std::string> const& where_fields,
-  std::vector<sql_value> const& where_values) {
-  if (where_fields.empty()) {
-    throw uniorm_error("remove: no WHERE fields specified");
-  }
-
-  dialect const d = dialect::detect(conn.dbms_name());
-
-  std::string sql = "DELETE FROM " + d.quote_identifier(m.table) + " WHERE ";
-  for (std::size_t i = 0; i < where_fields.size(); ++i) {
-    if (i != 0) {
-      sql += " AND ";
-    }
-    sql += d.quote_identifier(where_fields[i]) + " = ?";
-  }
-
-  return conn.execute_update(sql, params(where_values));
-}
-
-std::size_t orm::delete_batch_impl(connection& conn,
-  entity_meta const& m,
-  std::vector<std::string> const& where_fields,
-  std::vector<std::vector<sql_value>> const& rows,
-  std::size_t default_batch_size) {
-  if (where_fields.empty()) {
-    throw uniorm_error("remove: no WHERE fields specified");
-  }
-
-  std::size_t const batch_size = default_batch_size > 0 ? default_batch_size : 1000;
-  dialect const d = dialect::detect(conn.dbms_name());
-
-  std::string sql = "DELETE FROM " + d.quote_identifier(m.table) + " WHERE ";
-  for (std::size_t i = 0; i < where_fields.size(); ++i) {
-    if (i != 0) {
-      sql += " AND ";
-    }
-    sql += d.quote_identifier(where_fields[i]) + " = ?";
-  }
+  std::string sql = delete_statement(m, d, where_col_indices);
 
   std::size_t affected = 0;
   std::string key(sql);
   auto stmt = conn.acquire_statement(key);
 
-  for (std::size_t start = 0; start < rows.size(); start += batch_size) {
-    std::size_t count = std::min(batch_size, rows.size() - start);
+  for (std::size_t start = 0; start < row_count; start += batch_size) {
+    std::size_t const count = std::min(batch_size, row_count - start);
     std::vector<params> batch;
     batch.reserve(count);
     for (std::size_t r = 0; r < count; ++r) {
-      batch.emplace_back(rows[start + r]);
+      batch.emplace_back(extract_row(
+        m, row_at(rows, row_stride, start + r), where_col_indices));
     }
     stmt->set_paramset_size(count);
     stmt->bind_batch_params(batch);
@@ -701,35 +510,20 @@ std::size_t orm::delete_batch_impl(connection& conn,
   return affected;
 }
 
-std::size_t orm::delete_columnar_impl(connection& conn,
-  entity_meta const& m,
-  std::vector<std::string> const& where_fields,
-  std::vector<std::size_t> const& where_col_indices,
-  std::size_t row_count, std::size_t batch_size,
-  void const* rows_data,
-  string_size_fn string_size, write_row_fn write_row,
-  void const* (*entity_at)(void const* data, std::size_t i)) {
+// --- Columnar batch write, shared by INSERT / UPDATE / DELETE ---
+
+// One typed buffer per parameter, refilled `batch_size` rows at a time against
+// buffers bound for the whole sweep. `param_to_col[p]` feeds parameter p.
+std::size_t columnar_batch_write(connection& conn, entity_meta const& m,
+  std::string sql, std::vector<std::size_t> const& param_to_col,
+  void const* rows, std::size_t row_stride, std::size_t row_count,
+  std::size_t batch_size, row_tally tally) {
   if (row_count == 0) {
     return 0;
   }
+  std::size_t const num_params = param_to_col.size();
 
-  std::size_t const num_params = where_col_indices.size();
-  std::vector<std::size_t> param_to_col(num_params);
-  std::size_t pi = 0;
-  for (auto ci : where_col_indices) {
-    param_to_col[pi++] = ci;
-  }
-
-  dialect const d = dialect::detect(conn.dbms_name());
-  std::string sql = "DELETE FROM " + d.quote_identifier(m.table) + " WHERE ";
-  for (std::size_t i = 0; i < where_fields.size(); ++i) {
-    if (i != 0) {
-      sql += " AND ";
-    }
-    sql += d.quote_identifier(where_fields[i]) + " = ?";
-  }
-
-  std::string key(sql);
+  std::string key(std::move(sql));
   auto stmt = conn.acquire_statement(key);
 
   // Pre-scan for max string/binary size only if needed
@@ -748,13 +542,14 @@ std::size_t orm::delete_columnar_impl(connection& conn,
       if (col.buffer_type == backend::buffer_type::chars ||
           col.buffer_type == backend::buffer_type::bytes) {
         for (std::size_t r = 0; r < row_count; ++r) {
-          void const* entity = entity_at(rows_data, r);
-          max_sizes[p] = std::max(max_sizes[p], string_size(&m, entity, param_to_col[p]));
+          max_sizes[p] = std::max(max_sizes[p],
+            col.get_string_size(row_at(rows, row_stride, r)));
         }
       }
     }
   }
 
+  // Allocate batch via backend's batch_writer — backend owns the buffers
   std::size_t const alloc_count = std::min(batch_size, row_count);
   auto& writer = stmt->prepare_batch();
 
@@ -765,6 +560,8 @@ std::size_t orm::delete_columnar_impl(connection& conn,
     col_indices[p] = writer.add_column(btype, alloc_count, elem_size);
   }
 
+  // Write the first batch of data BEFORE binding — some drivers (e.g.
+  // MariaDB ODBC) may inspect buffer contents at SQLBindParameter time.
   std::size_t const first_count = alloc_count;
   for (std::size_t p = 0; p < num_params; ++p) {
     auto col_idx = col_indices[p];
@@ -773,8 +570,8 @@ std::size_t orm::delete_columnar_impl(connection& conn,
     auto* inds = writer.indicators(col_idx);
     std::size_t entity_col = param_to_col[p];
     for (std::size_t r = 0; r < first_count; ++r) {
-      void const* entity = entity_at(rows_data, r);
-      write_row(&m, entity, r, entity_col, buf, stride, inds);
+      m.columns[entity_col].write_to_param_buffer(
+        row_at(rows, row_stride, r), r, buf, stride, inds);
     }
   }
 
@@ -782,7 +579,8 @@ std::size_t orm::delete_columnar_impl(connection& conn,
   writer.finish();
   stmt->set_paramset_size(first_count);
   stmt->execute();
-  std::size_t deleted = stmt->affected_rows();
+  std::size_t written =
+    tally == row_tally::bound_rows ? first_count : stmt->affected_rows();
 
   for (std::size_t start = batch_size; start < row_count; start += batch_size) {
     std::size_t count = std::min(batch_size, row_count - start);
@@ -794,8 +592,8 @@ std::size_t orm::delete_columnar_impl(connection& conn,
       auto* inds = writer.indicators(col_idx);
       std::size_t entity_col = param_to_col[p];
       for (std::size_t r = 0; r < count; ++r) {
-        void const* entity = entity_at(rows_data, start + r);
-        write_row(&m, entity, r, entity_col, buf, stride, inds);
+        m.columns[entity_col].write_to_param_buffer(
+          row_at(rows, row_stride, start + r), r, buf, stride, inds);
       }
     }
 
@@ -803,10 +601,142 @@ std::size_t orm::delete_columnar_impl(connection& conn,
       stmt->set_paramset_size(count);
     }
     stmt->execute();
-    deleted += stmt->affected_rows();
+    written +=
+      tally == row_tally::bound_rows ? count : stmt->affected_rows();
   }
 
   conn.release_statement(key, std::move(stmt));
+  return written;
+}
+
+// A sweep must not half-commit: on an autocommitting connection, wrap it in a
+// transaction. In manual mode the chunks already join the caller's.
+std::optional<transaction> begin_batch(connection& conn) {
+  std::optional<transaction> txn;
+  if (!conn.in_transaction()) {
+    txn.emplace(conn.begin());
+  }
+  return txn;
+}
+
+}  // namespace
+
+// --- Entity write entry points ---
+// Called by the thin templates in orm.hpp, which are the only place the Entity
+// type is needed; below here storage is a byte stride and columns are indices.
+
+std::size_t orm::insert_impl(connection& conn, entity_meta const& m,
+  void const* rows, std::size_t row_stride, std::size_t row_count,
+  std::size_t batch_size) {
+  if (row_count == 0) {
+    return 0;
+  }
+  std::size_t const chunk = batch_size > 0 ? batch_size : default_paramset_size;
+
+  std::optional<transaction> txn = begin_batch(conn);
+
+  std::size_t inserted;
+  if (conn.caps().columnar_batch) {
+    dialect const d = dialect::detect(conn.dbms_name());
+    inserted = columnar_batch_write(conn, m, build_insert_sql(d, m),
+      all_columns(m), rows, row_stride, row_count, chunk,
+      row_tally::bound_rows);
+  } else {
+    inserted = insert_rowwise(conn, m, rows, row_stride, row_count, chunk);
+  }
+
+  if (txn) {
+    txn->commit();
+  }
+  return inserted;
+}
+
+std::size_t orm::update_single_impl(connection& conn, entity_meta const& m,
+  void const* entity,
+  std::optional<std::vector<std::string>> const& where_fields) {
+  std::vector<std::size_t> const where_cols =
+    detail::resolve_where(m, where_fields, "update");
+  std::vector<std::size_t> const set_cols =
+    detail::set_columns_of(m, where_cols);
+  if (set_cols.empty()) {
+    throw uniorm_error(
+      "update: no columns to set (all mapped columns are in WHERE)");
+  }
+  return update_single_row(conn, m, set_cols, where_cols, entity);
+}
+
+std::size_t orm::update_batch_impl(connection& conn, entity_meta const& m,
+  void const* rows, std::size_t row_stride, std::size_t row_count,
+  std::optional<std::vector<std::string>> const& where_fields,
+  std::size_t batch_size) {
+  if (row_count == 0) {
+    return 0;
+  }
+  std::vector<std::size_t> const where_cols =
+    detail::resolve_where(m, where_fields, "update");
+  std::vector<std::size_t> const set_cols =
+    detail::set_columns_of(m, where_cols);
+  if (set_cols.empty()) {
+    throw uniorm_error(
+      "update: no columns to set (all mapped columns are in WHERE)");
+  }
+  std::size_t const chunk = batch_size > 0 ? batch_size : default_paramset_size;
+
+  std::optional<transaction> txn = begin_batch(conn);
+
+  std::size_t updated;
+  if (conn.caps().columnar_batch) {
+    dialect const d = dialect::detect(conn.dbms_name());
+    updated = columnar_batch_write(conn, m,
+      update_statement(m, d, set_cols, where_cols),
+      concat_columns(set_cols, where_cols), rows, row_stride, row_count, chunk,
+      row_tally::affected_rows);
+  } else {
+    updated = update_rowwise(conn, m, set_cols, where_cols, rows, row_stride,
+      row_count, chunk);
+  }
+
+  if (txn) {
+    txn->commit();
+  }
+  return updated;
+}
+
+std::size_t orm::delete_single_impl(connection& conn, entity_meta const& m,
+  void const* entity,
+  std::optional<std::vector<std::string>> const& where_fields) {
+  std::vector<std::size_t> const where_cols =
+    detail::resolve_where(m, where_fields, "remove");
+  return delete_single_row(conn, m, where_cols, entity);
+}
+
+std::size_t orm::delete_batch_impl(connection& conn, entity_meta const& m,
+  void const* rows, std::size_t row_stride, std::size_t row_count,
+  std::optional<std::vector<std::string>> const& where_fields,
+  std::size_t batch_size) {
+  if (row_count == 0) {
+    return 0;
+  }
+  std::vector<std::size_t> const where_cols =
+    detail::resolve_where(m, where_fields, "remove");
+  std::size_t const chunk = batch_size > 0 ? batch_size : default_paramset_size;
+
+  std::optional<transaction> txn = begin_batch(conn);
+
+  std::size_t deleted;
+  if (conn.caps().columnar_batch) {
+    dialect const d = dialect::detect(conn.dbms_name());
+    deleted = columnar_batch_write(conn, m,
+      delete_statement(m, d, where_cols), where_cols, rows, row_stride,
+      row_count, chunk, row_tally::affected_rows);
+  } else {
+    deleted =
+      delete_rowwise(conn, m, where_cols, rows, row_stride, row_count, chunk);
+  }
+
+  if (txn) {
+    txn->commit();
+  }
   return deleted;
 }
 

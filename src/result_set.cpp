@@ -69,7 +69,8 @@ struct result_set::impl {
     std::function<void(std::unique_ptr<backend::statement_iface>)> r,
     std::size_t row_array_size)
     : stmt(std::move(s)), release(std::move(r)),
-      row_array_size_(row_array_size) {
+      // value_of() divides buffer sizes by this to locate a row's slot.
+      row_array_size_(row_array_size > 0 ? row_array_size : 1) {
     describe_and_bind();
   }
 

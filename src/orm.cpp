@@ -20,13 +20,14 @@ namespace {
 
 struct schema_column {
   bool nullable = false;
+  sql_type type = sql_type::other;
 };
 
 std::unordered_map<std::string, schema_column> load_table_schema(
   backend::schema_metadata& md, std::string const& table) {
   std::unordered_map<std::string, schema_column> schema;
   for (auto const& c : md.table_columns(table)) {
-    schema[c.name] = schema_column{c.nullable};
+    schema[c.name] = schema_column{ c.nullable, c.type };
   }
   return schema;
 }
@@ -113,8 +114,18 @@ void orm::validate(validation_mode mode) {
         throw mapping_error(
           "column not found in table " + meta.table + ": " + c.column);
       }
-      if (mode == validation_mode::strict && it->second.nullable &&
-          !c.nullable) {
+      if (mode == validation_mode::lenient) {
+        continue;
+      }
+      // sql_type::other is a type no backend could be blamed for misreading:
+      // with no family to compare, there is nothing to check.
+      if (it->second.type != sql_type::other &&
+          (c.accepted_types & sql_type_bit(it->second.type)) == 0) {
+        throw mapping_error("column " + meta.table + "." + c.column + " is " +
+                            sql_type_name(it->second.type) +
+                            ", which the mapped member does not bind");
+      }
+      if (it->second.nullable && !c.nullable) {
         throw mapping_error("column " + meta.table + "." + c.column +
                             " is nullable but the mapped member is not "
                             "std::optional");

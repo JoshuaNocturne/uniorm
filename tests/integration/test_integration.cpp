@@ -340,6 +340,25 @@ void test_validate(std::string_view conn_string) {
       CHECK(false);
     }
   }
+  {
+    // The family comparison keys on what the member binds, which for a
+    // converter type is its representation, not the domain type.
+    struct Swapped {
+      grade id = grade::bronze;  // text against a BIGINT column
+      std::int64_t state = 0;    // bigint against a VARCHAR column
+    };
+    orm bad(conn_string);
+    bad.map<Swapped>(k_order_table)
+      .primary_key("id", &Swapped::id)
+      .column("state", &Swapped::state);
+    CHECK_THROWS(bad.validate(), mapping_error);
+    try {
+      bad.validate(validation_mode::lenient);
+      CHECK(true);
+    } catch (...) {
+      CHECK(false);
+    }
+  }
 }
 
 void test_query_builder(orm& db) {

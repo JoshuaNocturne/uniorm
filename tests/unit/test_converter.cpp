@@ -346,6 +346,14 @@ void test_converter_column() {
   CHECK(!m.columns[1].nullable);
   CHECK(m.columns[2].nullable);
 
+  // The SQL family comes from the representation, so a status column is
+  // checked as text exactly as a std::string column is -- and not as the
+  // integer column beside it.
+  CHECK(
+    m.columns[1].accepted_types == detail::accepted_sql_types<std::string>());
+  CHECK(m.columns[2].accepted_types == m.columns[1].accepted_types);
+  CHECK((m.columns[0].accepted_types & sql_type_bit(sql_type::varchar)) == 0);
+
   order const paid{ 1, status::paid, std::nullopt };
   CHECK(std::get<std::string>(m.columns[1].read(&paid)) == "paid");
   CHECK(std::holds_alternative<std::monostate>(m.columns[2].read(&paid)));

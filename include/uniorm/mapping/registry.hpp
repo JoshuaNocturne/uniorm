@@ -21,6 +21,7 @@
 #include <uniorm/export.hpp>
 #include <uniorm/builder/expression.hpp>
 #include <uniorm/row.hpp>
+#include <uniorm/types.hpp>
 #include <uniorm/value.hpp>
 
 namespace uniorm {
@@ -32,6 +33,9 @@ struct column_meta {
   bool is_primary_key = false;
   bool nullable = false;
   backend::buffer_type buffer_type = backend::buffer_type::chars;
+  // SQL types the member's representation binds; strict validation compares
+  // the live column type against it.
+  sql_type_set accepted_types = 0;
   member_key key{ std::type_index(typeid(void)), {} };
   std::function<void(void*, sql_value const&)> write;
   std::function<sql_value(void const*)> read;
@@ -161,6 +165,8 @@ constexpr backend::buffer_type member_buffer_type() {
     return member_buffer_type<converter_sql<U>>();
   } else if constexpr (std::is_same_v<U, bool>) {
     return backend::buffer_type::bit;
+  } else if constexpr (std::is_same_v<U, std::int8_t>) {
+    return backend::buffer_type::int8;
   } else if constexpr (std::is_same_v<U, std::int16_t>) {
     return backend::buffer_type::int16;
   } else if constexpr (std::is_same_v<U, std::int32_t>) {
@@ -176,7 +182,49 @@ constexpr backend::buffer_type member_buffer_type() {
   } else if constexpr (std::is_same_v<U, timestamp>) {
     return backend::buffer_type::timestamp_parts;
   } else {
+    static_assert(
+      std::is_same_v<U, U> && false,
+      "a converter's sql type must be one uniorm binds directly");
     return backend::buffer_type::chars;
+  }
+}
+
+// The SQL types a representation binds, as the type table promises. Anything
+// outside the set reaches the member only by driver-side coercion, so strict
+// validation reports it rather than trusting the driver to get it right.
+template <class M>
+constexpr sql_type_set accepted_sql_types() {
+  using U = std::remove_cvref_t<M>;
+  if constexpr (is_optional_v<M>) {
+    return accepted_sql_types<typename M::value_type>();
+  } else if constexpr (has_converter<U>) {
+    return accepted_sql_types<converter_sql<U>>();
+  } else if constexpr (std::is_same_v<U, bool>) {
+    return sql_type_bit(sql_type::boolean);
+  } else if constexpr (std::is_same_v<U, std::int8_t> ||
+                       std::is_same_v<U, std::int16_t>) {
+    // TINYINT and SMALLINT both normalize to smallint.
+    return sql_type_bit(sql_type::smallint);
+  } else if constexpr (std::is_same_v<U, std::int32_t>) {
+    return sql_type_bit(sql_type::integer);
+  } else if constexpr (std::is_same_v<U, std::int64_t>) {
+    return sql_type_bit(sql_type::bigint);
+  } else if constexpr (std::is_same_v<U, double>) {
+    return sql_type_bit(sql_type::real) |
+      sql_type_bit(sql_type::double_precision) |
+      sql_type_bit(sql_type::decimal);
+  } else if constexpr (std::is_same_v<U, std::string>) {
+    return sql_type_bit(sql_type::character) | sql_type_bit(sql_type::varchar) |
+      sql_type_bit(sql_type::longvarchar) | sql_type_bit(sql_type::wchar) |
+      sql_type_bit(sql_type::wvarchar) | sql_type_bit(sql_type::guid) |
+      sql_type_bit(sql_type::decimal);
+  } else if constexpr (std::is_same_v<U, std::vector<std::byte>>) {
+    return sql_type_bit(sql_type::binary) | sql_type_bit(sql_type::varbinary);
+  } else if constexpr (std::is_same_v<U, timestamp>) {
+    return sql_type_bit(sql_type::date) | sql_type_bit(sql_type::time) |
+      sql_type_bit(sql_type::timestamp);
+  } else {
+    return 0;
   }
 }
 
@@ -188,6 +236,7 @@ column_meta make_column_meta(
   c.is_primary_key = primary;
   c.nullable = is_optional_v<M>;
   c.buffer_type = member_buffer_type<M>();
+  c.accepted_types = accepted_sql_types<M>();
   c.key = make_member_key(member);
   c.write = [member](void* obj, sql_value const& v) {
     static_cast<T*>(obj)->*member = value_cast<M>(v);

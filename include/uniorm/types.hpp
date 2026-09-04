@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 
 #include <uniorm/export.hpp>
@@ -32,7 +33,22 @@ enum class sql_type {
   other
 };
 
+// A set of sql_type values as a bitmask, so a mapped column can name the SQL
+// types its representation binds without carrying a container.
+using sql_type_set = std::uint64_t;
+
+constexpr sql_type_set sql_type_bit(sql_type t) noexcept {
+  return std::uint64_t{ 1 } << static_cast<std::uint64_t>(t);
+}
+
+static_assert(
+  static_cast<std::uint64_t>(sql_type::other) < sizeof(sql_type_set) * 8,
+  "sql_type_set carries one bit per sql_type value");
+
 UNIORM_API sql_type sql_type_from_native(int native_type);
+
+// Printable name of a neutral SQL type, for diagnostics.
+UNIORM_API char const* sql_type_name(sql_type t) noexcept;
 
 // Metadata describing one result column; backend-neutral so the backend
 // contract can expose it without depending on result_set.

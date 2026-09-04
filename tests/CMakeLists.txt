@@ -63,6 +63,7 @@ if(UNIORM_BACKEND_ODBC)
             UNIORM_GEN_PATH="$<TARGET_FILE:uniorm-gen>"
             UNIORM_GEN_OUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/gen_out"
             UNIORM_GEN_GOLDEN="${CMAKE_CURRENT_SOURCE_DIR}/integration/golden/gen_it_schema.hpp"
+            UNIORM_GEN_CONFIG="${CMAKE_CURRENT_SOURCE_DIR}/integration/golden/gen_it.toml"
         )
         add_test(NAME gen_e2e_tests COMMAND uniorm_gen_e2e_tests)
         set_tests_properties(gen_e2e_tests PROPERTIES SKIP_RETURN_CODE 77)

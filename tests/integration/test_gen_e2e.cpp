@@ -8,16 +8,49 @@
 #include <string>
 
 #include <uniorm/connection.hpp>
+#include <uniorm/converter.hpp>
 #include "uniorm/mapping/registry.hpp"
 #include "uniorm/builder/builder.hpp"
 
 // The checked-in golden header was produced by uniorm-gen against the
-// fixture tables below; regenerate it with:
+// fixture tables below and the override file beside it; regenerate it with:
 //   uniorm-gen --dsn=<dsn> --user=<u> --password=<p> \
 //     --tables=uniorm_gen_user,uniorm_gen_order --name=gen_it \
+//     --config=tests/integration/golden/gen_it.toml \
 //     --out=tests/integration/golden
 // (assumes the default UNIORM_DECIMAL_DEFAULT=string build).
 // The macros expand to quoted string literals provided by CMake.
+
+// The domain type the override file names. A generated header reaches a
+// converter-backed member through uniorm::converter<Domain>, so the
+// specialization has to be declared before the header is included.
+enum class order_state { unpaid, paid, shipped };
+
+template <>
+struct uniorm::converter<order_state> {
+  using sql = std::string;
+
+  static void to_db(order_state const& s, std::string& out) {
+    if (s == order_state::paid) {
+      out = "paid";
+    } else if (s == order_state::shipped) {
+      out = "shipped";
+    } else {
+      out = "unpaid";
+    }
+  }
+
+  static order_state from_db(std::string const& v) {
+    if (v == "paid") {
+      return order_state::paid;
+    }
+    if (v == "shipped") {
+      return order_state::shipped;
+    }
+    return order_state::unpaid;
+  }
+};
+
 #include UNIORM_GEN_GOLDEN
 
 using namespace uniorm;
@@ -59,6 +92,24 @@ void test_golden(std::string_view conn_string) {
   CHECK(db.size() == 2);
   db.validate(validation_mode::strict);
   CHECK(db.query().of<gen_it::UniormGenUser>().count() == 0);
+
+  // The generated entity carries a converter-backed column, so a write and a
+  // materialized read here cover the whole generated mapping.
+  gen_it::UniormGenUser user;
+  user.id = 1;
+  user.name = "ada";
+  CHECK(db.insert(std::vector<gen_it::UniormGenUser>{ user }) == 1);
+  gen_it::UniormGenOrder order;
+  order.id = 1;
+  order.userId = 1;
+  order.amount = "10.50";
+  order.note = order_state::shipped;
+  CHECK(db.insert(std::vector<gen_it::UniormGenOrder>{ order }) == 1);
+
+  auto back = db.query().of<gen_it::UniormGenOrder>().one();
+  CHECK(back.has_value());
+  CHECK(back->amount == "10.50");
+  CHECK(back->note && *back->note == order_state::shipped);
 }
 
 std::string read_normalized(std::string const& path) {
@@ -79,7 +130,7 @@ void test_generate_matches_golden(std::string const& conn_string) {
   std::string cmd = std::string(UNIORM_GEN_PATH) + " --connection-string=\"" +
                     conn_string + "\" --out=" + UNIORM_GEN_OUT_DIR +
                     " --tables=uniorm_gen_user,uniorm_gen_order"
-                    " --name=gen_it 2>&1";
+                    " --name=gen_it --config=" UNIORM_GEN_CONFIG " 2>&1";
   int rc = std::system(cmd.c_str());
   CHECK(rc == 0);
 

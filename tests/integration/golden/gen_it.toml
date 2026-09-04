@@ -1,0 +1,6 @@
+# The overrides gen_it_schema.hpp was generated with; the regeneration command
+# lives in tests/integration/test_gen_e2e.cpp. That test compiles the golden,
+# which is what checks a converter-backed member generates usable code.
+
+[tables.uniorm_gen_order.columns.note]
+converter = "order_state"

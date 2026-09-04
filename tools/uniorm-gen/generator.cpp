@@ -46,7 +46,8 @@ std::string check_bindable(std::string const& t, std::string const& where) {
     throw config_error(where + ": cpp type '" + t +
                        "' cannot be bound by the v1 registry (allowed: "
                        "bool, std::int8_t..int64_t, double, std::string, "
-                       "std::vector<std::byte>, uniorm::timestamp)");
+                       "std::vector<std::byte>, uniorm::timestamp; a domain "
+                       "type goes under converter = \"...\")");
   }
   return normalize_type(t);
 }
@@ -137,6 +138,9 @@ struct member_info {
   std::string member;
   std::string cpp_type;
   column_model const* col;
+  // The member type is a domain type the registry reaches through
+  // uniorm::converter<Domain>, so nothing here can check what it binds.
+  bool through_converter = false;
 };
 
 std::vector<member_info> build_members(
@@ -158,14 +162,16 @@ std::vector<member_info> build_members(
         ovr = &c_it->second;
       }
     }
-    if (ovr != nullptr && ovr->converter) {
-      throw config_error(
-        where +
-        ": converter-backed members are not supported by the v1 registry");
-    }
 
     std::string cpp_type;
-    if (ovr != nullptr && ovr->cpp_type) {
+    bool through_converter = false;
+    if (ovr != nullptr && ovr->converter) {
+      // A converter override is a domain type by definition: the bindable
+      // set does not apply, and the specialization is checked in the
+      // generated header, where the type is complete.
+      cpp_type = normalize_type(*ovr->converter);
+      through_converter = true;
+    } else if (ovr != nullptr && ovr->cpp_type) {
       cpp_type = check_bindable(*ovr->cpp_type, where);
     } else if (std::string const* global = find_type_override(col, cfg)) {
       cpp_type = check_bindable(*global, where);
@@ -180,7 +186,8 @@ std::vector<member_info> build_members(
         where + ": member name collision, renamed to '" + member + "'");
     }
     used.insert(member);
-    members.push_back(member_info{ member, cpp_type, &col });
+    members.push_back(
+      member_info{ member, cpp_type, &col, through_converter });
   }
   return members;
 }
@@ -229,6 +236,16 @@ void emit_table(std::string& text, table_model const& table,
       "  " + decl + " " + m.member + ";  // " + column_comment(*m.col) + "\n";
   }
   text += "};\n\n";
+
+  std::unordered_set<std::string> asserted;
+  for (member_info const& m : members) {
+    if (!m.through_converter || !asserted.insert(m.cpp_type).second) {
+      continue;
+    }
+    text += "static_assert(uniorm::has_converter<" + m.cpp_type +
+            ">,\n  \"" + m.cpp_type +
+            " needs a uniorm::converter specialization\");\n\n";
+  }
 
   text += "inline void register_" + class_name +
           "_mapping(uniorm::orm& registry) {\n";

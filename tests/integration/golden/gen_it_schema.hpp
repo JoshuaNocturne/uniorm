@@ -36,8 +36,11 @@ struct UniormGenOrder {
   std::int64_t id;  // BIGINT(19) PK NOT NULL
   std::int64_t userId;  // BIGINT(19) NOT NULL
   std::string amount;  // DECIMAL(10,2) NOT NULL
-  std::optional<std::string> note;  // VARCHAR(128) DEFAULT NULL
+  std::optional<order_state> note;  // VARCHAR(128) DEFAULT NULL
 };
+
+static_assert(uniorm::has_converter<order_state>,
+  "order_state needs a uniorm::converter specialization");
 
 inline void register_UniormGenOrder_mapping(uniorm::orm& registry) {
   registry.map<UniormGenOrder>("uniorm_gen_order")

@@ -117,14 +117,25 @@ void test_generate_class_override() {
   CHECK(contains(out.text, "register_Order_mapping"));
 }
 
+void test_generate_converter() {
+  gen_config cfg;
+  cfg.tables["t_order"].columns["status"].converter = "order_status";
+  generated_output out = generate_header(make_fixture(), cfg);
+  std::string const& text = out.text;
+
+  // The member is the domain type, not the VARCHAR it binds as, and the
+  // header insists on the specialization that makes the mapping compile.
+  CHECK(contains(text, "std::optional<order_status> status;"));
+  CHECK(contains(text, ".column(\"status\", &TOrder::status)"));
+  CHECK(contains(
+    text, "static_assert(uniorm::has_converter<order_status>,"));
+  CHECK(out.warnings.empty());
+}
+
 void test_generate_errors() {
   gen_config cfg;
   cfg.tables["t_order"].columns["status"].cpp_type = "money";
   CHECK_THROWS(generate_header(make_fixture(), cfg), config_error);
-
-  gen_config conv;
-  conv.tables["t_order"].columns["status"].converter = "status_converter";
-  CHECK_THROWS(generate_header(make_fixture(), conv), config_error);
 }
 
 void test_generate_real_warning() {
@@ -145,6 +156,7 @@ void test_gen_output() {
   test_naming();
   test_generate();
   test_generate_class_override();
+  test_generate_converter();
   test_generate_errors();
   test_generate_real_warning();
 }

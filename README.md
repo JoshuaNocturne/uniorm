@@ -19,17 +19,19 @@ See [docs/design.md](docs/design.md) for the full design.
   `SQLBindParameter`; no string interpolation, no injection
 - **Transparent statement cache** — an LRU cache keyed by SQL text skips
   re-prepare on repeated execution
-  (observability: `statement_cache_hits()/misses()/size()`)
+  (observability: `statement_cache_hits()/misses()/statement_cache_size()`)
 - **Three access levels**:
   - Raw SQL: `execute` / `execute_update` with `params`
-  - Aggregate projection: `conn.query<Row>(sql)` maps columns onto a plain
+  - Aggregate projection: `db.query<Row>(sql)` maps columns onto a plain
     struct with zero registration
   - Entity mapping: explicit registry plus a type-safe member-pointer query
-    builder, `conn.query(orm).of<T>()`
+    builder, `db.query().of<T>()`
 - **Direct entity binding** — `query<T>::all()/one()` bind result columns
   straight onto entity fields (`SQLBindCol`), bypassing row materialization
-- **Batch insert** — `conn.insert(orm, rows)` / `conn.insert_batch(...)`:
-  multi-row VALUES, automatic chunking, wrapped in a transaction
+- **Batch writes** — `db.insert(rows)` and batch `db.update(rows)` /
+  `db.remove(rows)`: one row of placeholders sent with array parameter binding
+  (`SQL_ATTR_PARAMSET_SIZE`), chunked by `paramset_size`, wrapped in a
+  transaction
 - **RAII transactions** — automatic rollback on destruction
 - **Connection pool** — lazy creation, checkout timeout; a global
   single-threaded maintainer runs heartbeats and reclaims idle connections
@@ -43,8 +45,8 @@ See [docs/design.md](docs/design.md) for the full design.
 - **Pluggable backends** — the core API sits on a driver-neutral backend
   interface; the connection-string scheme selects the backend
   (`odbc://...`, or a bare ODBC connection string for backward
-  compatibility), and missing capabilities throw instead of silently
-  degrading
+  compatibility); capabilities are declared per backend, but only
+  `columnar_batch` is consulted today
 
 ## Requirements
 
@@ -137,15 +139,19 @@ auto adults = db.query()
                 .all();  // direct binding onto User fields
 ```
 
-### Batch insert
+### Batch writes
 
 ```cpp
 std::vector<User> users = /* ... */;
-std::size_t n = db.insert(users);  // NULLs, chunking, transaction
+std::size_t n = db.insert(users);   // NULLs, chunking, one transaction
+std::size_t u = db.update(users);   // matched on the whole primary key
+std::size_t r = db.remove(users);   // same; pass where_fields to override
 
-// Dynamic variant without an entity mapping
-db.insert_batch("users", {"name", "age"},
-                {uniorm::params{"alice", 30}, uniorm::params{"bob", nullptr}});
+// Writes without an entity mapping go through the dynamic builders
+std::size_t m = db.update("users")
+                  .set("age", 31)
+                  .where("id = ?", uniorm::params{ std::int64_t{ 2 } })
+                  .execute();
 ```
 
 ### Transactions and connection pool
@@ -158,15 +164,19 @@ db.insert_batch("users", {"name", "age"},
     txn.commit();  // no commit -> rollback on destruction
 }
 
+db.auto_commit(false);            // the connection's autocommit attribute:
+db.execute_update("...", p);      // nothing is durable until...
+db.commit();                      // the caller commits, batch writes included
+
 uniorm::pool_options opts;
 opts.connection_string = "DSN=mydb;UID=user;PWD=secret";
 opts.size = 8;
 uniorm::connection_pool pool(std::move(opts));
 
 {
-    auto c = pool.acquire();      // throws pool_timeout on timeout
-    c->execute_update("...");
-}  // returned to the pool on destruction
+    uniorm::orm leased(pool);       // acquires now, returns on destruction;
+    leased.execute_update("...");   // throws pool_timeout if none is free
+}
 ```
 
 The pool ships with a global single-threaded maintainer: it periodically
@@ -255,5 +265,5 @@ v1 is complete and verified against MariaDB, including the `uniorm-gen`
 end-to-end flow. v2 is underway: the backend abstraction is in place
 (neutral interface + scheme-based registry, ODBC migrated behind it,
 ODBC linked privately, core unit tests compile and run without ODBC);
-native libpq / Oracle OCI backends, array-binding batch operations, and
-more follow — see design doc §5 and §9.
+native libpq / Oracle OCI backends and more follow — see design doc §5
+and §9.

@@ -15,16 +15,16 @@ ODBC 接口访问任意提供 ODBC 驱动的数据库，在通用层之上提供
   UTF-16 路径已声明但未接线
 - **预编译 + 绑定变量**：用户值一律经 `SQLBindParameter`，杜绝拼接注入
 - **透明的语句缓存**：按 SQL 文本的 LRU 缓存，重复执行免 prepare
-  （观测：`statement_cache_hits()/misses()/size()`）
+  （观测：`statement_cache_hits()/misses()/statement_cache_size()`）
 - **三种使用层次**：
   - 裸 SQL：`execute` / `execute_update` + `params`
-  - 聚合投影：`conn.query<Row>(sql)` 零注册按列序映射到 struct
-  - 实体映射：注册表 + 类型安全的成员指针谓词构建器
-    `conn.query(orm).of<T>()`
+  - 聚合投影：`db.query<Row>(sql)` 零注册按列序映射到 struct
+  - 实体映射：注册表 + 类型安全的成员指针谓词构建器 `db.query().of<T>()`
 - **实体直接绑定**：`query<T>::all()/one()` 将结果列直接绑到实体字段
   （`SQLBindCol`），跳过行物化
-- **批量插入**：`conn.insert(orm, rows)` / `conn.insert_batch(...)`，
-  多行 VALUES、自动分批、事务包裹
+- **批量写入**：`db.insert(rows)` 与批量 `db.update(rows)` /
+  `db.remove(rows)`：一条占位符语句经数组参数绑定
+  （`SQL_ATTR_PARAMSET_SIZE`）展开，按 `paramset_size` 分批并包进事务
 - **RAII 事务**：析构自动回滚
 - **连接池**：懒创建、借还超时；全局单线程维护线程执行心跳保活与
   空闲超时回收
@@ -33,8 +33,8 @@ ODBC 接口访问任意提供 ODBC 驱动的数据库，在通用层之上提供
 - **代码生成**：`uniorm-gen` 连活库经 ODBC 元数据提取 schema，生成实体
   struct + 注册函数（TOML 覆写类型/类名/跳过表）
 - **可插拔 backend**：核心 API 构建在驱动中立的 backend 接口之上，连接串
-  scheme 选择后端（`odbc://...`；裸 ODBC 连接串保持向后兼容），能力缺失
-  时明确抛错而非静默降级
+  scheme 选择后端（`odbc://...`；裸 ODBC 连接串保持向后兼容）；能力按后端
+  声明，但目前写路径只读 `columnar_batch` 一个标志
 
 ## 要求
 
@@ -125,15 +125,19 @@ auto adults = db.query()
                 .all();  // 直接绑定到 User 字段
 ```
 
-### 批量插入
+### 批量写入
 
 ```cpp
 std::vector<User> users = /* ... */;
-std::size_t n = db.insert(users);  // NULL、分批、事务全自动
+std::size_t n = db.insert(users);   // NULL、分批、事务全自动
+std::size_t u = db.update(users);   // 默认按全部主键列匹配
+std::size_t r = db.remove(users);   // 同上，可传 where_fields 覆写
 
-// 无实体映射的动态版本
-db.insert_batch("users", {"name", "age"},
-                {uniorm::params{"alice", 30}, uniorm::params{"bob", nullptr}});
+// 无实体映射的写入走动态构建器
+std::size_t m = db.update("users")
+                  .set("age", 31)
+                  .where("id = ?", uniorm::params{ std::int64_t{ 2 } })
+                  .execute();
 ```
 
 ### 事务与连接池
@@ -146,15 +150,19 @@ db.insert_batch("users", {"name", "age"},
     txn.commit();  // 不 commit 则析构时回滚
 }
 
+db.auto_commit(false);            // 就是连接的 autocommit 属性：此后每一条
+db.execute_update("...", p);      // 写都挂起，直到调用方
+db.commit();                      // commit()，批量写也不例外
+
 uniorm::pool_options opts;
 opts.connection_string = "DSN=mydb;UID=user;PWD=secret";
 opts.size = 8;
 uniorm::connection_pool pool(std::move(opts));
 
 {
-    auto c = pool.acquire();      // 超时抛 pool_timeout
-    c->execute_update("...");
-}  // 析构自动归还
+    uniorm::orm leased(pool);       // 构造即借出、析构归还；无空闲时抛
+    leased.execute_update("...");   // pool_timeout
+}
 ```
 
 连接池自带全局单线程维护：周期性对空闲连接执行心跳（默认 `SELECT 1`），
@@ -233,4 +241,4 @@ docs/design.md        设计文档（权威 API 参考）
 v1 已完成并通过 MariaDB 集成验证（含 `uniorm-gen` 端到端）。v2 进行中：
 backend 抽象已落地（中立接口 + scheme 注册表，ODBC 迁移至接口之后、
 改为 PRIVATE 链接，核心单测在不链接 ODBC 的情况下编译运行）；后续为
-libpq / Oracle OCI 原生 backend、数组绑定批量操作等，见设计文档 §5 与 §9。
+libpq / Oracle OCI 原生 backend 等，见设计文档 §5 与 §9。

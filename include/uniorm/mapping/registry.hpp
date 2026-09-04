@@ -13,6 +13,7 @@
 #include <vector>
 
 #include <uniorm/backend/backend.hpp>
+#include <uniorm/converter.hpp>
 #include <uniorm/detail/projection.hpp>
 #include <uniorm/detail/time.hpp>
 #include <uniorm/detail/traits.hpp>
@@ -66,16 +67,89 @@ concept plain_sql_member =
   std::is_same_v<U, std::string> || std::is_same_v<U, std::vector<std::byte>> ||
   std::is_same_v<U, timestamp>;
 
+// A domain type reaches a column through its converter's representation, so
+// everything below that keys on the member type asks the converter first.
+template <class U>
+concept sql_representable = plain_sql_member<U> || has_converter<U>;
+
 }  // namespace detail
 
-// Member types the value layer can read directly (or wrapped in optional).
+// Member types the value layer can read, wrapped in optional or not.
 template <class M>
 concept readable_member =
-  detail::plain_sql_member<std::remove_cvref_t<M>> ||
+  detail::sql_representable<std::remove_cvref_t<M>> ||
   (detail::is_optional_v<M> &&
-    detail::plain_sql_member<typename std::remove_cvref_t<M>::value_type>);
+    detail::sql_representable<typename std::remove_cvref_t<M>::value_type>);
 
 namespace detail {
+
+// Bytes a representation occupies in a chars/bytes parameter buffer.
+template <class V>
+std::size_t param_size(V const& value) {
+  if constexpr (std::is_same_v<V, std::string> ||
+                std::is_same_v<V, std::vector<std::byte>>) {
+    return value.size();
+  } else {
+    return 0;
+  }
+}
+
+// Stage one row's representation into its slot of a batch parameter buffer.
+template <class V>
+void stage_param(V const& value, std::size_t row, void* buffer,
+  std::size_t stride, std::int64_t* indicators) {
+  using U = std::remove_cvref_t<V>;
+  if constexpr (std::is_same_v<U, std::string> ||
+                std::is_same_v<U, std::vector<std::byte>>) {
+    std::memcpy(static_cast<char*>(buffer) + row * stride, value.data(),
+      value.size());
+    indicators[row] = static_cast<std::int64_t>(value.size());
+  } else if constexpr (std::is_same_v<U, timestamp>) {
+    auto src = break_timestamp(value);
+    auto* dst = reinterpret_cast<backend::timestamp_parts*>(
+      static_cast<char*>(buffer) + row * stride);
+    dst->year = static_cast<std::int16_t>(src.year);
+    dst->month = static_cast<std::uint16_t>(src.month);
+    dst->day = static_cast<std::uint16_t>(src.day);
+    dst->hour = static_cast<std::uint16_t>(src.hour);
+    dst->minute = static_cast<std::uint16_t>(src.minute);
+    dst->second = static_cast<std::uint16_t>(src.second);
+    dst->fraction_ns = static_cast<std::uint32_t>(src.fraction_ns);
+    indicators[row] = sizeof(backend::timestamp_parts);
+  } else {
+    indicators[row] = static_cast<std::int64_t>(sizeof(U));
+    static_cast<U*>(buffer)[row] = value;
+  }
+}
+
+// A converter-backed value is encoded before it is staged, so the buffer copy
+// that follows is the one its representation already makes.
+template <class V>
+void write_param(V const& value, std::size_t row, void* buffer,
+  std::size_t stride, std::int64_t* indicators) {
+  if constexpr (has_converter<std::remove_cvref_t<V>>) {
+    using U = std::remove_cvref_t<V>;
+    converter_sql<U> encoded{};
+    converter<U>::to_db(value, encoded);
+    stage_param(encoded, row, buffer, stride, indicators);
+  } else {
+    stage_param(value, row, buffer, stride, indicators);
+  }
+}
+
+// The prescan cannot measure a converter column without encoding it: the
+// width of the representation is the column's row stride.
+template <class V>
+std::size_t encoded_param_size(V const& value) {
+  if constexpr (has_converter<std::remove_cvref_t<V>>) {
+    using U = std::remove_cvref_t<V>;
+    converter_sql<U> encoded{};
+    converter<U>::to_db(value, encoded);
+    return param_size(encoded);
+  } else {
+    return param_size(value);
+  }
+}
 
 // Helper to get buffer_type for a member type
 template <class M>
@@ -83,6 +157,8 @@ constexpr backend::buffer_type member_buffer_type() {
   using U = std::remove_cvref_t<M>;
   if constexpr (is_optional_v<M>) {
     return member_buffer_type<typename M::value_type>();
+  } else if constexpr (has_converter<U>) {
+    return member_buffer_type<converter_sql<U>>();
   } else if constexpr (std::is_same_v<U, bool>) {
     return backend::buffer_type::bit;
   } else if constexpr (std::is_same_v<U, std::int16_t>) {
@@ -134,95 +210,24 @@ column_meta make_column_meta(
                                       void* buffer, std::size_t stride,
                                       std::int64_t* indicators)
     -> backend::buffer_type {
-    using U = std::remove_cvref_t<M>;
     auto const& field = static_cast<T const*>(obj)->*member;
-
     if constexpr (is_optional_v<M>) {
       if (!field.has_value()) {
         indicators[row] = backend::null_indicator;
         return member_buffer_type<M>();
       }
-      auto const& value = *field;
-      if constexpr (std::is_same_v<typename M::value_type, std::string>) {
-        std::memcpy(static_cast<char*>(buffer) + row * stride, value.data(),
-          value.size());
-        indicators[row] = static_cast<std::int64_t>(value.size());
-      } else if constexpr (std::is_same_v<typename M::value_type,
-                           std::vector<std::byte>>) {
-        std::memcpy(static_cast<char*>(buffer) + row * stride, value.data(),
-          value.size());
-        indicators[row] = static_cast<std::int64_t>(value.size());
-      } else if constexpr (std::is_same_v<typename M::value_type, timestamp>) {
-        auto src = detail::break_timestamp(value);
-        auto* dst = reinterpret_cast<backend::timestamp_parts*>(
-          static_cast<char*>(buffer) + row * stride);
-        dst->year = static_cast<std::int16_t>(src.year);
-        dst->month = static_cast<std::uint16_t>(src.month);
-        dst->day = static_cast<std::uint16_t>(src.day);
-        dst->hour = static_cast<std::uint16_t>(src.hour);
-        dst->minute = static_cast<std::uint16_t>(src.minute);
-        dst->second = static_cast<std::uint16_t>(src.second);
-        dst->fraction_ns = static_cast<std::uint32_t>(src.fraction_ns);
-        indicators[row] = sizeof(backend::timestamp_parts);
-      } else {
-        indicators[row] = sizeof(value);
-        using value_type = typename M::value_type;
-        static_cast<value_type*>(buffer)[row] = value;
-      }
-      return member_buffer_type<M>();
+      write_param(*field, row, buffer, stride, indicators);
     } else {
-      if constexpr (std::is_same_v<U, std::string>) {
-        std::memcpy(static_cast<char*>(buffer) + row * stride, field.data(),
-          field.size());
-        indicators[row] = static_cast<std::int64_t>(field.size());
-      } else if constexpr (std::is_same_v<U, std::vector<std::byte>>) {
-        std::memcpy(static_cast<char*>(buffer) + row * stride, field.data(),
-          field.size());
-        indicators[row] = static_cast<std::int64_t>(field.size());
-      } else if constexpr (std::is_same_v<U, timestamp>) {
-        auto src = detail::break_timestamp(field);
-        auto* dst = reinterpret_cast<backend::timestamp_parts*>(
-          static_cast<char*>(buffer) + row * stride);
-        dst->year = static_cast<std::int16_t>(src.year);
-        dst->month = static_cast<std::uint16_t>(src.month);
-        dst->day = static_cast<std::uint16_t>(src.day);
-        dst->hour = static_cast<std::uint16_t>(src.hour);
-        dst->minute = static_cast<std::uint16_t>(src.minute);
-        dst->second = static_cast<std::uint16_t>(src.second);
-        dst->fraction_ns = static_cast<std::uint32_t>(src.fraction_ns);
-        indicators[row] = sizeof(backend::timestamp_parts);
-      } else {
-        indicators[row] = sizeof(field);
-        static_cast<U*>(buffer)[row] = field;
-      }
-      return member_buffer_type<M>();
+      write_param(field, row, buffer, stride, indicators);
     }
+    return member_buffer_type<M>();
   };
   c.get_string_size = [member](void const* obj) -> std::size_t {
-    using U = std::remove_cvref_t<M>;
     auto const& field = static_cast<T const*>(obj)->*member;
-
     if constexpr (is_optional_v<M>) {
-      if (!field.has_value()) {
-        return 0;
-      }
-      auto const& value = *field;
-      if constexpr (std::is_same_v<typename M::value_type, std::string>) {
-        return value.size();
-      } else if constexpr (std::is_same_v<typename M::value_type,
-                           std::vector<std::byte>>) {
-        return value.size();
-      } else {
-        return 0;
-      }
+      return field.has_value() ? encoded_param_size(*field) : 0;
     } else {
-      if constexpr (std::is_same_v<U, std::string>) {
-        return field.size();
-      } else if constexpr (std::is_same_v<U, std::vector<std::byte>>) {
-        return field.size();
-      } else {
-        return 0;
-      }
+      return encoded_param_size(field);
     }
   };
   return c;
@@ -241,7 +246,7 @@ public:
   mapping_builder& column(std::string_view column, M T::* member) {
     static_assert(readable_member<M>,
       "member type not supported by the value layer; use a supported "
-      "sql type or std::optional thereof");
+      "sql type, std::optional thereof, or specialize uniorm::converter");
     meta_.columns.push_back(detail::make_column_meta(column, member, false));
     return *this;
   }
@@ -250,7 +255,7 @@ public:
   mapping_builder& primary_key(std::string_view column, M T::* member) {
     static_assert(readable_member<M>,
       "member type not supported by the value layer; use a supported "
-      "sql type or std::optional thereof");
+      "sql type, std::optional thereof, or specialize uniorm::converter");
     meta_.columns.push_back(detail::make_column_meta(column, member, true));
     return *this;
   }

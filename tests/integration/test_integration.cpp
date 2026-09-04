@@ -14,6 +14,7 @@
 
 #include <uniorm/backend/error.hpp>
 #include <uniorm/connection.hpp>
+#include <uniorm/converter.hpp>
 #include <uniorm/detail/time.hpp>
 #include <uniorm/mapping/registry.hpp>
 #include <uniorm/orm.hpp>
@@ -41,12 +42,44 @@ struct Pair {
   std::string label;
 };
 
+// A domain type the database stores as text rather than as its ordinal.
+enum class grade { bronze, silver, gold };
+
+struct Order {
+  std::int64_t id = 0;
+  grade state = grade::bronze;
+  std::optional<grade> note;
+};
+
+template <>
+struct converter<grade> {
+  using sql = std::string;
+
+  static void to_db(grade const& g, std::string& out) {
+    if (g == grade::silver)
+      out = "silver";
+    else if (g == grade::gold)
+      out = "gold";
+    else
+      out = "bronze";
+  }
+
+  static grade from_db(std::string const& v) {
+    if (v == "silver")
+      return grade::silver;
+    if (v == "gold")
+      return grade::gold;
+    return grade::bronze;
+  }
+};
+
 }  // namespace uniorm
 
 namespace {
 
 char const* k_table = "uniorm_it_user";
 char const* k_pair_table = "uniorm_it_pair";
+char const* k_order_table = "uniorm_it_order";
 std::string const long_note(1000, 'x');
 
 void prepare_schema(orm& db) {
@@ -64,6 +97,11 @@ void prepare_schema(orm& db) {
                       " idx BIGINT NOT NULL,"
                       " label VARCHAR(64) NOT NULL,"
                       " PRIMARY KEY (grp, idx))");
+  db.execute_update(std::string("DROP TABLE IF EXISTS ") + k_order_table);
+  db.execute_update(std::string("CREATE TABLE ") + k_order_table +
+                      " (id BIGINT NOT NULL PRIMARY KEY,"
+                      " state VARCHAR(16) NOT NULL,"
+                      " note VARCHAR(16) NULL)");
 }
 
 void seed_rows(orm& db) {
@@ -152,6 +190,101 @@ void test_projection(orm& db) {
   CHECK(rows[2].note.value_or("") == "short");
 }
 
+void test_converter_round_trip(orm& db) {
+  struct order_projection {
+    std::int64_t id;
+    grade state;
+    std::optional<grade> note;
+  };
+
+  std::vector<Order> orders{
+    Order{ 1, grade::gold, std::nullopt },
+    Order{ 2, grade::silver, grade::bronze },
+    Order{ 3, grade::bronze, grade::gold },
+  };
+  CHECK(db.insert(orders) == 3);
+
+  // What the driver receives is the representation, never the ordinal.
+  {
+    result_set rs = db.execute(
+      "SELECT id, state, note FROM uniorm_it_order WHERE id = ?",
+      params{ std::int64_t{ 1 } });
+    CHECK(rs.next());
+    row r = rs.current();
+    CHECK(r.get<std::string>("state") == "gold");
+    CHECK(r.get<grade>("state") == grade::gold);
+    CHECK(r.is_null("note"));
+  }
+
+  auto second = db.query()
+                  .of<Order>()
+                  .where(eq(&Order::id, std::int64_t{ 2 }))
+                  .one();
+  CHECK(second.has_value());
+  CHECK(second->state == grade::silver);
+  CHECK(second->note && *second->note == grade::bronze);
+
+  auto listed = db.query().of<Order>().order_by(&Order::id).all();
+  CHECK(listed.size() == 3);
+  CHECK(listed[0].state == grade::gold);
+  CHECK(!listed[0].note.has_value());  // NULL through the decoding stage
+  CHECK(listed[2].note && *listed[2].note == grade::gold);
+
+  auto in_list = db.query()
+                   .of<Order>()
+                   .where(in(&Order::state, { grade::bronze, grade::silver }))
+                   .all();
+  CHECK(in_list.size() == 2);
+
+  auto rows = db.query<order_projection>(
+    "SELECT id, state, note FROM uniorm_it_order ORDER BY id");
+  CHECK(rows.size() == 3);
+  CHECK(rows[1].state == grade::silver && rows[1].note == grade::bronze);
+  CHECK(!rows[0].note.has_value());
+
+  CHECK(db.query()
+          .of<Order>()
+          .where(eq(&Order::id, std::int64_t{ 3 }))
+          .set(&Order::state, grade::silver)
+          .set(&Order::note, nullptr)
+          .update() == 1);
+  auto edited = db.query()
+                  .of<Order>()
+                  .where(eq(&Order::id, std::int64_t{ 3 }))
+                  .one();
+  CHECK(edited && edited->state == grade::silver);
+  CHECK(edited && !edited->note.has_value());
+
+  // A batch update rewrites every mapped column, so the vector says what the
+  // rows hold afterwards -- an absent optional included, which is a NULL. Each
+  // row has to differ from the stored one: the tally the driver reports is
+  // changed rows, not matched ones.
+  orders[0].state = grade::bronze;
+  orders[0].note = grade::silver;
+  orders[1].note = std::nullopt;
+  orders[2].note = grade::bronze;
+  CHECK(db.update(orders) == 3);
+
+  auto after = db.query().of<Order>().order_by(&Order::id).all();
+  CHECK(after[0].state == grade::bronze);
+  CHECK(after[0].note && *after[0].note == grade::silver);
+  CHECK(after[1].state == grade::silver);
+  CHECK(!after[1].note.has_value());
+  CHECK(after[2].state == grade::bronze);
+  CHECK(after[2].note && *after[2].note == grade::bronze);
+
+  CHECK(db.update(k_order_table)
+          .set("state", grade::gold)
+          .where("id = ?", params{ std::int64_t{ 1 } })
+          .execute() == 1);
+  CHECK(db.query()
+          .of<Order>()
+          .where(eq(&Order::state, grade::gold))
+          .count() == 1);
+
+  db.execute_update(std::string("DELETE FROM ") + k_order_table);
+}
+
 orm build_registry(std::string_view conn_string) {
   orm db(conn_string);
   db.map<User>(k_table)
@@ -165,6 +298,10 @@ orm build_registry(std::string_view conn_string) {
     .primary_key("grp", &Pair::grp)
     .primary_key("idx", &Pair::idx)
     .column("label", &Pair::label);
+  db.map<Order>(k_order_table)
+    .primary_key("id", &Order::id)
+    .column("state", &Order::state)
+    .column("note", &Order::note);
   return db;
 }
 
@@ -836,6 +973,7 @@ int main() {
     test_dynamic_rows(db);
     test_zero_block_fetch_size(db);
     test_projection(db);
+    test_converter_round_trip(db);
     test_validate(conn_string);
 
     test_query_builder(db);
@@ -853,6 +991,7 @@ int main() {
 
     db.execute_update(std::string("DROP TABLE ") + k_table);
     db.execute_update(std::string("DROP TABLE ") + k_pair_table);
+    db.execute_update(std::string("DROP TABLE ") + k_order_table);
   } catch (std::exception const& e) {
     std::printf("FATAL: unexpected exception: %s\n", e.what());
     ++uniorm::test::failure_count();

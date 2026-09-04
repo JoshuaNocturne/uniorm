@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -18,6 +19,7 @@
 #include <uniorm/builder/expression.hpp>
 #include <uniorm/converter.hpp>
 #include <uniorm/detail/projection.hpp>
+#include <uniorm/orm.hpp>
 #include <uniorm/params.hpp>
 
 #include "check.hpp"
@@ -66,6 +68,13 @@ struct read_row {
 
 struct code_row {
   tagged tag;
+};
+
+// Entity layout: a converter member is registered as a column like any other.
+struct order {
+  std::int64_t id;
+  status state;
+  std::optional<status> note;
 };
 
 // Records the buffers the projection layer binds so a test can write the
@@ -219,6 +228,7 @@ struct converter<half_wired> {
 }  // namespace uniorm
 
 void test_converter_projection();
+void test_converter_column();
 
 void test_converter() {
   CHECK(has_converter<status>);
@@ -254,6 +264,7 @@ void test_converter() {
   CHECK(std::get<std::string>(bound[0]) == "shipped");
 
   test_converter_projection();
+  test_converter_column();
 }
 
 void test_converter_projection() {
@@ -321,4 +332,52 @@ void test_converter_projection() {
   tight_proj.fill_into(wide, 0);
   CHECK(wide.state == status::shipped);
   CHECK(wide.note && *wide.note == status::paid);
+}
+
+void test_converter_column() {
+  orm registry;
+  registry.map<order>("orders")
+    .primary_key("id", &order::id)
+    .column("state", &order::state)
+    .column("note", &order::note);
+
+  auto const& m = registry.meta<order>();
+  CHECK(m.columns[1].buffer_type == backend::buffer_type::chars);
+  CHECK(!m.columns[1].nullable);
+  CHECK(m.columns[2].nullable);
+
+  order const paid{ 1, status::paid, std::nullopt };
+  CHECK(std::get<std::string>(m.columns[1].read(&paid)) == "paid");
+  CHECK(std::holds_alternative<std::monostate>(m.columns[2].read(&paid)));
+
+  auto names = std::make_shared<column_names>(
+    std::vector<std::string>{ "id", "state", "note" });
+  row source(names,
+    { sql_value(std::int64_t{ 5 }), sql_value(std::string("shipped")),
+        sql_value(std::monostate{}) });
+  order decoded{};
+  m.populate(&decoded, source);
+  CHECK(decoded.id == 5);
+  CHECK(decoded.state == status::shipped);
+  CHECK(!decoded.note.has_value());
+
+  // The batch path prescans for the row stride, then stages each row.
+  order const filled{ 2, status::shipped, status::fresh };
+  CHECK(m.columns[1].get_string_size(&filled) == 7);
+  CHECK(m.columns[2].get_string_size(&filled) == 5);
+  CHECK(m.columns[0].get_string_size(&filled) == 0);
+
+  std::vector<char> buffer(2 * 16, 'x');
+  std::vector<std::int64_t> indicators(2, -7);
+  auto staged = m.columns[1].write_to_param_buffer(
+    &filled, 1, buffer.data(), 16, indicators.data());
+  CHECK(staged == backend::buffer_type::chars);
+  CHECK(indicators[1] == 7);
+  CHECK(std::string(buffer.begin() + 16, buffer.begin() + 23) == "shipped");
+  CHECK(indicators[0] == -7);  // the other row was not written
+
+  CHECK(m.columns[2].write_to_param_buffer(
+          &paid, 0, buffer.data(), 16, indicators.data()) ==
+    backend::buffer_type::chars);
+  CHECK(indicators[0] == backend::null_indicator);
 }

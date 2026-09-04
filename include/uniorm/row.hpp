@@ -9,6 +9,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include <uniorm/converter.hpp>
 #include <uniorm/detail/traits.hpp>
 #include <uniorm/error.hpp>
 #include <uniorm/export.hpp>
@@ -18,7 +19,8 @@ namespace uniorm {
 
 // Convert a dynamic sql_value to T. Tolerates narrowing between integral
 // widths (range-checked) and integral-to-double; everything else must match
-// exactly. Throws type_mismatch.
+// exactly. A T with a uniorm::converter is decoded from its representation.
+// Throws type_mismatch.
 template <class T>
 T value_cast(sql_value const& v);
 
@@ -104,6 +106,8 @@ T value_cast(sql_value const& v) {
     if (std::holds_alternative<std::monostate>(v))
       return std::nullopt;
     return T{ value_cast<typename T::value_type>(v) };
+  } else if constexpr (has_converter<T>) {
+    return converter<T>::from_db(value_cast<detail::converter_sql<T>>(v));
   } else {
     static_assert(
       std::is_same_v<T, T> && false, "unsupported value_cast target type");

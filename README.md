@@ -82,8 +82,9 @@ cmake --install build --prefix /path/to/prefix
 
 That puts the versioned library (plus its `SOVERSION` symlinks; on Windows the
 DLL and its import library) in `<libdir>/`, every public header in
-`<prefix>/include/uniorm/`, and a package config in `<libdir>/cmake/uniorm/`.
-A consumer needs nothing from this repository:
+`<prefix>/include/uniorm/`, a package config in `<libdir>/cmake/uniorm/`, and
+the `uniorm-gen` CLI in `<bindir>/`. A consumer needs nothing from this
+repository:
 
 ```cmake
 find_package(uniorm REQUIRED CONFIG)
@@ -92,8 +93,10 @@ target_link_libraries(my_app PRIVATE uniorm::uniorm)
 
 Source integration is unchanged: `add_subdirectory` or FetchContent hand over
 the same `uniorm::uniorm` target and install nothing. The install rules only
-apply when uniorm is the top-level project, and `uniorm-gen` is not part of the
-installed surface.
+apply when uniorm is the top-level project. The CLI installs only with
+`UNIORM_BUILD_TOOLS=ON`, which in turn requires the ODBC backend; `find_package`
+still hands over `uniorm::uniorm` alone, since the CLI is a program to run, not
+a target to link.
 
 ## Quick start
 

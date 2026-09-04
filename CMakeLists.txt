@@ -152,4 +152,19 @@ if(PROJECT_IS_TOP_LEVEL)
         ${CMAKE_CURRENT_BINARY_DIR}/uniormConfigVersion.cmake
         DESTINATION ${UNIORM_CMAKE_INSTALL_DIR}
     )
+
+    # A developer-time tool rather than part of the consumption surface, so it
+    # ships only in builds that asked for it (which requires the ODBC backend).
+    if(UNIORM_BUILD_TOOLS)
+        # The binary's NEEDED entry names the versioned soname, and the build
+        # tree leaves an absolute RPATH behind: without a prefix-relative load
+        # path the installed copy only runs on the machine that built it. RPATH
+        # is ELF-only: elsewhere the DLL already lands next to the exe.
+        if(UNIX AND NOT APPLE AND NOT CYGWIN)
+            set_target_properties(uniorm-gen PROPERTIES
+                INSTALL_RPATH "$ORIGIN/../${CMAKE_INSTALL_LIBDIR}"
+            )
+        endif()
+        install(TARGETS uniorm-gen RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+    endif()
 endif()

@@ -183,7 +183,7 @@ uniorm/
 
 ### 3.1 安装与集成
 
-`cmake --install build --prefix <p>` 产出三类文件（目录名取自 `GNUInstallDirs`，
+`cmake --install build --prefix <p>` 产出四类文件（目录名取自 `GNUInstallDirs`，
 64 位 RHEL/Fedora 上 `<libdir>` 解析为 `lib64`）：
 
 | 位置 | 内容 |
@@ -191,9 +191,10 @@ uniorm/
 | `<libdir>/` | `libuniorm.so.<VERSION>` 加 `SOVERSION`（`0.1`）与裸名两级符号链接；Windows 下 DLL 走 RUNTIME、导入库走 ARCHIVE |
 | `include/uniorm/` | 全部 public 头文件；私有头贴邻 `.cpp` 留在 `src/`，不参与安装 |
 | `<libdir>/cmake/uniorm/` | `uniormConfig.cmake`、`uniormConfigVersion.cmake`、`uniormTargets.cmake` 与 `uniormTargets-<config>.cmake` |
+| `<bindir>/uniorm-gen` | 代码生成 CLI；仅 `UNIORM_BUILD_TOOLS=ON` 时安装（`UNIORM_BACKEND_ODBC=OFF` 时该选项被 CMake 直接拦下） |
 
 消费者 `find_package(uniorm REQUIRED CONFIG)` 后链接 `uniorm::uniorm`，include 路径
-由导出目标携带。三条约定：
+由导出目标携带。四条约定：
 
 - 安装块整体包在 `if(PROJECT_IS_TOP_LEVEL)` 里：`add_subdirectory` / FetchContent
   集成只拿到目标，不会把本项目的安装规则带进宿主的 `install`；
@@ -203,10 +204,16 @@ uniorm/
 - ODBC 与线程都是 PRIVATE 依赖，不进导出接口：`libodbc.so` 由 `libuniorm.so` 自己的
   `DT_NEEDED` 载入，消费者无需 `find_dependency(ODBC)`；`UNIORM_DECIMAL_DEFAULT`
   派生的宏同理只到 `$<BUILD_INTERFACE:>` 为止（库代码并不读它，见已知缺口 3）。
+- `uniorm-gen` 走 RUNTIME 安装但不进 `EXPORT`：它是"跑一遍"的程序，不是被链接的
+  目标，导出它便等于把 `uniorm_gen_core`（内部静态切分，靠 `-I src` 读私有头）
+  伪装成对外 API。它的 `DT_NEEDED` 写死 `libuniorm.so.0.1`，而构建树留下的
+  `RPATH` 是绝对路径，故 ELF 上以 `INSTALL_RPATH` 改写成 `$ORIGIN/../<libdir>`
+  ——装到哪个 prefix 就找哪个 prefix，与库同树发布时版本必然对上。
 
 导出的 CMake 文件不含绝对前缀：`DESTDIR=<stage> cmake --install build --prefix
 /usr/local` 能打到暂存根再整体搬迁（实测装出来的 4 个 CMake 文件里既无 stage 也
-无 prefix 的字面量）。安装面只有库与 public 头文件，`uniorm-gen` 不在其中（§9）。
+无 prefix 的字面量）。暂存根下的 `uniorm-gen` 也能直接跑起来——`$ORIGIN` 相对路径
+要买的就是这一点。
 
 ## 4. 核心模块设计
 
@@ -1198,8 +1205,9 @@ if (auto* ext = conn.extension<oracle_ext>()) {
 ### 6.1 形态
 
 独立 CLI，活连接目标数据库。本仓库只提供可执行文件（`UNIORM_BUILD_TOOLS=ON`
-时构建，因它直读 ODBC 元数据而依赖 `UNIORM_BACKEND_ODBC`）；仓库内没有任何
-`add_custom_command`，"构建期生成"要调用方自己在 CMake 里接。
+时构建，因它直读 ODBC 元数据而依赖 `UNIORM_BACKEND_ODBC`；顶层构建时也按 §3.1
+装进 `<bindir>`）；仓库内没有任何 `add_custom_command`，"构建期生成"要调用方自己
+在 CMake 里接。
 
 ```
 uniorm-gen (--dsn=<dsn> [--user=<u> --password=<p>]
@@ -1350,8 +1358,9 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
   `scale` 用起来；顺带清掉零引用的 `UNIORM_DECIMAL_AS_STRING`；
 - ~~打包~~ **已完成（§3.1）**：`install(TARGETS/EXPORT)` + config/version 文件 +
   `VERSION`/`SOVERSION`，`$<INSTALL_INTERFACE:include>` 与 `project(VERSION)` 已
-  生效，外部工程可用 `find_package(uniorm CONFIG)` 接入。**待做**：把 `uniorm-gen`
-  纳入安装面（`RUNTIME DESTINATION bin`），以及用 CI 产出并验证制品。
+  生效，外部工程可用 `find_package(uniorm CONFIG)` 接入，`uniorm-gen` 也随
+  `UNIORM_BUILD_TOOLS` 装进 `<bindir>`。**待做**：用 CI 产出并验证制品——目前
+  安装面只有手工 `cmake --install` + 外部消费者工程的验证，装错不会有人报警。
 
 原有路线图：
 

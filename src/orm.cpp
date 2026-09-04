@@ -277,10 +277,12 @@ bool orm::auto_commit() const noexcept {
 }
 
 void orm::auto_commit(bool enabled) {
-  auto_commit_ = enabled;
+  // Set the connection first: a throw must not leave this orm reporting a
+  // mode its connection is not in.
   if (pooled_conn_ && pooled_conn_->get().is_open()) {
     pooled_conn_->get().set_autocommit(enabled);
   }
+  auto_commit_ = enabled;
 }
 
 // --- Entity write pipeline ---

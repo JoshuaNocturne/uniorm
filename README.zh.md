@@ -22,6 +22,9 @@ ODBC 接口访问任意提供 ODBC 驱动的数据库，在通用层之上提供
   - 实体映射：注册表 + 类型安全的成员指针谓词构建器 `db.query().of<T>()`
 - **实体直接绑定**：`query<T>::all()/one()` 将结果列直接绑到实体字段
   （`SQLBindCol`），跳过行物化
+- **自定义类型映射**：特化 `uniorm::converter<T>` 即命名域类型所绑定的 SQL
+  表示，该表示带着域类型走通实体字段、参数与投影；`validate(strict)`
+  会拿它与活库的列类型比对
 - **批量写入**：`db.insert(rows)` 与批量 `db.update(rows)` /
   `db.remove(rows)`：一条占位符语句经数组参数绑定
   （`SQL_ATTR_PARAMSET_SIZE`）展开，按 `paramset_size` 分批并包进事务

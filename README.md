@@ -28,6 +28,10 @@ See [docs/design.md](docs/design.md) for the full design.
     builder, `db.query().of<T>()`
 - **Direct entity binding** — `query<T>::all()/one()` bind result columns
   straight onto entity fields (`SQLBindCol`), bypassing row materialization
+- **Custom type mapping** — specializing `uniorm::converter<T>` names the SQL
+  representation a domain type binds as, and that representation carries it
+  through entity fields, parameters and projections; `validate(strict)`
+  compares it against the live column type
 - **Batch writes** — `db.insert(rows)` and batch `db.update(rows)` /
   `db.remove(rows)`: one row of placeholders sent with array parameter binding
   (`SQL_ATTR_PARAMSET_SIZE`), chunked by `paramset_size`, wrapped in a

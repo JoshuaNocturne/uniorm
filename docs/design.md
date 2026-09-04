@@ -15,7 +15,7 @@ uniorm 是一个基于 **ODBC**（而非各数据库专有 C 客户端）的现�
 - 参数绑定、语句执行、结果集迭代
 - 批量 CRUD：数组参数绑定（`SQL_ATTR_PARAMSET_SIZE` 分批）+ 块取行
   （`SQL_ATTR_ROW_ARRAY_SIZE`），见 §4.5.2
-- 类型系统：SQL 类型 ↔ 现代 C++ 类型映射，含 converter 扩展点（v1 仅声明，见下方"已知缺口"）
+- 类型系统：SQL 类型 ↔ 现代 C++ 类型映射，含 converter 扩展点（§4.4）
 - 三种结果对象：
   - 聚合 struct 投影（按列序/列名绑定，无需注册）
   - 实体映射（成员指针路线，显式注册）
@@ -35,44 +35,32 @@ uniorm 是一个基于 **ODBC**（而非各数据库专有 C 客户端）的现�
 ### 已知缺口（v1 声明未接线 / 实现偏离承诺）
 
 以下条目在本文档中是设计契约，但代码只落地了声明侧或偏离了承诺。列在此处而非埋在
-正文，是为了让"文档承诺 = 当前实现"这条约束成立（§3/§4.1–§4.4/§4.6/§6.4/§10
-已就地标注）。前两项是"声明未接线"，第三项是"实现与承诺不符"。
+正文，是为了让"文档承诺 = 当前实现"这条约束成立（§3.1/§4.2/§4.3/§10
+已就地标注）。前者是"声明未接线"，后者是"实现与承诺不符"。
 
 另有三处较小的偏差体量不足以单列，直接在正文就地写实并进了 §9：池归还连接时
 不清理事务/autocommit 状态（§4.9）、"不碰 ODBC"只到链接行为止（§5.1）、
 `capabilities` 只有一个标志被读且 `capability_not_supported` 无抛出点（§5.2）。
 
-1. **converter 未接入任何绑定路径**（§4.4）：`converter<Cpp, Sql>` 与
-   `concept has_converter` 在 `converter.hpp` 中声明完备，但 `has_converter`
-   在整个代码库中零引用——读侧 `make_field_binding`（`detail/projection.hpp`）
-   只认 `optional` / `std::string` / `vector<byte>` / `timestamp` /
-   `directly_bindable`，其余落 `static_assert`；写侧 `make_sql_value`
-   （`params.hpp`）在枚举分支之后有 `is_convertible_v<U, std::string>` 一支，
-   会把任何"可隐式转成 `std::string`"的类型静默降级为字符串参数，而不是
-   报错，自定义类型因此可能在无 converter 参与的情况下被绑错；查询构建器的比较值
-   走同一漏斗（`mapping/registry.hpp` 的列 read 闭包 → `make_sql_value`），
-   因此写侧只需一处改动；`validate()` 当前只核对表/列存在性与可空性，
-   从不比对成员类型，converter 映射的 strict 类型校验需另行新增；
-   `uniorm-gen` 的 `converter = "..."` 配置直接抛 `config_error`
-   （"not supported by the v1 registry"）。接线需以上四处同步改动，故未做半截实现；
-2. **ODBC 宽字符路径未使用**（§4.2）：`src/unicode.hpp` 的
+1. **ODBC 宽字符路径未使用**（§4.2）：`src/unicode.hpp` 的
    `utf8_to_utf16` / `utf16_to_utf8` 已实现且被单测覆盖（含非法输入），
    但库内零调用者——字符串的绑定与参数路径一律 `SQL_C_CHAR` / `SQL_VARCHAR`，
    `SQLWCHAR` 与 `SQL_C_WCHAR` 不出现在任何绑定代码里（`unicode.hpp`
    自己的注释除外）。宽 SQL 类型（WVARCHAR 等）的实际读取依赖
    驱动侧字符集转换，库本身不做 UTF-16 → UTF-8。
 
-3. **DECIMAL 的动态路径有损**（§4.3）：`result_set`/`row` 把
+2. **DECIMAL 的动态路径有损**（§4.3）：`result_set`/`row` 把
    `sql_type::decimal` 归入 `slot_kind::floating`（`src/result_set.cpp`），以
    `buffer_type::float64` → `SQL_C_DOUBLE` 绑定，即动态行取到的 DECIMAL 是
-   `double`，**不无损**；无损只发生在实体/投影侧——字段声明为 `std::string` 时按
-   `SQL_C_CHAR` 直绑。`decimal_t` 别名不存在；`UNIORM_DECIMAL_AS_STRING` 被
+   `double`，**不无损**；无损只发生在实体/投影侧——字段声明为 `std::string`，或声明为
+   以 `std::string` 为 `sql` 表示的 converter 类型（§4.4），都按 `SQL_C_CHAR` 直绑。
+   `decimal_t` 别名不存在；`UNIORM_DECIMAL_AS_STRING` 被
    CMake 定义但代码中零引用（`UNIORM_DECIMAL_AS_DOUBLE` 仅在 `uniorm-gen` 的默认
    类型映射里被 `#ifdef`），所以 `UNIORM_DECIMAL_DEFAULT` 目前只改变生成物、
    不改变库；该宏只到 `$<BUILD_INTERFACE:>` 为止，不进已安装接口（§3.1）；
    `SQLDescribeCol` 读到的 scale 被丢弃，`column_info` 无法表达精度；
 
-三项均已进 §9 路线图。
+两项均已进 §9 路线图。
 
 ### 基础决策
 
@@ -118,8 +106,8 @@ uniorm/
 │   ├── export.hpp               # UNIORM_API 符号导出宏
 │   ├── error.hpp                # 异常体系（backend/odbc 层错误在各自头文件）
 │   ├── value.hpp                # sql_value variant / timestamp
-│   ├── types.hpp                # backend 中立 sql_type 枚举 + sql_type_from_native + column_info
-│   ├── converter.hpp            # 自定义类型转换器（concept has_converter，v1 未接线）
+│   ├── types.hpp                # backend 中立 sql_type 枚举 + sql_type_from_native / sql_type_name + column_info
+│   ├── converter.hpp            # 自定义类型转换器（concept has_converter，§4.4）
 │   ├── row.hpp                  # 动态行 + value_cast
 │   ├── params.hpp               # 参数容器 + make_sql_value 转换
 │   ├── result_set.hpp           # 结果集游标（pimpl，块取行 + 逐行物化 row）
@@ -203,7 +191,7 @@ uniorm/
   `libuniorm.so.0` 掩盖这种破坏，不如让链接期直接失败；
 - ODBC 与线程都是 PRIVATE 依赖，不进导出接口：`libodbc.so` 由 `libuniorm.so` 自己的
   `DT_NEEDED` 载入，消费者无需 `find_dependency(ODBC)`；`UNIORM_DECIMAL_DEFAULT`
-  派生的宏同理只到 `$<BUILD_INTERFACE:>` 为止（库代码并不读它，见已知缺口 3）。
+  派生的宏同理只到 `$<BUILD_INTERFACE:>` 为止（库代码并不读它，见已知缺口 2）。
 - `uniorm-gen` 走 RUNTIME 安装但不进 `EXPORT`：它是"跑一遍"的程序，不是被链接的
   目标，导出它便等于把 `uniorm_gen_core`（内部静态切分，靠 `-I src` 读私有头）
   伪装成对外 API。它的 `DT_NEEDED` 写死 `libuniorm.so.0.1`，而构建树留下的
@@ -352,6 +340,10 @@ using sql_value = std::variant<
 concept 约束可声明的成员类型，`column_meta::buffer_type` 记录之），buffer_type 再在
 ODBC adapter 内翻成 `SQL_C_*`；`uniorm-gen` 的默认映射决定生成实体用哪个 C++ 类型。
 
+下表同时是 `orm::validate(strict)` 逐列执行的契约：成员（或其 converter 表示）可绑的
+`sql_type` 集合以位掩码记在 `column_meta::accepted_types`，与活 schema 的列类型比对，
+不匹配即 `mapping_error`；驱动报回无法归类的 `sql_type::other` 没有可比对的族，跳过。
+
 | SQL 类型 | C++ 类型 |
 |---|---|
 | BIT | `bool` |
@@ -373,43 +365,63 @@ ODBC adapter 内翻成 `SQL_C_*`；`uniorm-gen` 的默认映射决定生成实�
    `std::string`），库自身零引用 `_AS_STRING`；`decimal_t` 别名不存在；动态行路径
    完全绕过该开关，一律 `SQL_C_DOUBLE`。因此"默认无损"只在成员/字段声明为
    `std::string` 时成立（见已知缺口）；
-2. **逐列覆写**（v1 未实现，见"已知缺口"）：设计上任一列可通过 `converter<C, S>`
-   特化映射到自定义类型（含 `double` / `std::string` / 第三方 decimal 类），
-   但该特化当前不参与任何绑定；`uniorm-gen` 配置里只有 `cpp_type`（含 `[types]`
-   全局覆写）生效且取值限于 §4.3 的可绑定集合，`converter = "..."` 会被生成器拒绝。
+2. **逐列覆写**：任一列可通过 `converter<C>` 特化（§4.4）映射到自定义类型（含
+   `double` / `std::string` / 第三方 decimal 类），其 `sql` 为 `std::string` 时即
+   无损；`uniorm-gen` 侧的入口是 `converter = "..."`（§6.4），生成的成员就是该域
+   类型，头文件以 `static_assert(uniorm::has_converter<C>)` 要求特化存在。`cpp_type`
+   （含 `[types]` 全局覆写）仍限于本节的可绑定集合。
 
 可空列对应 `std::optional<T>`；绑定与取值逻辑对 `optional` 做特化
 （indicator 写 `backend::null_indicator`，其值即 ODBC 侧的 `SQL_NULL_DATA`）。
 
 ### 4.4 Converter（自定义类型扩展点）
 
-**v1 状态：仅声明，未接线。**下面的签名与语义是本扩展点的目标形态，不是当前行为；
-缺口清单见"已知缺口"与 §9。
+一个域类型只有一种数据库表示：`converter<Cpp>` 以嵌套 `sql` 命名它，`to_db` /
+`from_db` 负责双向换算。同一域类型需要在两列上表示不同时，那是 schema 差异，解法
+是引入两个不同的 C++ 类型，而不是第二个特化。
 
 ```cpp
 namespace uniorm {
 
-template <class Cpp, class Sql>
-struct converter;                      // 用户特化
+template <class Cpp>
+struct converter {};                   // 用户特化：sql / to_db / from_db
+
+template <class Cpp>
+concept has_converter = /* 三者齐备 */;  // 缺任一项即视为无 converter
 
 // 示例：enum ↔ 字符串
 template <>
-struct converter<Status, std::string> {
-    static std::string to_db(Status s);
-    static Status from_db(std::string_view v);
+struct converter<Status> {
+    using sql = std::string;
+    static void to_db(Status const& s, std::string& out);
+    static Status from_db(std::string const& v);
 };
 
 } // namespace uniorm
 ```
 
-目标语义：存在 `converter<C, S>` 特化时，实体字段 `C` 即可绑定到 SQL 类型为 `S`
-的列；查询构建器对 converter 字段同样可用（比较值先经 `to_db` 转换）。
+`to_db` 赋值进调用方持有的槽位而不是返回一个值：表示长于短字符串缓冲区时，返回值
+会让每次批量写入按行分配一次。它必须覆盖槽位，不能追加。
 
-v1 的实际结果：`has_converter` 在代码库中零引用，因此上述两条都不成立。读侧
-`make_field_binding` 认不出 `C`，落入 `static_assert`（报错文案已承诺
-"converter-backed entity mapping"，但实现缺位）；写侧不会走 `to_db`，而是被
-`make_sql_value` 的 `is_convertible_v<U, std::string>` 分支吞掉——若 `C` 恰好可隐式
-转成 `std::string`，它会被当成字符串参数静默绑定。
+`has_converter` 的每个引用点，即该扩展点的接线范围：
+
+- **值路径** `detail::make_sql_value`（`params.hpp`）：排在精确类型链之后、整型 /
+  枚举 / 隐式转 `std::string` 三支之前，因此 converter 优先于那三支的静默降级。参数、
+  查询构建器的比较值、`column_meta::read` 都走这一处；`row::get<T>`（`value_cast`，
+  `row.hpp`）对称地用 `from_db` 解码；
+- **读侧绑定** `detail::make_field_binding`（`detail/projection.hpp`）：
+  `converter_binding` 按 `sql` 绑 C 缓冲区，取到行后才 `from_db` 解码进字段——决定
+  缓冲区的是表示，域类型本身不额外占一次拷贝；NULL 判定委托内层绑定（`indicator()`
+  是虚函数，组合绑定自己那张 indicator 数组不会被驱动写过）；
+- **实体注册**（`mapping/registry.hpp`）：`readable_member` 接受带 converter 的成员，
+  `column_meta::buffer_type` 与 `column_meta::accepted_types` 均由 `sql` 推出；
+- **批量写入** `columnar_batch_write`（`src/orm.cpp`）：表示先 `to_db` 再落进参数
+  缓冲区，与普通成员走同一趟 memcpy。变长列的宽度预扫描量不出未编码的值，故每个
+  converter 列在预扫描阶段多一次 `to_db`；
+- **schema 校验** `orm::validate(strict)`：按 §4.3 的表比对列类型族。
+
+`sql` 本身必须是 §4.3 可绑定集合里的类型，否则 `member_buffer_type` 的
+`static_assert` 在注册点即报错，不会退化成按文本绑定的错值。
 
 ### 4.5 语句与结果集
 
@@ -630,9 +642,7 @@ for (auto const& u : rows) { /* ... */ }
 `std::is_default_constructible_v` + `field_count<T>() <= max_aggregate_fields`（64）；
 concept 挂在 `orm::query<T>` 的模板参数上，不满足者是"无匹配重载"而非体内
 `static_assert`。字段类型满足 4.3 的映射或存在 converter；嵌套聚合体计为一个字段，
-需经 converter
-绑定。（涉及 converter 的两处都是目标形态：v1 的 converter 未接线，这类字段现在
-只能以编译期 `static_assert` 收场，见"已知缺口"。）
+需经 converter 绑定。
 
 ### 4.7 实体映射（显式契约）
 
@@ -656,6 +666,7 @@ struct column_meta {
     bool is_primary_key = false;
     bool nullable = false;       // 成员是 std::optional
     backend::buffer_type buffer_type;   // 由成员类型推出（member_buffer_type<M>()）
+    sql_type_set accepted_types;        // 该表示可绑的 sql_type 位掩码（accepted_sql_types<M>()）
     member_key key;
     std::function<void(void*, sql_value const&)> write;  // populate 用写闭包
     std::function<sql_value(void const*)> read;          // 行式路径的值提取
@@ -677,8 +688,8 @@ struct entity_meta {
     void populate(void* obj, row const& r) const;                 // 按列名写回对象
 };
 
-// 成员类型须满足 readable_member：bool/int8~64/double/string/bytes/timestamp
-// 或上述类型的 std::optional（编译期 static_assert）
+// 成员类型须满足 readable_member：bool/int8~64/double/string/bytes/timestamp、
+// 上述类型的 std::optional，或存在 uniorm::converter 特化的域类型（编译期 static_assert）
 template <class T>
 class mapping_builder {                       // db.map<T>("table") 的返回值
     template <class M> mapping_builder& column(std::string_view column, M T::*member);
@@ -710,7 +721,8 @@ class orm {                             // 非线程安全，按线程/会话持
     //  - 表不存在（元数据为空）      → mapping_error
     //  - 列缺失                       → mapping_error
     //  - 列可空但成员非 optional      → strict 抛 mapping_error / lenient 放行
-    // 成员类型与 SQL 类型不做比对（见已知缺口）
+    //  - 列类型族与成员的 accepted_types 不符 → strict 抛 mapping_error（§4.3）；
+    //    converter 成员的族由其表示决定；驱动归类为 sql_type::other 的列跳过
 
     std::size_t insert(std::vector<Entity> const& rows);                 // 仅批量
     std::size_t update(Entity const&);                                   // 主键推断：全部键列
@@ -1257,23 +1269,23 @@ uniorm-gen (--dsn=<dsn> [--user=<u> --password=<p>]
 
 ```toml
 [types]                              # 全局 SQL 类型 → C++ 类型覆写
-"NUMERIC(10,2)" = "money"
-"TIMESTAMP"     = "std::chrono::system_clock::time_point"
+"NUMERIC(10,2)" = "std::string"      # 无损读法；取值限于 §4.3 的可绑定集合
+"BLOB"          = "std::vector<std::byte>"
 
 [tables.t_user]
 class = "User"                       # 类名覆写
 skip = false
 
 [tables.t_user.columns.status]
-cpp_type = "Status"                  # 单列类型覆写
-converter = "status_converter"       # 指定 converter 特化名
+cpp_type = "std::int16_t"            # 单列类型覆写（同样限于可绑定集合）
+converter = "Status"                 # 域类型：成员生成为 Status，绑定走 converter<Status>
 ```
 
-v1 生效范围：`class` / `skip` 与 `cpp_type` 中属于可绑定集合（§4.3：`bool`、
-`std::int8_t`–`int64_t`、`double`、`std::string`、`std::vector<std::byte>`、
-`uniorm::timestamp`）的取值。示例里的自定义类型（`money`、`Status`）与 `converter`
-键都依赖尚未接线的 converter 扩展点：前者被 `check_bindable` 拒为 `config_error`，
-后者能解析但生成阶段直接抛错（见"已知缺口"）。
+生效范围：`class` / `skip`；`cpp_type`（含 `[types]` 全局覆写）限于 §4.3 的可绑定
+集合，集合外的取值被 `check_bindable` 拒为 `config_error`；`converter` 命名的域类型
+原样生成为成员类型，生成物同时以 `static_assert(uniorm::has_converter<...>)` 要求
+特化存在，因此使用它的 TU 必须在包含生成头之前声明 `uniorm::converter<Status>`
+（§4.4）。converter 只有逐列入口，没有全局覆写。
 
 ## 7. 错误体系总览
 
@@ -1282,7 +1294,8 @@ uniorm_error : std::runtime_error    // 基类（error.hpp）
 ├── unicode_error                    // UTF-8/UTF-16 转换遇到非法输入
 ├── column_not_found                 // 动态行按名取值失败
 ├── type_mismatch                    // value_cast/get<T>/参数归一化失败
-├── mapping_error                    // 映射/校验：重复注册、未注册、表列缺失、可空不匹配
+├── mapping_error                    // 映射/校验：重复注册、未注册、表列缺失、可空
+│                                    // 不匹配、列类型族与成员不符
 └── pool_timeout                     // 池获取超时
 
 backend::backend_error : uniorm_error    // backend 层（backend/error.hpp），
@@ -1308,7 +1321,9 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
 - **单元测试**（无数据库，已实现，拆为两个目标）：
   `uniorm_unit_tests` 不链接 ODBC——`test_unicode`（UTF-8/16 往返与非法
   输入）、`test_pfr`（字段数探测/展开/concept 负例）、`test_row`
-  （value_cast/收窄/optional）、`test_params`（值归一化）、
+  （value_cast/收窄/optional）、`test_params`（值归一化）、`test_converter`
+  （converter 优先于枚举与隐式转字符串两支、表示决定读侧绑定与批量暂存、列的可接受
+  类型族）、
   `test_expression`（谓词 SQL 生成、方言、分页）、`test_registry`
   （映射注册/populate/read 闭包/错误路径）、`test_orm_crud_helpers`
   （实体 CRUD 的映射级归一：全部键列推断、WHERE 字段解析与 SET 分区、
@@ -1318,10 +1333,12 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
   `uniorm_odbc_unit_tests` 链接 ODBC——`test_odbc_handles`（句柄 RAII）、
   `test_odbc_error_is_backend_error`（`odbc_error` 就是 `backend_error`，
   无需二次翻译）、`test_gen_config`（TOML 子集解析正例/错误行号/非法键）、
-  `test_gen_output`（命名转换边界 + 生成器快照与覆写/跳表/错误路径）；
+  `test_gen_output`（命名转换边界 + 生成器快照与覆写/跳表/converter 生成/错误路径）；
   后两个只在 `UNIORM_BUILD_TOOLS` 打开时编入（同时定义 `UNIORM_TEST_GEN`），
   因为它们要链 `uniorm_gen_core`；
-- **集成测试**（已实现，DSN/凭据由 `UNIORM_IT_DSN` / `UNIORM_IT_USER` / `UNIORM_IT_PWD` 指定，凭据以 `UID`/`PWD` 写进连接串；连不上时 ctest SKIP）：execute/params 往返、动态行（含 `connection::execute` 显式块取行大小 0 退回逐行）、聚合投影（含长字符串与 timestamp）、orm validate（含 strict 失败路径）、查询构建器全谓词与分页、事务 commit/rollback/析构回滚、批量插入（含空 optional 写 NULL、1500 行跨 `paramset_size` 分批）、批量 update / 批量 remove（实体版按主键与全字段两种 WHERE，含一张复合主键表验证单实体与批量都按全部键列命中、非键行不被牵连，动态版 `orm::update(table)` / `orm::remove(table)`，以及 `query<T>::set/update/remove` 与无 WHERE / 无 SET / WHERE 字段未映射的守卫抛错）、语句缓存（hit/miss 计数、流式 result_set 借出期间并发 miss、清空）、跨层错误上报（驱动失败以 `backend_error` 捕获，核对 `backend_name()`
+- **集成测试**（已实现，DSN/凭据由 `UNIORM_IT_DSN` / `UNIORM_IT_USER` / `UNIORM_IT_PWD` 指定，凭据以 `UID`/`PWD` 写进连接串；连不上时 ctest SKIP）：execute/params 往返、动态行（含 `connection::execute` 显式块取行大小 0 退回逐行）、聚合投影（含长字符串与 timestamp）、converter 往返（批量插入、实体物化含 NULL、
+`in` 谓词、投影、构建器 `set`/批量 update、动态行 `get<T>`）、orm validate（含 strict
+的列缺失/可空/类型族三条失败路径）、查询构建器全谓词与分页、事务 commit/rollback/析构回滚、批量插入（含空 optional 写 NULL、1500 行跨 `paramset_size` 分批）、批量 update / 批量 remove（实体版按主键与全字段两种 WHERE，含一张复合主键表验证单实体与批量都按全部键列命中、非键行不被牵连，动态版 `orm::update(table)` / `orm::remove(table)`，以及 `query<T>::set/update/remove` 与无 WHERE / 无 SET / WHERE 字段未映射的守卫抛错）、语句缓存（hit/miss 计数、流式 result_set 借出期间并发 miss、清空）、跨层错误上报（驱动失败以 `backend_error` 捕获，核对 `backend_name()`
 与 SQLSTATE 诊断）、连接池借还与超时、连接池维护（心跳保活计数、空闲超时驱逐、失败心跳丢弃）；后续按库加条件标签覆盖方言与类型怪癖；
 - **性能基准**（已实现，ctest 标签 `perf`，`tests/perf/test_perf.cpp`）：
   连不上库时 SKIP；行数由 `UNIORM_PERF_ROWS` 指定（默认 10000）。
@@ -1336,20 +1353,17 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
   全表扫描（对应实体直绑与动态行路径）、单行 `LIMIT 1`（对应 `one()`），
   用于衡量 uniorm 抽象层的额外开销
 - **`uniorm-gen` 端到端**（已实现，`gen_e2e_tests`，连不上库时 SKIP）：
-  夹具表（含 PK/FK/索引/DECIMAL/DATETIME）→ 工具生成 → 与检入 golden
-  头文件逐字节比对；golden 本身被编译进测试，执行注册 +
-  `validate(strict)` + 构建器 `count()`，覆盖"生成 → 编译 → 注册 →
-  校验"全链路。golden 假定默认 `UNIORM_DECIMAL_DEFAULT=string`。
+  夹具表（含 PK/FK/索引/DECIMAL/DATETIME）→ 工具带检入的覆写文件
+  （`golden/gen_it.toml`，其 `converter` 键让 `note` 生成为域类型）生成 →
+  与 golden 头文件逐字节比对；golden 本身被编译进测试，执行注册 +
+  `validate(strict)` + 构建器 `count()` + 实体写入与物化读回，覆盖"生成 → 编译 →
+  注册 → 校验 → 读写"全链路。golden 假定默认 `UNIORM_DECIMAL_DEFAULT=string`。
 
 ## 9. v2 路线图
 
-**v1 欠账**（对应"已知缺口"三项：前两项是接线，第三项是补做从未落地的实现；
+**v1 欠账**（对应"已知缺口"两项：前者是接线，后者是补做从未落地的实现；
 都宜排在 v2 新特性之前）：
 
-- converter 落地（§4.4）：读侧 `make_field_binding` 增 `has_converter` 分支；
-  写侧 `make_sql_value` 在 `is_convertible_v<U, std::string>` 之前分派 `to_db`；
-  `validate()` 补成员类型与 SQL 类型的比对；`uniorm-gen` 接受 `converter` 键与
-  自定义 `cpp_type`（§6.4）；
 - ODBC 宽字符路径（§4.2）：确需宽字符时用 `SQL_C_WCHAR` 绑定并经 `src/unicode.hpp`
   转换（含 Windows 下的 DSN 连接串）；若确认不做，则删掉这两个零调用者的函数，
   以免文档与代码互相印证出一个不存在的特性。
@@ -1388,8 +1402,8 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
 2. ~~DECIMAL/NUMERIC v1 默认映射~~ **已定方向：可配，默认取无损一侧**（见 §4.3）。
    v1 落地的部分远小于此：`UNIORM_DECIMAL_DEFAULT` 只决定 `uniorm-gen` 生成的
    成员类型（`string` → `std::string`，`double` → `double`），既没有 `decimal_t`，
-   动态行也一律走 `double`（有损）；逐列覆写依赖未接线的 converter。缺口见
-   "已知缺口"第 3 条与 §9 欠账；
+   动态行也一律走 `double`（有损）；逐列覆写经 converter（§4.4）已可用。缺口见
+   "已知缺口"第 2 条与 §9 欠账；
 3. ~~`orm`（注册表）与 `connection` 的组合方式~~ **已定：`orm` 作为中心入口，内部持有 `connection`**，`db.query().of<T>()`、`db.insert()`、`db.update()` 等统一经 `orm` 调用（见 §4.8）；
 4. ~~头文件-only 还是编译库~~ **已定：动态库**（避免 header-only 升级后全量重编），非模板实现进 `libuniorm`，模板代码留头文件（见 §1）。
 

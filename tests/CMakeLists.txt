@@ -4,6 +4,7 @@ add_executable(uniorm_unit_tests
     unit/test_pfr.cpp
     unit/test_row.cpp
     unit/test_params.cpp
+    unit/test_converter.cpp
     unit/test_expression.cpp
     unit/test_registry.cpp
     unit/test_orm_crud_helpers.cpp

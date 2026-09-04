@@ -3,6 +3,7 @@
 // Convenience header: includes the full uniorm public API.
 // Users can include this single header instead of picking individual ones.
 
+#include <uniorm/converter.hpp>
 #include <uniorm/dialect.hpp>
 #include <uniorm/error.hpp>
 #include <uniorm/mapping/registry.hpp>

@@ -58,9 +58,9 @@ private:
 };
 
 // Member-pointer comparison builders. The right-hand value is converted via
-// detail::make_sql_value (enums are converted through their underlying type).
-// Named functions instead of operator overloads: a templated operator== would
-// collide with C++20 reversed-candidate rewriting.
+// detail::make_sql_value, where a registered converter wins over the enum and
+// implicit-string arms. Named functions instead of operator overloads: a
+// templated operator== would collide with C++20 rewriting.
 
 template <class T, class M, class V>
 predicate eq(M T::* member, V&& value) {

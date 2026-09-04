@@ -4,6 +4,7 @@ void test_unicode();
 void test_pfr();
 void test_row();
 void test_params();
+void test_converter();
 void test_expression();
 void test_registry();
 void test_orm_crud_helpers();
@@ -14,6 +15,7 @@ int main() {
   test_pfr();
   test_row();
   test_params();
+  test_converter();
   test_expression();
   test_registry();
   test_orm_crud_helpers();

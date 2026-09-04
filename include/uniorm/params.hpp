@@ -7,6 +7,7 @@
 #include <utility>
 #include <vector>
 
+#include <uniorm/converter.hpp>
 #include <uniorm/error.hpp>
 #include <uniorm/export.hpp>
 #include <uniorm/value.hpp>
@@ -30,6 +31,10 @@ sql_value make_sql_value(T&& v) {
                        std::is_same_v<U, std::vector<std::byte>> ||
                        std::is_same_v<U, timestamp>) {
     return sql_value(std::forward<T>(v));
+  } else if constexpr (has_converter<U>) {
+    typename converter<U>::sql sql{};
+    converter<U>::to_db(v, sql);
+    return make_sql_value(std::move(sql));
   } else if constexpr (std::is_integral_v<U>) {
     if constexpr (sizeof(U) <= sizeof(std::int32_t)) {
       if constexpr (std::is_signed_v<U>) {

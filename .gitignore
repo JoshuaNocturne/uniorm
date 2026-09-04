@@ -24,6 +24,7 @@ Testing/
 *.exe
 
 # Editor / IDE
+.qoder/
 .vscode/
 .idea/
 *.swp

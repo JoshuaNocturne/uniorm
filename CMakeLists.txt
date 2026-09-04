@@ -69,10 +69,15 @@ if(UNIORM_BACKEND_ODBC)
     target_link_libraries(uniorm PRIVATE ODBC::ODBC)
 endif()
 target_compile_definitions(uniorm PRIVATE UNIORM_BUILDING_DLL)
+# The mapping only uniorm-gen reads, so it stays a build-tree concern: shipping
+# it in the installed interface would tell consumers they must match a
+# configuration the library itself never consults.
 if(UNIORM_DECIMAL_DEFAULT STREQUAL "string")
-    target_compile_definitions(uniorm PUBLIC UNIORM_DECIMAL_AS_STRING)
+    target_compile_definitions(uniorm PUBLIC
+        $<BUILD_INTERFACE:UNIORM_DECIMAL_AS_STRING>)
 else()
-    target_compile_definitions(uniorm PUBLIC UNIORM_DECIMAL_AS_DOUBLE)
+    target_compile_definitions(uniorm PUBLIC
+        $<BUILD_INTERFACE:UNIORM_DECIMAL_AS_DOUBLE>)
 endif()
 
 if(UNIORM_BUILD_TOOLS AND NOT UNIORM_BACKEND_ODBC)
@@ -88,4 +93,63 @@ endif()
 if(UNIORM_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
+endif()
+
+# --- Installation ---
+# Guarded so that a project pulling uniorm in with add_subdirectory or
+# FetchContent links uniorm::uniorm without also inheriting our install rules.
+if(PROJECT_IS_TOP_LEVEL)
+    include(GNUInstallDirs)
+    include(CMakePackageConfigHelpers)
+
+    # A pre-1.0 library has no ABI promise to keep, and this one has already
+    # broken silently once (adding a member to connection changed its size).
+    # Version the soname by major.minor so a consumer's stale binary fails at
+    # link time instead of at run time, and match that in the package version.
+    set_target_properties(uniorm PROPERTIES
+        VERSION ${PROJECT_VERSION}
+        SOVERSION ${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}
+    )
+
+    # RUNTIME covers the Windows DLL, ARCHIVE its import library (consumers
+    # need it: UNIORM_API expands to dllimport outside the building target),
+    # LIBRARY the shared object and its symlinks on ELF platforms.
+    install(TARGETS uniorm
+        EXPORT uniormTargets
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    )
+
+    # Everything under include/ is public by construction: the private headers
+    # sit beside their sources in src/, and an installed header that reached one
+    # would fail to compile for a consumer that only sees include/.
+    install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/include/uniorm
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+        FILES_MATCHING PATTERN "*.hpp"
+    )
+
+    set(UNIORM_CMAKE_INSTALL_DIR ${CMAKE_INSTALL_LIBDIR}/cmake/uniorm)
+
+    install(EXPORT uniormTargets
+        FILE uniormTargets.cmake
+        NAMESPACE uniorm::
+        DESTINATION ${UNIORM_CMAKE_INSTALL_DIR}
+    )
+
+    configure_package_config_file(
+        ${CMAKE_CURRENT_SOURCE_DIR}/cmake/uniormConfig.cmake.in
+        ${CMAKE_CURRENT_BINARY_DIR}/uniormConfig.cmake
+        INSTALL_DESTINATION ${UNIORM_CMAKE_INSTALL_DIR}
+    )
+    write_basic_package_version_file(
+        ${CMAKE_CURRENT_BINARY_DIR}/uniormConfigVersion.cmake
+        VERSION ${PROJECT_VERSION}
+        COMPATIBILITY SameMinorVersion
+    )
+    install(FILES
+        ${CMAKE_CURRENT_BINARY_DIR}/uniormConfig.cmake
+        ${CMAKE_CURRENT_BINARY_DIR}/uniormConfigVersion.cmake
+        DESTINATION ${UNIORM_CMAKE_INSTALL_DIR}
+    )
 endif()

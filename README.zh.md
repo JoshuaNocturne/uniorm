@@ -61,6 +61,25 @@ cmake --build build -j
 
 产物为动态库 `libuniorm.so`（头文件在 `include/uniorm/`）。
 
+### 安装
+
+```sh
+cmake --install build --prefix /path/to/prefix
+```
+
+带版本号的动态库（含 `SOVERSION` 两级符号链接；Windows 下为 DLL 与导入库）进
+`<libdir>/`，全部 public 头文件进 `<prefix>/include/uniorm/`，包配置进
+`<libdir>/cmake/uniorm/`。消费者不需要本仓库的任何其他文件：
+
+```cmake
+find_package(uniorm REQUIRED CONFIG)
+target_link_libraries(my_app PRIVATE uniorm::uniorm)
+```
+
+源码集成方式不变：`add_subdirectory` 或 FetchContent 同样拿到 `uniorm::uniorm`
+目标，且不安装任何东西。安装规则只在 uniorm 是顶层工程时生效，`uniorm-gen`
+不在安装面上。
+
 ## 快速上手
 
 ### 连接与裸 SQL

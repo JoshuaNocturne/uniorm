@@ -1,7 +1,7 @@
 # uniorm v1 设计文档
 
 状态：v1 实现完成（单元测试 + MariaDB 集成测试 + 性能基准通过）
-日期：2026-09-02（本版按当前代码逐节核对，偏差集中记于"已知缺口"）
+日期：2026-09-04（本版按当前代码逐节核对，偏差集中记于"已知缺口"）
 
 ## 1. 目标与范围
 
@@ -36,7 +36,7 @@ uniorm 是一个基于 **ODBC**（而非各数据库专有 C 客户端）的现�
 
 以下条目在本文档中是设计契约，但代码只落地了声明侧或偏离了承诺。列在此处而非埋在
 正文，是为了让"文档承诺 = 当前实现"这条约束成立（§3/§4.1–§4.4/§4.6/§6.4/§10
-已就地标注）。前两项是"声明未接线"，后两项是"实现与承诺不符"。
+已就地标注）。前两项是"声明未接线"，第三项是"实现与承诺不符"。
 
 另有三处较小的偏差体量不足以单列，直接在正文就地写实并进了 §9：池归还连接时
 不清理事务/autocommit 状态（§4.9）、"不碰 ODBC"只到链接行为止（§5.1）、
@@ -69,13 +69,10 @@ uniorm 是一个基于 **ODBC**（而非各数据库专有 C 客户端）的现�
    `SQL_C_CHAR` 直绑。`decimal_t` 别名不存在；`UNIORM_DECIMAL_AS_STRING` 被
    CMake 定义但代码中零引用（`UNIORM_DECIMAL_AS_DOUBLE` 仅在 `uniorm-gen` 的默认
    类型映射里被 `#ifdef`），所以 `UNIORM_DECIMAL_DEFAULT` 目前只改变生成物、
-   不改变库；`SQLDescribeCol` 读到的 scale 被丢弃，`column_info` 无法表达精度；
-4. **打包未实现**：仓库没有任何 `install()` / `export()` / package-config 规则，
-   §3 所称"对外头文件"目前是"public 头文件"而非"已安装的头文件"——消费者只能
-   `add_subdirectory` 或 FetchContent 源码集成，`$<INSTALL_INTERFACE:include>`
-   与 `project(VERSION 0.1.0)` 均为空转（也没有 SOVERSION）。
+   不改变库；该宏只到 `$<BUILD_INTERFACE:>` 为止，不进已安装接口（§3.1）；
+   `SQLDescribeCol` 读到的 scale 被丢弃，`column_info` 无法表达精度；
 
-四项均已进 §9 路线图。
+三项均已进 §9 路线图。
 
 ### 基础决策
 
@@ -113,9 +110,10 @@ uniorm 是一个基于 **ODBC**（而非各数据库专有 C 客户端）的现�
 
 ```
 uniorm/
-├── CMakeLists.txt
+├── CMakeLists.txt               # 库目标 + 安装/导出规则（仅 top-level 时生效）
+├── cmake/uniormConfig.cmake.in  # find_package(uniorm CONFIG) 的包配置模板
 ├── include/uniorm/              # 对外 public 头文件（消费者唯一的 include 根；
-│                                #  尚无 install 规则，见已知缺口）
+│                                #  安装时整目录搬到 <prefix>/include/uniorm）
 │   ├── uniorm.hpp               # umbrella：README 示例只需它
 │   ├── export.hpp               # UNIORM_API 符号导出宏
 │   ├── error.hpp                # 异常体系（backend/odbc 层错误在各自头文件）
@@ -182,6 +180,33 @@ uniorm/
 （直调 `SQLTables` / `SQLColumns` 等目录函数）以及两个白盒单测。公开头一旦
 `#include` 私有头便无法解析，边界由编译器强制；`<sql.h>` 现仅出现在 `src/odbc/`
 之下，对外头文件既不带驱动类型，也不带 ODBC 链接依赖（`ODBC::ODBC` 是 PRIVATE）。
+
+### 3.1 安装与集成
+
+`cmake --install build --prefix <p>` 产出三类文件（目录名取自 `GNUInstallDirs`，
+64 位 RHEL/Fedora 上 `<libdir>` 解析为 `lib64`）：
+
+| 位置 | 内容 |
+|---|---|
+| `<libdir>/` | `libuniorm.so.<VERSION>` 加 `SOVERSION`（`0.1`）与裸名两级符号链接；Windows 下 DLL 走 RUNTIME、导入库走 ARCHIVE |
+| `include/uniorm/` | 全部 public 头文件；私有头贴邻 `.cpp` 留在 `src/`，不参与安装 |
+| `<libdir>/cmake/uniorm/` | `uniormConfig.cmake`、`uniormConfigVersion.cmake`、`uniormTargets.cmake` 与 `uniormTargets-<config>.cmake` |
+
+消费者 `find_package(uniorm REQUIRED CONFIG)` 后链接 `uniorm::uniorm`，include 路径
+由导出目标携带。三条约定：
+
+- 安装块整体包在 `if(PROJECT_IS_TOP_LEVEL)` 里：`add_subdirectory` / FetchContent
+  集成只拿到目标，不会把本项目的安装规则带进宿主的 `install`；
+- `SOVERSION` 取 `major.minor`，包版本兼容取 `SameMinorVersion`。0.x 没有 ABI 承诺
+  可守——给 `connection` 加一个成员就足以让已编译的消费者崩在运行期——与其用
+  `libuniorm.so.0` 掩盖这种破坏，不如让链接期直接失败；
+- ODBC 与线程都是 PRIVATE 依赖，不进导出接口：`libodbc.so` 由 `libuniorm.so` 自己的
+  `DT_NEEDED` 载入，消费者无需 `find_dependency(ODBC)`；`UNIORM_DECIMAL_DEFAULT`
+  派生的宏同理只到 `$<BUILD_INTERFACE:>` 为止（库代码并不读它，见已知缺口 3）。
+
+导出的 CMake 文件不含绝对前缀：`DESTDIR=<stage> cmake --install build --prefix
+/usr/local` 能打到暂存根再整体搬迁（实测装出来的 4 个 CMake 文件里既无 stage 也
+无 prefix 的字面量）。安装面只有库与 public 头文件，`uniorm-gen` 不在其中（§9）。
 
 ## 4. 核心模块设计
 
@@ -1310,7 +1335,7 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
 
 ## 9. v2 路线图
 
-**v1 欠账**（对应"已知缺口"四项：前两项是接线，后两项是补做从未落地的实现；
+**v1 欠账**（对应"已知缺口"三项：前两项是接线，第三项是补做从未落地的实现；
 都宜排在 v2 新特性之前）：
 
 - converter 落地（§4.4）：读侧 `make_field_binding` 增 `has_converter` 分支；
@@ -1323,9 +1348,10 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
 - DECIMAL 无损动态路径（§4.3）：定一个真正的 `decimal_t`（值 + scale），
   动态行按 `SQL_C_CHAR` 取原始字面量而非经由 `SQL_C_DOUBLE`，并把保留的
   `scale` 用起来；顺带清掉零引用的 `UNIORM_DECIMAL_AS_STRING`；
-- 打包（§3）：`install(TARGETS)` + `install(EXPORT)` + `uniorm-config.cmake` +
-  package version + `SOVERSION`，让 `$<INSTALL_INTERFACE:include>` 与
-  `project(VERSION)` 真正生效。
+- ~~打包~~ **已完成（§3.1）**：`install(TARGETS/EXPORT)` + config/version 文件 +
+  `VERSION`/`SOVERSION`，`$<INSTALL_INTERFACE:include>` 与 `project(VERSION)` 已
+  生效，外部工程可用 `find_package(uniorm CONFIG)` 接入。**待做**：把 `uniorm-gen`
+  纳入安装面（`RUNTIME DESTINATION bin`），以及用 CI 产出并验证制品。
 
 原有路线图：
 

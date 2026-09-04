@@ -74,6 +74,27 @@ Options:
 The product is a shared library, `libuniorm.so` (headers in
 `include/uniorm/`).
 
+### Installing
+
+```sh
+cmake --install build --prefix /path/to/prefix
+```
+
+That puts the versioned library (plus its `SOVERSION` symlinks; on Windows the
+DLL and its import library) in `<libdir>/`, every public header in
+`<prefix>/include/uniorm/`, and a package config in `<libdir>/cmake/uniorm/`.
+A consumer needs nothing from this repository:
+
+```cmake
+find_package(uniorm REQUIRED CONFIG)
+target_link_libraries(my_app PRIVATE uniorm::uniorm)
+```
+
+Source integration is unchanged: `add_subdirectory` or FetchContent hand over
+the same `uniorm::uniorm` target and install nothing. The install rules only
+apply when uniorm is the top-level project, and `uniorm-gen` is not part of the
+installed surface.
+
 ## Quick start
 
 ### Connection and raw SQL

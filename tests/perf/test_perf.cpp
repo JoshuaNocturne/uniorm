@@ -5,7 +5,9 @@
 // unreachable. Compares the query materialization paths:
 // entity direct binding, aggregate projection, and dynamic rows, plus a
 // raw ODBC baseline using SQL_ATTR_PARAMSET_SIZE for batch insert/update/
-// delete and SQL_ATTR_ROW_ARRAY_SIZE for block fetching.
+// delete and SQL_ATTR_ROW_ARRAY_SIZE for block fetching. The last three
+// cases run the same bytes through a converter-backed field, so the cost
+// of the extension point is measurable against the plain field beside it.
 
 #include <algorithm>
 #include <chrono>
@@ -20,6 +22,7 @@
 #include <sqlext.h>
 
 #include <uniorm/connection.hpp>
+#include <uniorm/converter.hpp>
 #include <uniorm/mapping/registry.hpp>
 #include <uniorm/builder/builder.hpp>
 
@@ -35,6 +38,34 @@ struct Bench {
   std::optional<std::string> note;
 };
 
+// A domain type whose representation is the column's own text. Copying the
+// string in both directions is the priciest converter a VARCHAR can have --
+// an enum with a fixed dictionary decodes for less -- so the delta below
+// between this and the plain field is an upper bound.
+struct BenchNote {
+  std::string text;
+};
+
+template <>
+struct converter<BenchNote> {
+  using sql = std::string;
+
+  static void to_db(BenchNote const& value, std::string& out) {
+    out = value.text;
+  }
+
+  static BenchNote from_db(std::string const& v) {
+    return BenchNote{ v };
+  }
+};
+
+struct BenchConv {
+  std::int64_t id = 0;
+  std::string name;
+  std::int32_t score = 0;
+  std::optional<BenchNote> note;
+};
+
 }  // namespace uniorm
 
 namespace {
@@ -48,6 +79,16 @@ orm build_registry(std::string const& conn_string) {
     .column("name", &Bench::name)
     .column("score", &Bench::score)
     .column("note", &Bench::note);
+  return registry;
+}
+
+orm build_conv_registry(std::string const& conn_string) {
+  orm registry(conn_string);
+  registry.map<BenchConv>(k_table)
+    .primary_key("id", &BenchConv::id)
+    .column("name", &BenchConv::name)
+    .column("score", &BenchConv::score)
+    .column("note", &BenchConv::note);
   return registry;
 }
 
@@ -70,6 +111,22 @@ std::vector<Bench> make_rows(std::size_t n) {
     b.score = static_cast<std::int32_t>(i % 1000);
     if (i % 4 != 0) {
       b.note = "note-" + std::to_string(i);
+    }
+    rows.push_back(std::move(b));
+  }
+  return rows;
+}
+
+std::vector<BenchConv> make_conv_rows(std::size_t n) {
+  std::vector<BenchConv> rows;
+  rows.reserve(n);
+  for (std::size_t i = 0; i < n; ++i) {
+    BenchConv b;
+    b.id = static_cast<std::int64_t>(i);
+    b.name = "row-" + std::to_string(i);
+    b.score = static_cast<std::int32_t>(i % 1000);
+    if (i % 4 != 0) {
+      b.note = BenchNote{ "note-" + std::to_string(i) };
     }
     rows.push_back(std::move(b));
   }
@@ -158,7 +215,8 @@ perf_clock::duration best_of(Fn&& fn, int runs) {
   return best;
 }
 
-std::vector<bench_result> run_benchmarks(connection& conn, orm& registry, std::size_t n) {
+std::vector<bench_result> run_benchmarks(
+  connection& conn, orm& registry, orm& conv_registry, std::size_t n) {
   std::vector<bench_result> results;
   int const runs = 3;
   std::printf("rows per case: %zu (best of %d runs)\n", n, runs);
@@ -376,6 +434,69 @@ std::vector<bench_result> run_benchmarks(connection& conn, orm& registry, std::s
     std::printf("FATAL: count() returned %" PRId64 "\n", count);
     std::exit(1);
   }
+
+  std::printf("\n[converter field vs plain field, same columns]\n");
+
+  std::vector<BenchConv> conv_rows = make_conv_rows(n);
+  std::size_t conv_inserted = 0;
+  {
+    perf_clock::duration best = perf_clock::duration::max();
+    for (int i = 0; i < runs; ++i) {
+      conn.execute_update(std::string("DELETE FROM ") + k_table);
+      auto start = perf_clock::now();
+      conv_inserted = conv_registry.insert(conv_rows);
+      auto elapsed = perf_clock::now() - start;
+      if (elapsed < best) {
+        best = elapsed;
+      }
+    }
+    report("insert (batch, converter field)", n, best, 1, &results);
+  }
+  if (conv_inserted != n) {
+    std::printf("FATAL: converter insert wrote %zu of %zu rows\n",
+      conv_inserted, n);
+    std::exit(1);
+  }
+
+  std::vector<BenchConv> conv_back;
+  report("query entity all (converter field)", n,
+    best_of(
+      [&] { conv_back = conv_registry.query().of<BenchConv>().all(); }, runs),
+    runs, &results);
+  if (conv_back.size() != n) {
+    std::printf("FATAL: converter entity query returned %zu rows\n",
+      conv_back.size());
+    std::exit(1);
+  }
+  for (auto const& b : conv_back) {
+    bool const written = b.id % 4 != 0;
+    if (!b.note != !written ||
+        (b.note && b.note->text != "note-" + std::to_string(b.id))) {
+      std::printf("FATAL: converter decode wrong at id %" PRId64 "\n", b.id);
+      std::exit(1);
+    }
+  }
+
+  struct conv_proj_row {
+    std::int64_t id;
+    std::string name;
+    std::int32_t score;
+    std::optional<BenchNote> note;
+  };
+  std::size_t conv_proj_rows = 0;
+  report("query projection (converter field)", n,
+    best_of(
+      [&] {
+        conv_proj_rows = registry.query<conv_proj_row>(select_all).size();
+      },
+      runs),
+    runs, &results);
+  if (conv_proj_rows != n) {
+    std::printf("FATAL: converter projection returned %zu rows\n",
+      conv_proj_rows);
+    std::exit(1);
+  }
+
   (void)id_sum;
   return results;
 }
@@ -1033,7 +1154,10 @@ int main() {
     prepare_schema(conn);
     orm registry = build_registry(conn_string);
     registry.row_array_size(1000);
-    auto orm_results = run_benchmarks(conn, registry, n);
+    orm conv_registry = build_conv_registry(conn_string);
+    conv_registry.row_array_size(1000);
+    conv_registry.validate();
+    auto orm_results = run_benchmarks(conn, registry, conv_registry, n);
     auto raw_results = run_raw_benchmarks(conn_string, n);
     print_comparison_table(orm_results, raw_results);
     conn.execute_update(std::string("DROP TABLE ") + k_table);

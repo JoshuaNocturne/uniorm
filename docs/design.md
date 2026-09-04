@@ -1346,6 +1346,11 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
   （`query<T>::all()`）、聚合投影（`db.query<Row>(sql)`，含带字符串与纯 POD
   两例）、动态行（`result_set`/`row`/`sql_value`），另含 `one()`/`count()`
   单行延迟。每项取 best-of-3，输出耗时与 krows/s。
+  converter 三例（批量插入、实体直绑、聚合投影）与对应的普通字段用例一一配对：
+  同表、同列、同字节，只有 `note` 的成员类型从 `std::string` 换成以 `std::string`
+  为 `sql` 表示的域类型，故两者之差即扩展点的开销；该 converter 双向各拷一次字符串，
+  比字典式 enum 映射更贵，所以差值是上界。实体读回逐行核对 `from_db` 的结果，
+  避免"只测了行数、解码默默失败"的用例。
   另含**纯 ODBC 基线**（不经 uniorm，直接操作句柄，只保留与 uniorm
   同名同形的用例）：单行 `VALUES (?, ?, ?, ?)` + `SQL_ATTR_PARAMSET_SIZE` +
   列方向量数组 + 逐值 `SQLBindParameter` 的批量插入/更新/删除（与 uniorm 的

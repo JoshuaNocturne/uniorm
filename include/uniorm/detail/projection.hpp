@@ -13,6 +13,7 @@
 #include <vector>
 
 #include <uniorm/backend/backend.hpp>
+#include <uniorm/converter.hpp>
 #include <uniorm/error.hpp>
 #include <uniorm/value.hpp>
 #include <uniorm/detail/pfr.hpp>
@@ -40,13 +41,12 @@ public:
   virtual void bind(backend::statement_iface& stmt, std::size_t column) = 0;
   // entity points at a fully constructed object of the binding's layout.
   virtual void finalize(std::size_t row_index, void* entity) {
-    if (ind_[row_index] == backend::null_indicator) {
-      throw type_mismatch("NULL value for non-optional projection field");
-    }
+    if (ind_[row_index] == backend::null_indicator) reject_null();
     write(row_index, entity);
   }
 
-  std::int64_t indicator(std::size_t row_index) const noexcept {
+  // Row-level NULL flag of this binding's own bound array.
+  virtual std::int64_t indicator(std::size_t row_index) const noexcept {
     return ind_[row_index];
   }
 
@@ -56,6 +56,10 @@ public:
   }
 
 protected:
+  static void reject_null() {
+    throw type_mismatch("NULL value for non-optional projection field");
+  }
+
   // Copy staging into the entity's field; assumes data is non-NULL.
   virtual void write(std::size_t row_index, void* entity) = 0;
 
@@ -262,8 +266,50 @@ public:
   // reaches write() for optionals.
   void write(std::size_t, void*) override {}
 
+  // The inner binding owns the array the backend writes.
+  std::int64_t indicator(std::size_t row_index) const noexcept override {
+    return inner_->indicator(row_index);
+  }
+
 private:
   T storage_{};
+  std::unique_ptr<field_binding> inner_;
+};
+
+// Binds a converter domain type as its sql representation and maps each
+// fetched row through from_db. Staging belongs to the inner binding, so the
+// row still lands with the copies a sql-typed field would have made.
+template <class T>
+class converter_binding : public field_binding {
+public:
+  converter_binding(T& target, void* base) {
+    offset_ = member_offset(target, base);
+  }
+
+  void bind(backend::statement_iface& stmt, std::size_t column) override {
+    inner_ = make_field_binding(sql_, &sql_);
+    inner_->set_row_array_size(row_array_size_);
+    inner_->bind(stmt, column);
+  }
+
+  // This binding binds nothing, so every NULL test has to read the inner
+  // array.
+  std::int64_t indicator(std::size_t row_index) const noexcept override {
+    return inner_->indicator(row_index);
+  }
+
+  void finalize(std::size_t row_index, void* entity) override {
+    if (indicator(row_index) == backend::null_indicator) reject_null();
+    inner_->finalize(row_index, &sql_);
+    *reinterpret_cast<T*>(static_cast<char*>(entity) + offset_) =
+      converter<T>::from_db(sql_);
+  }
+
+  // finalize() is fully overridden; the base path never reaches write().
+  void write(std::size_t, void*) override {}
+
+private:
+  converter_sql<T> sql_{};
   std::unique_ptr<field_binding> inner_;
 };
 
@@ -288,10 +334,12 @@ std::unique_ptr<field_binding> make_field_binding(T& field, void* base) {
     return std::make_unique<timestamp_binding>(field, base);
   } else if constexpr (directly_bindable<U>) {
     return std::make_unique<direct_binding<U>>(field, base);
+  } else if constexpr (has_converter<U>) {
+    return std::make_unique<converter_binding<U>>(field, base);
   } else {
     static_assert(std::is_same_v<U, U> && false,
       "unsupported projection field type: use a supported sql type, "
-      "std::optional thereof, or a converter-backed entity mapping");
+      "std::optional thereof, or specialize uniorm::converter for it");
   }
 }
 

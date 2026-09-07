@@ -403,6 +403,11 @@ struct converter<Status> {
 `to_db` 赋值进调用方持有的槽位而不是返回一个值：表示长于短字符串缓冲区时，返回值
 会让每次批量写入按行分配一次。它必须覆盖槽位，不能追加。
 
+`from_db` 收到的是右值——调用方已经用完那个槽位。以带缓冲区的类型（如 `std::string`）
+为表示的 converter 因此可以直接搬走它，而不是再拷一份；仍写 `sql const&` 的特化照样
+满足 `has_converter`，代价就是那次拷贝，只有 `sql&` 形式会被拒。上例写 `const&` 是因为
+enum 解码根本没有缓冲区可搬。
+
 `has_converter` 的每个引用点，即该扩展点的接线范围：
 
 - **值路径** `detail::make_sql_value`（`params.hpp`）：排在精确类型链之后、整型 /
@@ -411,8 +416,9 @@ struct converter<Status> {
   `row.hpp`）对称地用 `from_db` 解码；
 - **读侧绑定** `detail::make_field_binding`（`detail/projection.hpp`）：
   `converter_binding` 按 `sql` 绑 C 缓冲区，取到行后才 `from_db` 解码进字段——决定
-  缓冲区的是表示，域类型本身不额外占一次拷贝；NULL 判定委托内层绑定（`indicator()`
-  是虚函数，组合绑定自己那张 indicator 数组不会被驱动写过）；
+  缓冲区的是表示，域类型本身不额外占一次拷贝；交出的槽位对本绑定已是死物，被搬走的话
+  下一行重新暂存，那正是一个 `sql` 类型字段本身也要付的分配次数。NULL 判定委托内层绑定
+  （`indicator()` 是虚函数，组合绑定自己那张 indicator 数组不会被驱动写过）；
 - **实体注册**（`mapping/registry.hpp`）：`readable_member` 接受带 converter 的成员，
   `column_meta::buffer_type` 与 `column_meta::accepted_types` 均由 `sql` 推出；
 - **批量写入** `columnar_batch_write`（`src/orm.cpp`）：表示先 `to_db` 再落进参数
@@ -1323,7 +1329,7 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
   输入）、`test_pfr`（字段数探测/展开/concept 负例）、`test_row`
   （value_cast/收窄/optional）、`test_params`（值归一化）、`test_converter`
   （converter 优先于枚举与隐式转字符串两支、表示决定读侧绑定与批量暂存、列的可接受
-  类型族）、
+  类型族、按值取槽位的 `from_db` 搬走暂存缓冲区且跨行复用绑定后仍成立）、
   `test_expression`（谓词 SQL 生成、方言、分页）、`test_registry`
   （映射注册/populate/read 闭包/错误路径）、`test_orm_crud_helpers`
   （实体 CRUD 的映射级归一：全部键列推断、WHERE 字段解析与 SET 分区、
@@ -1348,9 +1354,9 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
   单行延迟。每项取 best-of-3，输出耗时与 krows/s。
   converter 三例（批量插入、实体直绑、聚合投影）与对应的普通字段用例一一配对：
   同表、同列、同字节，只有 `note` 的成员类型从 `std::string` 换成以 `std::string`
-  为 `sql` 表示的域类型，故两者之差即扩展点的开销；该 converter 双向各拷一次字符串，
-  比字典式 enum 映射更贵，所以差值是上界。实体读回逐行核对 `from_db` 的结果，
-  避免"只测了行数、解码默默失败"的用例。
+  为 `sql` 表示的域类型，故两者之差即扩展点的开销；该 converter 读侧直接搬走暂存的
+  缓冲区，写侧仍拷一次（实体归调用方，不能被消费），故差值是扩展点剩下的净开销。
+  实体读回逐行核对 `from_db` 的结果，避免"只测了行数、解码默默失败"的用例。
   另含**纯 ODBC 基线**（不经 uniorm，直接操作句柄，只保留与 uniorm
   同名同形的用例）：单行 `VALUES (?, ?, ?, ?)` + `SQL_ATTR_PARAMSET_SIZE` +
   列方向量数组 + 逐值 `SQLBindParameter` 的批量插入/更新/删除（与 uniorm 的

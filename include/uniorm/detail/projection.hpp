@@ -278,7 +278,9 @@ private:
 
 // Binds a converter domain type as its sql representation and maps each
 // fetched row through from_db. Staging belongs to the inner binding, so the
-// row still lands with the copies a sql-typed field would have made.
+// row lands through the buffers a sql-typed field would have bound; the slot
+// moved out of is dead to this binding either way, so a decode that keeps its
+// buffer costs no more than that field's own value would have.
 template <class T>
 class converter_binding : public field_binding {
 public:
@@ -302,7 +304,7 @@ public:
     if (indicator(row_index) == backend::null_indicator) reject_null();
     inner_->finalize(row_index, &sql_);
     *reinterpret_cast<T*>(static_cast<char*>(entity) + offset_) =
-      converter<T>::from_db(sql_);
+      converter<T>::from_db(std::move(sql_));
   }
 
   // finalize() is fully overridden; the base path never reaches write().

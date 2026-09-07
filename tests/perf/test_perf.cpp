@@ -38,10 +38,10 @@ struct Bench {
   std::optional<std::string> note;
 };
 
-// A domain type whose representation is the column's own text. Copying the
-// string in both directions is the priciest converter a VARCHAR can have --
-// an enum with a fixed dictionary decodes for less -- so the delta below
-// between this and the plain field is an upper bound.
+// A domain type whose representation is the column's own text. to_db copies
+// because the entity it reads from belongs to the caller; from_db takes the
+// staged representation by value and keeps its buffer, which is the copy the
+// binding can hand over but only the converter can decide to take.
 struct BenchNote {
   std::string text;
 };
@@ -54,8 +54,8 @@ struct converter<BenchNote> {
     out = value.text;
   }
 
-  static BenchNote from_db(std::string const& v) {
-    return BenchNote{ v };
+  static BenchNote from_db(std::string v) {
+    return BenchNote{ std::move(v) };
   }
 };
 
@@ -458,17 +458,21 @@ std::vector<bench_result> run_benchmarks(
     std::exit(1);
   }
 
-  std::vector<BenchConv> conv_back;
+  std::size_t conv_read = 0;
   report("query entity all (converter field)", n,
     best_of(
-      [&] { conv_back = conv_registry.query().of<BenchConv>().all(); }, runs),
+      [&] {
+        conv_read = conv_registry.query().of<BenchConv>().all().size();
+      },
+      runs),
     runs, &results);
-  if (conv_back.size() != n) {
-    std::printf("FATAL: converter entity query returned %zu rows\n",
-      conv_back.size());
+  if (conv_read != n) {
+    std::printf("FATAL: converter entity query returned %zu rows\n", conv_read);
     std::exit(1);
   }
-  for (auto const& b : conv_back) {
+  // Untimed, and a read of its own: a decode that quietly produced nothing
+  // would still have counted n rows above.
+  for (auto const& b : conv_registry.query().of<BenchConv>().all()) {
     bool const written = b.id % 4 != 0;
     if (!b.note != !written ||
         (b.note && b.note->text != "note-" + std::to_string(b.id))) {

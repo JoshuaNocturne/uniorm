@@ -66,6 +66,16 @@ struct read_row {
   std::optional<status> note;
 };
 
+// Keeps the buffer the read staged rather than copying out of it, which only
+// works if the binding is done with that buffer.
+struct label {
+  std::string text;
+};
+
+struct label_row {
+  std::optional<label> note;
+};
+
 struct code_row {
   tagged tag;
 };
@@ -204,6 +214,19 @@ struct converter<money> {
 };
 
 template <>
+struct converter<label> {
+  using sql = std::string;
+
+  static void to_db(label const& value, std::string& out) {
+    out = value.text;
+  }
+
+  static label from_db(std::string&& v) {
+    return label{ std::move(v) };
+  }
+};
+
+template <>
 struct converter<tagged> {
   using sql = std::int16_t;
 
@@ -228,11 +251,13 @@ struct converter<half_wired> {
 }  // namespace uniorm
 
 void test_converter_projection();
+void test_converter_steal();
 void test_converter_column();
 
 void test_converter() {
   CHECK(has_converter<status>);
   CHECK(has_converter<money>);
+  CHECK(has_converter<label>);
   CHECK(!has_converter<int>);
   CHECK(!has_converter<std::string>);
   CHECK(!has_converter<plain_enum>);
@@ -264,6 +289,7 @@ void test_converter() {
   CHECK(std::get<std::string>(bound[0]) == "shipped");
 
   test_converter_projection();
+  test_converter_steal();
   test_converter_column();
 }
 
@@ -332,6 +358,31 @@ void test_converter_projection() {
   tight_proj.fill_into(wide, 0);
   CHECK(wide.state == status::shipped);
   CHECK(wide.note && *wide.note == status::paid);
+}
+
+void test_converter_steal() {
+  fake_statement stmt({ { "note", sql_type::varchar, 64, true } });
+  detail::projection<label_row> proj;
+  proj.set_row_array_size(2);
+  proj.bind(stmt);
+
+  std::string const long_label =
+    "long enough that a copy would have to allocate for it";
+  stmt.put_text(1, 0, long_label);
+  stmt.put_null(1, 1);
+  label_row first{};
+  proj.fill_into(first, 0);
+  CHECK(first.note && first.note->text == long_label);
+
+  label_row second{};
+  proj.fill_into(second, 1);
+  CHECK(!second.note.has_value());
+
+  // The decode took the slot's buffer, so the next row stages into an empty
+  // one -- reusing the binding is what makes that legal rather than lucky.
+  stmt.put_text(1, 1, "paid");
+  proj.fill_into(second, 1);
+  CHECK(second.note && second.note->text == "paid");
 }
 
 void test_converter_column() {

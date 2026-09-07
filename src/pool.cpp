@@ -20,6 +20,9 @@ struct pool_detail::shared_state {
   std::mutex mutex;
   std::condition_variable cv;
   std::vector<idle_entry> idle;
+  // Connections the maintainer has taken out of `idle` while their heartbeat
+  // is outstanding: still counted as idle, but not borrowable until it answers.
+  std::size_t under_maintenance = 0;
   std::size_t created = 0;
   std::atomic<unsigned long long> heartbeats{ 0 };
   bool maintained = false;  // registered with the global scheduler
@@ -48,29 +51,31 @@ struct pool_detail::shared_state {
     // (a heartbeat must not observe the pool mutex, e.g. via idle_count())
     std::vector<idle_entry> checking = std::move(idle);
     idle.clear();
+    under_maintenance = checking.size();
     lock.unlock();
 
     evicted.clear();  // disconnect outside the lock: can block on the server
 
-    std::vector<idle_entry> alive;
+    // One lock per verdict, credit and entry changing hands in it: batching
+    // these to the pass end would over-count dead and park live connections.
     for (auto& e : checking) {
+      bool alive = true;
       try {
         e.conn.execute(options.heartbeat_sql);
         ++heartbeats;
-        alive.push_back(std::move(e));
       } catch (...) {
-        // heartbeat failed: connection is considered dead and dropped
+        alive = false;  // heartbeat failed: connection is considered dead
       }
-    }
-
-    lock.lock();
-    std::size_t dead = checking.size() - alive.size();
-    created -= dead;
-    for (auto& e : alive) {
-      idle.push_back(std::move(e));
-    }
-    if (dead > 0) {
-      cv.notify_all();  // slots freed; waiters may create replacements
+      {
+        std::lock_guard relock(mutex);
+        if (alive) {
+          idle.push_back(std::move(e));
+        } else {
+          --created;
+        }
+        --under_maintenance;
+      }
+      cv.notify_all();
     }
   }
 };
@@ -254,7 +259,7 @@ std::size_t connection_pool::capacity() const {
 
 std::size_t connection_pool::idle_count() const {
   std::lock_guard lock(impl_->mutex);
-  return impl_->idle.size();
+  return impl_->idle.size() + impl_->under_maintenance;
 }
 
 unsigned long long connection_pool::heartbeats_executed() const {

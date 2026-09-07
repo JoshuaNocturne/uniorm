@@ -1054,9 +1054,18 @@ public:
   （`SQLDisconnect` 可能阻塞，不能持锁执行）
 - 其余空闲连接整体移出 `idle` 并在锁外逐个执行 `heartbeat_sql`（经
   `connection::execute`，因而走语句缓存）；执行失败视为连接已死，直接丢弃；
-  成功则带着原 `released_at` 放回（空闲时长跨心跳累计）
-- 丢弃会归还名额（`created--`）并 notify，等待者可触发懒创建
-- 心跳执行期间不持有池锁，`acquire/release/idle_count` 不被阻塞
+  成功则带着原 `released_at` 放回（空闲时长跨心跳累计）。被移出的条目计入
+  `under_maintenance`，`idle_count()` 报 `idle + under_maintenance`，故一次心跳不会
+  让读数短暂掉零；条目要等自己那次往返证明活着才回到 `idle`，在此之前取不走
+- 判定**逐条发布**：`--under_maintenance` 与放回 `idle` 在同一次临界区里完成，总数
+  不留空隙，所以已死连接只被多算它自己那次往返，先判活的能立刻被中途到达的
+  `acquire()` 借走。攒到 pass 收尾再发布的话，池满时借用方要干等
+  `acquire_timeout`（实测最坏 1000 ms；逐条发布后 0.88–1.19 ms）
+- 每条判定后 notify 一次，无论活死：回到 `idle` 的幸存者和归还的名额一样，都是
+  某个等待者在等的东西
+- 丢弃会归还名额（`created--`），等待者可触发懒创建
+- 心跳执行期间不持有池锁，`acquire/release/idle_count` 不被阻塞；逐条发布等于
+  pass 里多 N 次加解锁，换来的是上面那笔等待
 - 调度循环按各池 `next_tick` 最早截止时间等待；池析构即注销，
   `weak_ptr` 失效保证维护过程不会触及已销毁的池
 
@@ -1350,7 +1359,7 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
 - **集成测试**（已实现，DSN/凭据由 `UNIORM_IT_DSN` / `UNIORM_IT_USER` / `UNIORM_IT_PWD` 指定，凭据以 `UID`/`PWD` 写进连接串；连不上时 ctest SKIP）：execute/params 往返、动态行（含 `connection::execute` 显式块取行大小 0 退回逐行）、聚合投影（含长字符串与 timestamp）、converter 往返（批量插入、实体物化含 NULL、
 `in` 谓词、投影、构建器 `set`/批量 update、动态行 `get<T>`）、orm validate（含 strict
 的列缺失/可空/类型族三条失败路径）、查询构建器全谓词与分页、事务 commit/rollback/析构回滚、批量插入（含空 optional 写 NULL、1500 行跨 `paramset_size` 分批）、批量 update / 批量 remove（实体版按主键与全字段两种 WHERE，含一张复合主键表验证单实体与批量都按全部键列命中、非键行不被牵连，动态版 `orm::update(table)` / `orm::remove(table)`，以及 `query<T>::set/update/remove` 与无 WHERE / 无 SET / WHERE 字段未映射的守卫抛错）、语句缓存（hit/miss 计数、流式 result_set 借出期间并发 miss、清空）、跨层错误上报（驱动失败以 `backend_error` 捕获，核对 `backend_name()`
-与 SQLSTATE 诊断）、连接池借还与超时、连接池维护（心跳保活计数、空闲超时驱逐、失败心跳丢弃）；后续按库加条件标签覆盖方言与类型怪癖；
+与 SQLSTATE 诊断）、连接池借还与超时、连接池维护（心跳保活计数、空闲超时驱逐、失败心跳丢弃；"排空"一律轮询等待而非单次采样，因为正被心跳的连接仍计入 `idle_count()`）；后续按库加条件标签覆盖方言与类型怪癖；
 - **性能基准**（已实现，ctest 标签 `perf`，`tests/perf/test_perf.cpp`）：
   连不上库时 SKIP；行数由 `UNIORM_PERF_ROWS` 指定（默认 10000）。
   覆盖批量 insert/update/delete 吞吐，以及三条查询物化路径的对比：实体直绑

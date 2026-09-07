@@ -90,6 +90,8 @@ public:
 
   pooled_connection acquire();  // throws pool_timeout after acquire_timeout
   std::size_t capacity() const;
+  // Idle connections the pool holds. One with a heartbeat still out counts,
+  // since the pool cannot know it is dead, but is not handed out until it is.
   std::size_t idle_count() const;
   // Successful heartbeat statements executed by the maintainer so far.
   unsigned long long heartbeats_executed() const;

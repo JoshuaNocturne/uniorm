@@ -889,6 +889,18 @@ void test_pool(std::string const& conn_string) {
   CHECK(c.is_open());
 }
 
+// Only a maintenance pass retires a connection, so an emptied idle list is a
+// state to wait for rather than a value to sample once.
+bool idle_empties(connection_pool const& pool) {
+  for (int i = 0; i < 200; ++i) {
+    if (pool.idle_count() == 0) {
+      return true;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  return false;
+}
+
 void test_pool_maintenance(std::string const& conn_string) {
   using namespace std::chrono_literals;
   {
@@ -908,8 +920,16 @@ void test_pool_maintenance(std::string const& conn_string) {
     std::this_thread::sleep_for(300ms);
     CHECK(pool.heartbeats_executed() >= 1);  // maintainer ran the heartbeat
     CHECK(pool.idle_count() == 1);  // and kept the connection alive
+    // The connection being heartbeated is still in the pool, so the count must
+    // hold at 1; a single sample lands inside a pass ~1 time in 75.
+    bool steady = true;
+    auto until = std::chrono::steady_clock::now() + 200ms;
+    while (std::chrono::steady_clock::now() < until) {
+      steady = steady && pool.idle_count() != 0;
+    }
+    CHECK(steady);
     std::this_thread::sleep_for(2500ms);  // now idle beyond max_idle_time
-    CHECK(pool.idle_count() == 0);
+    CHECK(idle_empties(pool));
 
     pooled_connection again = pool.acquire();  // lazily recreated
     CHECK(bool(again));
@@ -932,7 +952,7 @@ void test_pool_maintenance(std::string const& conn_string) {
     }
     CHECK(pool.idle_count() == 1);
     std::this_thread::sleep_for(300ms);
-    CHECK(pool.idle_count() == 0);
+    CHECK(idle_empties(pool));
   }
   {
     // Two live pools are serviced by the same global scheduler thread.
@@ -954,6 +974,30 @@ void test_pool_maintenance(std::string const& conn_string) {
     CHECK(b.heartbeats_executed() >= 1);
     CHECK(a.idle_count() == 1);
     CHECK(b.idle_count() == 1);
+  }
+  {
+    // The count must hold at n while the maintainer publishes its verdicts one
+    // at a time: a gap between credit and entry shows up as a dip here.
+    constexpr std::size_t n = 4;
+    pool_options opts;
+    opts.connection_string = conn_string;
+    opts.size = n;
+    opts.acquire_timeout = 1000ms;
+    opts.heartbeat_interval = 20ms;  // so the sample crosses many passes
+    opts.max_idle_time = 10000ms;    // only a failed heartbeat may drop one
+    connection_pool pool(std::move(opts));
+    {
+      std::vector<pooled_connection> held;
+      for (std::size_t i = 0; i < n; ++i) {
+        held.push_back(pool.acquire());
+      }
+    }
+    bool intact = true;
+    auto until = std::chrono::steady_clock::now() + 300ms;
+    while (std::chrono::steady_clock::now() < until) {
+      intact = intact && pool.idle_count() == n;
+    }
+    CHECK(intact);
   }
 }
 

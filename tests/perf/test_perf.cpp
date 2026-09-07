@@ -39,22 +39,21 @@ struct Bench {
 };
 
 // A domain type whose representation is the column's own text. to_db copies
-// because the entity it reads from belongs to the caller; from_db takes the
-// staged representation by value and keeps its buffer, which is the copy the
-// binding can hand over but only the converter can decide to take.
+// because the entity it reads from belongs to the caller; from_db steals the
+// buffer the binding staged, which only the converter can decide to do.
 struct BenchNote {
   std::string text;
 };
 
 template <>
 struct converter<BenchNote> {
-  using sql = std::string;
+  using db_type = std::string;
 
   static void to_db(BenchNote const& value, std::string& out) {
     out = value.text;
   }
 
-  static BenchNote from_db(std::string v) {
+  static BenchNote from_db(std::string&& v) {
     return BenchNote{ std::move(v) };
   }
 };

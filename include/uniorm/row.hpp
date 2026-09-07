@@ -107,7 +107,7 @@ T value_cast(sql_value const& v) {
       return std::nullopt;
     return T{ value_cast<typename T::value_type>(v) };
   } else if constexpr (has_converter<T>) {
-    return converter<T>::from_db(value_cast<detail::converter_sql<T>>(v));
+    return converter<T>::from_db(value_cast<detail::converter_db_type<T>>(v));
   } else {
     static_assert(
       std::is_same_v<T, T> && false, "unsupported value_cast target type");

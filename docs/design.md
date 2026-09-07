@@ -53,7 +53,7 @@ uniorm 是一个基于 **ODBC**（而非各数据库专有 C 客户端）的现�
    `sql_type::decimal` 归入 `slot_kind::floating`（`src/result_set.cpp`），以
    `buffer_type::float64` → `SQL_C_DOUBLE` 绑定，即动态行取到的 DECIMAL 是
    `double`，**不无损**；无损只发生在实体/投影侧——字段声明为 `std::string`，或声明为
-   以 `std::string` 为 `sql` 表示的 converter 类型（§4.4），都按 `SQL_C_CHAR` 直绑。
+   以 `std::string` 为 `db_type` 表示的 converter 类型（§4.4），都按 `SQL_C_CHAR` 直绑。
    `decimal_t` 别名不存在；`UNIORM_DECIMAL_AS_STRING` 被
    CMake 定义但代码中零引用（`UNIORM_DECIMAL_AS_DOUBLE` 仅在 `uniorm-gen` 的默认
    类型映射里被 `#ifdef`），所以 `UNIORM_DECIMAL_DEFAULT` 目前只改变生成物、
@@ -366,7 +366,7 @@ ODBC adapter 内翻成 `SQL_C_*`；`uniorm-gen` 的默认映射决定生成实�
    完全绕过该开关，一律 `SQL_C_DOUBLE`。因此"默认无损"只在成员/字段声明为
    `std::string` 时成立（见已知缺口）；
 2. **逐列覆写**：任一列可通过 `converter<C>` 特化（§4.4）映射到自定义类型（含
-   `double` / `std::string` / 第三方 decimal 类），其 `sql` 为 `std::string` 时即
+   `double` / `std::string` / 第三方 decimal 类），其 `db_type` 为 `std::string` 时即
    无损；`uniorm-gen` 侧的入口是 `converter = "..."`（§6.4），生成的成员就是该域
    类型，头文件以 `static_assert(uniorm::has_converter<C>)` 要求特化存在。`cpp_type`
    （含 `[types]` 全局覆写）仍限于本节的可绑定集合。
@@ -376,23 +376,25 @@ ODBC adapter 内翻成 `SQL_C_*`；`uniorm-gen` 的默认映射决定生成实�
 
 ### 4.4 Converter（自定义类型扩展点）
 
-一个域类型只有一种数据库表示：`converter<Cpp>` 以嵌套 `sql` 命名它，`to_db` /
-`from_db` 负责双向换算。同一域类型需要在两列上表示不同时，那是 schema 差异，解法
-是引入两个不同的 C++ 类型，而不是第二个特化。
+一个域类型只有一种数据库表示：`converter<T>` 以嵌套 `db_type` 命名该表示，`to_db` /
+`from_db` 负责双向换算。这两个名字都沿用既有词汇：形参就叫 `T`（库内命名，不叫 `Cpp`
+——表示本身也是 C++ 类型，要分开的是两侧的类型，不是"是不是 C++"），别名不叫 `sql`
+（本库里 `sql` 到处指渲染出的语句文本，会被读成"该类型的 SQL 文本"）。同一域类型需要
+在两列上表示不同时，那是 schema 差异，解法是引入两个不同的域类型，而不是第二个特化。
 
 ```cpp
 namespace uniorm {
 
-template <class Cpp>
-struct converter {};                   // 用户特化：sql / to_db / from_db
+template <class T>
+struct converter {};                   // 用户特化：db_type / to_db / from_db
 
-template <class Cpp>
+template <class T>
 concept has_converter = /* 三者齐备 */;  // 缺任一项即视为无 converter
 
 // 示例：enum ↔ 字符串
 template <>
 struct converter<Status> {
-    using sql = std::string;
+    using db_type = std::string;
     static void to_db(Status const& s, std::string& out);
     static Status from_db(std::string const& v);
 };
@@ -404,9 +406,12 @@ struct converter<Status> {
 会让每次批量写入按行分配一次。它必须覆盖槽位，不能追加。
 
 `from_db` 收到的是右值——调用方已经用完那个槽位。以带缓冲区的类型（如 `std::string`）
-为表示的 converter 因此可以直接搬走它，而不是再拷一份；仍写 `sql const&` 的特化照样
-满足 `has_converter`，代价就是那次拷贝，只有 `sql&` 形式会被拒。上例写 `const&` 是因为
-enum 解码根本没有缓冲区可搬。
+为表示的 converter 因此可以直接搬走它，而不是再拷一份；仍写 `db_type const&` 的特化
+照样满足 `has_converter`，代价就是那次拷贝，只有 `db_type&` 形式会被拒。两种搬走的
+写法不等价：形参写 `db_type&&` 比按值 `db_type` 少一次移动（按值形参本身就是先把槽位
+移动一遍才开始解码），10000 行投影的配对测量里它稳定更便宜，每个被转换的文本列省数十
+ns/row——该测量跨会话有约 ±20 ns/row 的漂移，所以这个数只当量级看。上例写 `const&`
+是因为 enum 解码根本没有缓冲区可搬。
 
 `has_converter` 的每个引用点，即该扩展点的接线范围：
 
@@ -415,18 +420,18 @@ enum 解码根本没有缓冲区可搬。
   查询构建器的比较值、`column_meta::read` 都走这一处；`row::get<T>`（`value_cast`，
   `row.hpp`）对称地用 `from_db` 解码；
 - **读侧绑定** `detail::make_field_binding`（`detail/projection.hpp`）：
-  `converter_binding` 按 `sql` 绑 C 缓冲区，取到行后才 `from_db` 解码进字段——决定
+  `converter_binding` 按 `db_type` 绑 C 缓冲区，取到行后才 `from_db` 解码进字段——决定
   缓冲区的是表示，域类型本身不额外占一次拷贝；交出的槽位对本绑定已是死物，被搬走的话
-  下一行重新暂存，那正是一个 `sql` 类型字段本身也要付的分配次数。NULL 判定委托内层绑定
+  下一行重新暂存，那正是一个 `db_type` 类型字段本身也要付的分配次数。NULL 判定委托内层绑定
   （`indicator()` 是虚函数，组合绑定自己那张 indicator 数组不会被驱动写过）；
 - **实体注册**（`mapping/registry.hpp`）：`readable_member` 接受带 converter 的成员，
-  `column_meta::buffer_type` 与 `column_meta::accepted_types` 均由 `sql` 推出；
+  `column_meta::buffer_type` 与 `column_meta::accepted_types` 均由 `db_type` 推出；
 - **批量写入** `columnar_batch_write`（`src/orm.cpp`）：表示先 `to_db` 再落进参数
   缓冲区，与普通成员走同一趟 memcpy。变长列的宽度预扫描量不出未编码的值，故每个
   converter 列在预扫描阶段多一次 `to_db`；
 - **schema 校验** `orm::validate(strict)`：按 §4.3 的表比对列类型族。
 
-`sql` 本身必须是 §4.3 可绑定集合里的类型，否则 `member_buffer_type` 的
+`db_type` 本身必须是 §4.3 可绑定集合里的类型，否则 `member_buffer_type` 的
 `static_assert` 在注册点即报错，不会退化成按文本绑定的错值。
 
 ### 4.5 语句与结果集
@@ -1354,7 +1359,7 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
   单行延迟。每项取 best-of-3，输出耗时与 krows/s。
   converter 三例（批量插入、实体直绑、聚合投影）与对应的普通字段用例一一配对：
   同表、同列、同字节，只有 `note` 的成员类型从 `std::string` 换成以 `std::string`
-  为 `sql` 表示的域类型，故两者之差即扩展点的开销；该 converter 读侧直接搬走暂存的
+  为 `db_type` 表示的域类型，故两者之差即扩展点的开销；该 converter 读侧直接搬走暂存的
   缓冲区，写侧仍拷一次（实体归调用方，不能被消费），故差值是扩展点剩下的净开销。
   实体读回逐行核对 `from_db` 的结果，避免"只测了行数、解码默默失败"的用例。
   另含**纯 ODBC 基线**（不经 uniorm，直接操作句柄，只保留与 uniorm

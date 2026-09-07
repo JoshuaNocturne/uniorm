@@ -276,11 +276,11 @@ private:
   std::unique_ptr<field_binding> inner_;
 };
 
-// Binds a converter domain type as its sql representation and maps each
-// fetched row through from_db. Staging belongs to the inner binding, so the
-// row lands through the buffers a sql-typed field would have bound; the slot
-// moved out of is dead to this binding either way, so a decode that keeps its
-// buffer costs no more than that field's own value would have.
+// Binds a converter domain type as its db_type and maps each fetched row
+// through from_db. Staging belongs to the inner binding, so the row lands
+// through the buffers a field of that db_type would have bound; the slot moved
+// out of is dead to this binding either way, so a decode that keeps its buffer
+// costs no more than that field's own value would have.
 template <class T>
 class converter_binding : public field_binding {
 public:
@@ -289,7 +289,7 @@ public:
   }
 
   void bind(backend::statement_iface& stmt, std::size_t column) override {
-    inner_ = make_field_binding(sql_, &sql_);
+    inner_ = make_field_binding(slot_, &slot_);
     inner_->set_row_array_size(row_array_size_);
     inner_->bind(stmt, column);
   }
@@ -302,16 +302,16 @@ public:
 
   void finalize(std::size_t row_index, void* entity) override {
     if (indicator(row_index) == backend::null_indicator) reject_null();
-    inner_->finalize(row_index, &sql_);
+    inner_->finalize(row_index, &slot_);
     *reinterpret_cast<T*>(static_cast<char*>(entity) + offset_) =
-      converter<T>::from_db(std::move(sql_));
+      converter<T>::from_db(std::move(slot_));
   }
 
   // finalize() is fully overridden; the base path never reaches write().
   void write(std::size_t, void*) override {}
 
 private:
-  converter_sql<T> sql_{};
+  converter_db_type<T> slot_{};
   std::unique_ptr<field_binding> inner_;
 };
 

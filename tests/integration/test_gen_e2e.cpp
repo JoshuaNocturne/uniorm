@@ -22,13 +22,13 @@
 // The macros expand to quoted string literals provided by CMake.
 
 // The domain type the override file names. A generated header reaches a
-// converter-backed member through uniorm::converter<Domain>, so the
+// converter-backed member through uniorm::converter<T>, so the
 // specialization has to be declared before the header is included.
 enum class order_state { unpaid, paid, shipped };
 
 template <>
 struct uniorm::converter<order_state> {
-  using sql = std::string;
+  using db_type = std::string;
 
   static void to_db(order_state const& s, std::string& out) {
     if (s == order_state::paid) {

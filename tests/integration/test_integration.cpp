@@ -53,7 +53,7 @@ struct Order {
 
 template <>
 struct converter<grade> {
-  using sql = std::string;
+  using db_type = std::string;
 
   static void to_db(grade const& g, std::string& out) {
     if (g == grade::silver)

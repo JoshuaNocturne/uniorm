@@ -32,9 +32,9 @@ sql_value make_sql_value(T&& v) {
                        std::is_same_v<U, timestamp>) {
     return sql_value(std::forward<T>(v));
   } else if constexpr (has_converter<U>) {
-    typename converter<U>::sql sql{};
-    converter<U>::to_db(v, sql);
-    return make_sql_value(std::move(sql));
+    typename converter<U>::db_type encoded{};
+    converter<U>::to_db(v, encoded);
+    return make_sql_value(std::move(encoded));
   } else if constexpr (std::is_integral_v<U>) {
     if constexpr (sizeof(U) <= sizeof(std::int32_t)) {
       if constexpr (std::is_signed_v<U>) {

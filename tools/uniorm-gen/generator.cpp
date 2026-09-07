@@ -139,7 +139,7 @@ struct member_info {
   std::string cpp_type;
   column_model const* col;
   // The member type is a domain type the registry reaches through
-  // uniorm::converter<Domain>, so nothing here can check what it binds.
+  // uniorm::converter<T>, so nothing here can check what it binds.
   bool through_converter = false;
 };
 

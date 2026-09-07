@@ -53,8 +53,8 @@ struct record {
   status state;
 };
 
-// Declared with only sql and to_db: detection must reject it rather than fail
-// hard, so a forgotten from_db surfaces as "unsupported type" downstream.
+// Declared with only db_type and to_db: detection must reject it rather than
+// fail hard, so a forgotten from_db surfaces downstream as "unsupported type".
 struct half_wired {
   int value;
 };
@@ -179,7 +179,7 @@ namespace uniorm {
 
 template <>
 struct converter<status> {
-  using sql = std::string;
+  using db_type = std::string;
 
   static void to_db(status const& s, std::string& out) {
     if (s == status::paid)
@@ -201,7 +201,7 @@ struct converter<status> {
 
 template <>
 struct converter<money> {
-  using sql = std::string;
+  using db_type = std::string;
 
   static void to_db(money const& m, std::string& out) {
     out = std::to_string(m.units) + "." + std::to_string(m.micros);
@@ -215,7 +215,7 @@ struct converter<money> {
 
 template <>
 struct converter<label> {
-  using sql = std::string;
+  using db_type = std::string;
 
   static void to_db(label const& value, std::string& out) {
     out = value.text;
@@ -228,7 +228,7 @@ struct converter<label> {
 
 template <>
 struct converter<tagged> {
-  using sql = std::int16_t;
+  using db_type = std::int16_t;
 
   static void to_db(tagged const& t, std::int16_t& out) {
     out = static_cast<std::int16_t>(t.code);
@@ -241,7 +241,7 @@ struct converter<tagged> {
 
 template <>
 struct converter<half_wired> {
-  using sql = std::string;
+  using db_type = std::string;
 
   static void to_db(half_wired const&, std::string& out) {
     out = "incomplete";

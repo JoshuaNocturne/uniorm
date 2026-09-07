@@ -133,7 +133,7 @@ void write_param(V const& value, std::size_t row, void* buffer,
   std::size_t stride, std::int64_t* indicators) {
   if constexpr (has_converter<std::remove_cvref_t<V>>) {
     using U = std::remove_cvref_t<V>;
-    converter_sql<U> encoded{};
+    converter_db_type<U> encoded{};
     converter<U>::to_db(value, encoded);
     stage_param(encoded, row, buffer, stride, indicators);
   } else {
@@ -147,7 +147,7 @@ template <class V>
 std::size_t encoded_param_size(V const& value) {
   if constexpr (has_converter<std::remove_cvref_t<V>>) {
     using U = std::remove_cvref_t<V>;
-    converter_sql<U> encoded{};
+    converter_db_type<U> encoded{};
     converter<U>::to_db(value, encoded);
     return param_size(encoded);
   } else {
@@ -162,7 +162,7 @@ constexpr backend::buffer_type member_buffer_type() {
   if constexpr (is_optional_v<M>) {
     return member_buffer_type<typename M::value_type>();
   } else if constexpr (has_converter<U>) {
-    return member_buffer_type<converter_sql<U>>();
+    return member_buffer_type<converter_db_type<U>>();
   } else if constexpr (std::is_same_v<U, bool>) {
     return backend::buffer_type::bit;
   } else if constexpr (std::is_same_v<U, std::int8_t>) {
@@ -184,7 +184,7 @@ constexpr backend::buffer_type member_buffer_type() {
   } else {
     static_assert(
       std::is_same_v<U, U> && false,
-      "a converter's sql type must be one uniorm binds directly");
+      "member or converter db_type must be one uniorm binds directly");
     return backend::buffer_type::chars;
   }
 }
@@ -198,7 +198,7 @@ constexpr sql_type_set accepted_sql_types() {
   if constexpr (is_optional_v<M>) {
     return accepted_sql_types<typename M::value_type>();
   } else if constexpr (has_converter<U>) {
-    return accepted_sql_types<converter_sql<U>>();
+    return accepted_sql_types<converter_db_type<U>>();
   } else if constexpr (std::is_same_v<U, bool>) {
     return sql_type_bit(sql_type::boolean);
   } else if constexpr (std::is_same_v<U, std::int8_t> ||

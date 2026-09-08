@@ -36,21 +36,13 @@ uniorm 是一个基于 **ODBC**（而非各数据库专有 C 客户端）的现�
 
 以下条目在本文档中是设计契约，但代码只落地了一部分。列在此处而非埋在
 正文，是为了让"文档承诺 = 当前实现"这条约束成立（§3.1/§4.2/§4.3/§10
-已就地标注）。第 1 项是"声明未接线"；第 2 项的承诺（动态行无损）已兑现，
-只剩 `decimal_t` 未做。
+已就地标注）。只剩 DECIMAL 一条：它对外的承诺（动态行无损）已兑现，
+未做的只有 `decimal_t` 那一层解析。
 
-另有三处较小的偏差体量不足以单列，直接在正文就地写实并进了 §9：池归还连接时
-不清理事务/autocommit 状态（§4.9）、"不碰 ODBC"只到链接行为止（§5.1）、
-`capabilities` 只有一个标志被读且 `capability_not_supported` 无抛出点（§5.2）。
+另有一处较小的偏差体量不足以单列，直接在正文就地写实并进了 §9："不碰 ODBC"
+只到链接行为止（§5.1）。
 
-1. **ODBC 宽字符路径未使用**（§4.2）：`src/unicode.hpp` 的
-   `utf8_to_utf16` / `utf16_to_utf8` 已实现且被单测覆盖（含非法输入），
-   但库内零调用者——字符串的绑定与参数路径一律 `SQL_C_CHAR` / `SQL_VARCHAR`，
-   `SQLWCHAR` 与 `SQL_C_WCHAR` 不出现在任何绑定代码里（`unicode.hpp`
-   自己的注释除外）。宽 SQL 类型（WVARCHAR 等）的实际读取依赖
-   驱动侧字符集转换，库本身不做 UTF-16 → UTF-8。
-
-2. **DECIMAL 的动态路径**（§4.3）：`result_set`/`row` 现把 `sql_type::decimal`
+1. **DECIMAL 的动态路径**（§4.3）：`result_set`/`row` 现把 `sql_type::decimal`
    归入 `slot_kind::text`（`src/result_set.cpp`），以 `SQL_C_CHAR` 绑定，动态行取到
    驱动给出的**精确定点字面量**（含 scale，如 `0.1000`），不再经 `SQL_C_DOUBLE`
    舍入。`value_cast` 按需把字面量解析回算术目标：`get<double>` 仍可用（解析后仍受
@@ -65,7 +57,8 @@ uniorm 是一个基于 **ODBC**（而非各数据库专有 C 客户端）的现�
    库代码从不读它，只有 `uniorm-gen` 的默认映射读，而那个默认现在恒为无损一侧，
    要 `double` 走生成器配置的 `[types]` / `cpp_type`，见 §4.3/§6.4。）
 
-第 1 项与第 2 项的剩余部分（`decimal_t`）已进 §9 路线图。
+DECIMAL 条的剩余部分（`decimal_t`）已进 §9 路线图。本节原先还有一条"ODBC 宽字符
+路径未使用"，已按它自己写下的处置意见了结：确认不做，删掉零调用者的实现（§4.2）。
 
 ### 基础决策
 
@@ -75,7 +68,7 @@ uniorm 是一个基于 **ODBC**（而非各数据库专有 C 客户端）的现�
 | 接口风格 | 纯同步 |
 | 平台 | Linux（unixODBC）、Windows（原生 ODBC） |
 | 错误处理 | 异常 |
-| Unicode | 内部一律 UTF-8；v1 只做窄字符绑定，ODBC 边界的 UTF-16 转换未接线（见已知缺口） |
+| Unicode | 内部一律 UTF-8；只做窄字符绑定（`SQL_C_CHAR`），编码转换留在驱动侧（§4.2） |
 | 库形态 | 动态库（`libuniorm.so` / `uniorm.dll`），经 `UNIORM_API` 导出宏控制符号可见性；模板密集代码（mapping/builder/projection/pfr）保留在头文件 |
 
 ## 2. 分层架构
@@ -136,7 +129,6 @@ uniorm/
 │       ├── builder.hpp          # query_gateway / query<T> / update_builder / remove_builder
 │       └── expression.hpp       # member_key / predicate / 谓词构造器
 ├── src/                         # 对应实现（编译进 libuniorm）；私有头贴着 .cpp 存放
-│   ├── unicode.hpp              # UTF-8 ↔ UTF-16（已实现，v1 无库内调用者，见已知缺口）
 │   ├── orm_mapping.hpp          # 实体写的 WHERE 解析与 SET/WHERE 列划分（纯映射规则）
 │   ├── statement_cache.hpp      # LRU 预编译语句缓存（存 statement_iface，容量固定 64）
 │   ├── backend/                 # scheme 解析与注册表实现
@@ -154,10 +146,13 @@ uniorm/
 │   └── schema_model.hpp         # 中间 schema 模型（生成器输入）
 ├── tests/
 │   ├── unit/                    # 无库依赖：check.hpp（CHECK/CHECK_THROWS）+
-│   │                            # uniorm_unit_tests（不链 ODBC）与
+│   │                            # uniorm_unit_tests（不链 ODBC，含 fake backend 的
+│   │                            # test_pool.cpp）与
 │   │                            # uniorm_odbc_unit_tests（句柄 RAII、错误派生、uniorm-gen）
 │   ├── integration/             # 需活连接：test_integration.cpp、test_gen_e2e.cpp
 │   │                            # 与 golden/gen_it_schema.hpp（生成物快照）
+│   ├── install/                 # 外部消费者工程（install_smoke 用它走 find_package）
+│   ├── install_smoke.cmake.in   # 安装面冒烟脚本（cmake -P）
 │   └── perf/                    # test_perf.cpp（ctest 标签 perf）
 ├── docs/design.md
 ├── README.md / README.zh.md     # 双语入口文档
@@ -186,8 +181,10 @@ uniorm/
 | `<libdir>/cmake/uniorm/` | `uniormConfig.cmake`、`uniormConfigVersion.cmake`、`uniormTargets.cmake` 与 `uniormTargets-<config>.cmake` |
 | `<bindir>/uniorm-gen` | 代码生成 CLI；仅 `UNIORM_BUILD_TOOLS=ON` 时安装（`UNIORM_BACKEND_ODBC=OFF` 时该选项被 CMake 直接拦下） |
 
-消费者 `find_package(uniorm REQUIRED CONFIG)` 后链接 `uniorm::uniorm`，include 路径
-由导出目标携带。四条约定：
+消费者 `find_package(uniorm REQUIRED CONFIG)` 后链接 `uniorm::uniorm`，include 路径与
+C++20 标准都由导出目标携带：公开头自己就要用 `concept` 和 `remove_cvref_t`，而
+`CMAKE_CXX_STANDARD` 只作用于本工程，所以 `cxx_std_20` 走 `PUBLIC` 编译特性而不是留给
+消费者猜。四条约定：
 
 - 安装块整体包在 `if(PROJECT_IS_TOP_LEVEL)` 里：`add_subdirectory` / FetchContent
   集成只拿到目标，不会把本项目的安装规则带进宿主的 `install`；
@@ -206,6 +203,11 @@ uniorm/
 /usr/local` 能打到暂存根再整体搬迁（实测装出来的 4 个 CMake 文件里既无 stage 也
 无 prefix 的字面量）。暂存根下的 `uniorm-gen` 也能直接跑起来——`$ORIGIN` 相对路径
 要买的就是这一点。
+
+上面这些如今由 `install_smoke`（§8）把关：装进构建树下的临时 prefix，比对装出来的
+头文件集合与 `include/` 一致，用一个刻意不设 `CMAKE_CXX_STANDARD` 的外部工程
+`find_package` + 编译 + 运行，再故意以 `99.0.0` 配置一次要求被拒，最后跑装出来的
+`uniorm-gen --help` 证明 `$ORIGIN/../<libdir>` 真的载到了同 prefix 的库。
 
 ## 4. 核心模块设计
 
@@ -285,9 +287,8 @@ class statement {                      // SQLHSTMT，move-only
 关键实现细节：
 
 - indicator buffer 一律用 `SQLLEN`，规避 32/64 位截断问题；
-- 字符串列与参数一律按窄字符绑定（`SQL_C_CHAR` / `SQL_VARCHAR`）；宽字符绑定路径
-  未实现，WVARCHAR 等宽 SQL 类型只能指望驱动自己的窄字符转换（无测试覆盖），
-  见"已知缺口"；
+- 字符串列与参数一律按窄字符绑定（`SQL_C_CHAR` / `SQL_VARCHAR`），库内不做编码
+  转换；WVARCHAR 等宽 SQL 类型能取到值，是驱动自己做了字符集转换（策略见 §4.2）；
 - 长数据（长 VARCHAR / BLOB）v1 策略：绑定固定缓冲，截断（indicator 为负——`SQL_NO_TOTAL` 或 `SQL_NTS`——或超出缓冲）时经 `SQLGetData` 循环重取**完整值**整体替换——MariaDB Connector/ODBC 在截断续读时返回的是全量值而非剩余部分，追加式拼接会重复计数据；
 - 实际设置的 ODBC 属性全集：`SQL_ATTR_ODBC_VERSION`（先试 `SQL_OV_ODBC3_80`，
   失败回退 `SQL_OV_ODBC3`）、`SQL_ATTR_AUTOCOMMIT`、`SQL_ATTR_ROW_ARRAY_SIZE`、
@@ -299,18 +300,24 @@ class statement {                      // SQLHSTMT，move-only
 
 ### 4.2 Unicode 策略
 
-设计意图：
-
 - 库内部所有 `std::string` / `string_view` 均为 UTF-8；
-- 宽字符 API（`SQLWCHAR`，UTF-16）仅在两种场景使用：驱动只支持宽字符的列/参数、Windows 下的 DSN 连接串；
-- 转换集中在 `src/unicode.hpp`：`utf8_to_utf16` / `utf16_to_utf8`，边界处一次性完成；
-- 列读取默认尝试 `SQL_C_CHAR`，驱动拒绝或数据含非 BMP 字符时回退宽字符路径（由实现细节处理，不暴露给用户）。
+- ODBC 边界一律窄字符：列与参数按 `SQL_C_CHAR` / `SQL_VARCHAR` 绑定，连接串按
+  `SQLDriverConnect` / `SQLConnect` 的窄接口提交，库内不做任何编码转换；
+- 于是"边界上的字节就是 UTF-8"这一前提由驱动与驱动管理器的字符集设置兜住
+  （unixODBC 会按应用 locale 做 iconv 转换，MariaDB Connector/ODBC 按连接字符集
+  输出）。locale 或驱动字符集不是 UTF-8 时，非 ASCII 数据就会错位——这是本策略的
+  前提，库无从自查，也不打算自查。
 
-v1 实现状态：只有 UTF-8 这一条内部约定成立。后三条尚未接线——字符串的绑定与取值
-路径一律 `SQL_C_CHAR`，`unicode.hpp` 的两个函数在库内零调用者（仅被
-`test_unicode` 覆盖往返与非法输入），因此"宽字符回退"与"Windows DSN 宽字符连接串"
-都还是设计而非行为。宽 SQL 类型若可用，功劳在驱动的字符集转换而非库；且这一路径
-无测试覆盖。补齐属 §9 项，见"已知缺口"。
+曾经存在过一条宽字符路径：`src/unicode.hpp` 的 `utf8_to_utf16` / `utf16_to_utf8`
+与公开类型 `unicode_error`。它们从落地起就没有库内调用者——没有任何一处绑定会
+用到 UTF-16，也没有任何一处能验证它们；设想中"驱动拒绝 `SQL_C_CHAR` 时回退宽
+字符"更是从来没有判定点。零调用者的实现留着，只会让文档与代码互相印证出一个不
+存在的特性，故连唯一会抛出它们的 `unicode_error` 一并删除。
+
+重新引入的触发条件：出现一个只暴露宽字符的 backend（Windows 上某些只支持 Unicode
+驱动的 SQL Server 部署是典型例子）。届时需要一并带回三样东西——转换函数本身、
+`SQL_C_WCHAR` 绑定路径，以及一个确实能观察到窄字符请求被拒或数据丢字的判定点；
+少最后一样，就又只是一份没人调用的实现。
 
 ### 4.3 类型系统
 
@@ -368,7 +375,7 @@ ODBC adapter 内翻成 `SQL_C_*`；`uniorm-gen` 的默认映射决定生成实�
    实体/投影侧因此也按 `SQL_C_CHAR` 直绑。这个默认曾经可配（CMake 选项
    `UNIORM_DECIMAL_DEFAULT`，`string` / `double`），但库代码从不读它派生的宏，
    只有生成器的默认映射读，一个"只改生成物"的构建期旋钮不足以承担配置项的名义，
-   故已删除；`decimal_t` 别名不存在（见已知缺口第 2 项）；
+   故已删除；`decimal_t` 别名不存在（见已知缺口的 DECIMAL 条）；
 2. **逐列覆写**：要 `double` 或第三方 decimal 类，走生成器配置的 `cpp_type` /
    `[types]`（§6.4，取值限于本节的可绑定集合），或 `converter<C>` 特化（§4.4）——
    其 `db_type` 为 `std::string` 时即无损；`uniorm-gen` 侧的入口是
@@ -514,10 +521,10 @@ class connection {
 
     // 事务控制（见 §4.9）
     transaction begin();
-    void set_autocommit(bool enabled);   // 关掉即进入事务；打开会提交挂起的工作
+    void set_autocommit(bool enabled);   // 关即进入手动提交模式；打开会提交挂起的工作
     void commit();
     void rollback();
-    bool in_transaction() const noexcept;   // autocommit 已关即为 true
+    bool autocommit() const noexcept;   // set_autocommit 最后一次设进去的模式
 
     // 语句缓存原语：取出已 prepare 的语句 / 按 key 归还（内部由 execute 路径使用）
     std::unique_ptr<backend::statement_iface> acquire_statement(std::string const& sql);
@@ -782,7 +789,7 @@ std::string_view>)` 与动态表名版区分；无主键又没给 `where_fields`
 `auto_commit`）、`find` / `size` 与 `native_connection` 都定义在 `src/orm.cpp`，
 头文件里只剩下声明、两个 `default_*` 常量，以及必须由调用方实例化的模板。写路径
 因此并未变慢：批量入口读的是 `paramset_size_` 成员本身，是否自开事务看
-`connection::in_transaction()`（一个缓存的 bool），每行一次的循环里没有新增
+`connection::autocommit()`（一个缓存的提交模式），每行一次的循环里没有新增
 任何跨库调用。
 
 成员指针的类型擦除：注册时经 `make_column_meta` 捕获 `write` 闭包
@@ -964,39 +971,40 @@ public:
 
 transaction connection::begin();       // 等价于 transaction(conn)
 transaction orm::begin();              // ensure_connected() 后转发到内部连接
-bool connection::in_transaction() const noexcept;   // autocommit 已关即为 true
+bool connection::autocommit() const noexcept;   // set_autocommit 最后一次设进去的模式
 ```
 
 `orm` 另有 `commit()` / `rollback()` 直通底层连接（不产生 `transaction` 对象，
 即不接管 autocommit 的恢复）；`orm::auto_commit(false)` 关的就是连接的
 autocommit 属性，所以此后该连接上的**每一条**写——单实体 `update`/`remove`、
 `execute`/`execute_update`、批量——都挂起到调用方 `commit()` 为止。切换这个属性
-本身就是一次连接属性设置：关掉即开启一个事务，打开则把挂起的工作交给驱动提交
-（ODBC 对该属性的规定，MariaDB ODBC 驱动实测如此）。
+本身就是一次连接属性设置：关掉只是进入手动提交模式，事务要等驱动在下一条语句处
+开启；打开则把挂起的工作交给驱动提交（ODBC 对该属性的规定，MariaDB ODBC 驱动实测如此）。
 
-批量写入口只看 `in_transaction()`：**连接已在手动提交模式就不自行
+批量写入口只看 `connection::autocommit()`：**连接已在手动提交模式就不自行
 begin/commit**，整批并入外层，由外层决定提交还是回滚；否则整批包进一个事务，
 结束提交。这一条不是可选项——`transaction::commit()` 落到的是连接级的
 `SQLTransact`，一次批量结束会把调用方尚未写完的事务一并提交掉。同理，
 `transaction` 只恢复**自己**改动过的提交模式：外层已经手动提交时，内层结束时
 不把 autocommit 强开回来，否则调用方之后的写会悄悄脱离事务。
-`in_transaction()` 读的是 `connection` 缓存的 autocommit 状态（`set_autocommit`
-是唯一写点），所以绕过 `transaction` 手写 `set_autocommit(false)` 同样算"有事务在"。
-代价是该缓存需要准确：`rollback()` 自身抛异常时 autocommit 恢复不到 true，此后
-批量写会持续并入而不提交——比误提交安全，方向上是对的。
+`autocommit()` 读的是 `connection` 缓存的提交模式（`set_autocommit` 是唯一写点），
+它比"有没有活着的事务"宽：绕过 `transaction` 手写 `set_autocommit(false)` 后一条语句
+都没跑，也算手动提交模式。这些调用点问的本来就是"我要不要改动模式"，宽出的一边正是
+所需；池的复位最坏只多付一次空 `rollback()`。代价是该缓存需要准确：`rollback()`
+自身抛异常时 autocommit 恢复不到 true，此后批量写会持续并入而不提交——比误提交安全，
+方向上是对的。
 
-v1 不支持嵌套事务/savepoint。`transaction` 只在自身析构时回滚未提交的工作；
-连接归还池时**不做任何状态清理**（`connection_pool::release` 只把连接压回空闲
-列表并 notify，既不 rollback 也不 `set_autocommit(true)`），因此手写
-`set_autocommit(false)` 或让 `transaction` 活得比借出的连接更久，会把状态
-带给下一个借用者——把 `transaction` 关进就地作用域是用法约束，不是池的保障。
-经 `orm` 借出的连接会被兜底：`orm` 在拿到连接的瞬间调用 `adopt_connection()`，
-只要连接还停在手动提交模式就先 `rollback()`——那笔挂起的工作属于一场已经结束、
-没有人再驱动的租约，接过来会变成自己的，而直接 `set_autocommit(true)` 又会把它
-提交掉；这里不看借用者想要什么模式，想要手动提交的借用者同样不该继承别人的行。
-清理只发生在接手租约这一刻：调用方对自己的连接 `auto_commit(true)` 是**提交**挂起
-的工作（驱动的语义），不是丢弃。绕过 `orm` 直接用 `connection_pool::acquire()` 的
-借用者没有这层清理。
+v1 不支持嵌套事务/savepoint。`transaction` 只在自身析构时回滚未提交的工作。
+归还的连接由 `connection_pool::release` 清理：`autocommit()` 为假（停在手动提交模式）
+就先 `rollback()` 再 `set_autocommit(true)`——挂起的那笔工作属于一场已经结束、没有人再
+驱动的租约，直接传给下一个借用者会变成它的，而先 `set_autocommit(true)` 又会把它
+**提交**掉（驱动的语义），所以顺序不能反。复位失败（连接已死，`rollback()` 抛）的
+连接被淘汰而不是留在池里，同时扣回名额，池的总数不会因此虚高。两个调用都是网络
+往返，故都在池锁之外做。
+
+`orm` 一侧的 `adopt_connection()` 保留：它还得把模式调成这个 `orm` 自己要的
+`auto_commit()`，而池只会复位到默认的自动提交。清理发生在归还这一刻，所以调用方对
+自己手里的连接 `auto_commit(true)` 仍然是提交挂起的工作，不是丢弃。
 
 ### 4.10 连接池（最小版）
 
@@ -1092,7 +1100,7 @@ backend 接口已在里程碑 1 落地（§5.2），下列纪律从约定变成�
 - SQL 方言差异集中在 `dialect`，占位符统一以 `?` 语义表达，backend 负责翻译成各自风格（libpq `$1`、OCI `:1`）；
 - `transaction`、`connection_pool`、`result_set`、`orm`、`query<T>` 只依赖 `backend::*`；
 - 核心单测目标 `uniorm_unit_tests` 只链 `uniorm::uniorm`，不链 ODBC：驱动类型一旦漏进
-  上层公共头，这个目标就编译不过。它覆盖类型系统、unicode 转换、pfr、`row`/`params`、
+  上层公共头，这个目标就编译不过。它覆盖类型系统、pfr、`row`/`params`、
   表达式生成、映射注册、backend 注册表；高层 API（execute / result_set / 实体查询 /
   事务 / 批量）由集成测试通过真实数据库验证。
 
@@ -1149,7 +1157,6 @@ struct statement_iface {
     void bind_column(std::size_t index, column_buffer const&);
     void bind_batch_params(std::vector<params> const&);    // 行式批量，backend 自行转置
     batch_writer_iface& prepare_batch();                   // 列式批量，直接写缓冲
-    void reset_parameters();
     void execute();
     bool fetch();
     std::size_t affected_rows() const;
@@ -1177,16 +1184,20 @@ struct schema_metadata { /* table_columns(table) → {name, type, native_type,
 ```
 
 ODBC 实现的当前能力：`{streaming=true, async_io=false, copy_protocol=false,
-notifications=false, columnar_batch=true}`。但**只有 `columnar_batch` 被读**
-（`orm` 的三个批量入口据此在列式与行式通道间二选一，见 §4.5.2）；
-`capability_not_supported` 类型已定义、无任何抛出点，"能力不足即清晰报错"
-目前是接口注释里的约定，不是已实现的行为。`streaming` / `async_io` /
-`copy_protocol` / `notifications` 四个标志位是为 libpq/OCI 预留的占位。
+notifications=false, columnar_batch=true}`。**只有 `columnar_batch` 被读**
+（`orm` 的三个批量入口据此在列式与行式通道间二选一，见 §4.5.2）。每个标志只表示
+"有一条更快的路"：缺能力时核心走慢的那条而不抛错，所以 backend 全置 `false`
+也不失正确性。`capability_not_supported` 已定义、无抛出点，留给将来确实无路可退的
+核心特性（§9 第 9 项）。`streaming` / `async_io` / `copy_protocol` /
+`notifications` 四个标志位是为 libpq/OCI 预留的占位。
 
 事务的 autocommit 开关逻辑留在核心（`transaction` 不变），backend 只暴露
-原语。`reset()` 的注释写的是缓存复用契约（关游标、解绑列、清参数），但 ODBC
-实现只做 `SQLFreeStmt(SQL_CLOSE)` 并把块/批大小复位（见 §4.1）——解绑与清参数
-靠"下次绑定前调用方自己负责"这一隐含约定维持，是接口注释与实现的一处已知偏差。
+原语。`reset()` 的契约是缓存复用：某条 SQL 文本再次从缓存交出时、重新绑定之前调用，
+要求只到"关掉游标 + 丢掉该语句自己的簿记"为止——槽位集合由 SQL 文本决定，重新绑定
+逐槽位替换旧绑定，所以 ODBC 实现只做 `SQLFreeStmt(SQL_CLOSE)` 并把块/批大小复位
+（见 §4.1）即是合规的。接口里原先另有一个 `reset_parameters()`（显式
+`SQL_RESET_PARAMS`），核心从不调用它，已删除；一个在重新绑定时不会替换旧绑定的
+backend，要在自己的 `reset()` 重写里清干净。
 
 **backend 选择：连接串 scheme + 运行时注册表**（`backend/registry.hpp`）：
 
@@ -1318,7 +1329,6 @@ converter = "Status"                 # 域类型：成员生成为 Status，绑�
 
 ```cpp
 uniorm_error : std::runtime_error    // 基类（error.hpp）
-├── unicode_error                    // UTF-8/UTF-16 转换遇到非法输入
 ├── column_not_found                 // 动态行按名取值失败
 ├── type_mismatch                    // value_cast/get<T>/参数归一化失败
 ├── mapping_error                    // 映射/校验：重复注册、未注册、表列缺失、可空
@@ -1330,8 +1340,8 @@ backend::backend_error : uniorm_error    // backend 层（backend/error.hpp）�
 └── odbc::odbc_error                     // ODBC 句柄层（src/odbc/error.hpp，私有头），
                                          // backend 名固定 "odbc"
 
-backend::capability_not_supported : uniorm_error   // 能力缺失（不静默降级）；
-                                                   // 当前无抛出点，见 §5.2
+backend::capability_not_supported : uniorm_error   // 能力缺失；备用类型，无抛出点，
+                                                   // 见 §5.2
 backend::unknown_scheme : uniorm_error             // 连接串 scheme 未注册
 
 gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型配置错误
@@ -1345,9 +1355,10 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
 
 ## 8. 测试策略
 
+除末条安装冒烟是 `cmake -P` 脚本外，下列用例都是编译进 CTest 的 C++ 程序。
+
 - **单元测试**（无数据库，已实现，拆为两个目标）：
-  `uniorm_unit_tests` 不链接 ODBC——`test_unicode`（UTF-8/16 往返与非法
-  输入）、`test_pfr`（字段数探测/展开/concept 负例）、`test_row`
+  `uniorm_unit_tests` 不链接 ODBC——`test_pfr`（字段数探测/展开/concept 负例）、`test_row`
   （value_cast/收窄/optional/文本字面量按需解析成算术目标）、
   `test_params`（值归一化）、`test_converter`
   （converter 优先于枚举与隐式转字符串两支、表示决定读侧绑定与批量暂存、列的可接受
@@ -1357,7 +1368,9 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
   （实体 CRUD 的映射级归一：全部键列推断、WHERE 字段解析与 SET 分区、
   `paramset_size` / `row_array_size` 的 0 归一）、`test_backend_registry`
   （scheme 解析边界、注册/重复注册/未注册 scheme；其中真正解析到
-  "odbc" backend 的用例在 `UNIORM_TEST_BACKEND_ODBC` 宏内）；
+  "odbc" backend 的用例在 `UNIORM_TEST_BACKEND_ODBC` 宏内）、`test_pool`
+  （用一个记录调用的假 backend 驱动 `connection_pool::release`：归还时回滚挂起的
+  工作并复位 autocommit，复位抛异常则该连接被淘汰且名额扣回）；
   `uniorm_odbc_unit_tests` 链接 ODBC——`test_odbc_handles`（句柄 RAII）、
   `test_odbc_error_is_backend_error`（`odbc_error` 就是 `backend_error`，
   无需二次翻译）、`test_gen_config`（TOML 子集解析正例/错误行号/非法键）、
@@ -1391,15 +1404,24 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
   与 golden 头文件逐字节比对；golden 本身被编译进测试，执行注册 +
   `validate(strict)` + 构建器 `count()` + 实体写入与物化读回，覆盖"生成 → 编译 →
   注册 → 校验 → 读写"全链路。
+- **安装冒烟**（已实现，`install_smoke`，`cmake -P` 脚本，只在 top-level 且非交叉编译
+  时注册，不需要数据库）：`cmake --install` 到 `<build>/install_smoke/prefix` → 核对
+  config/targets/头文件/库都已就位，且装出的头文件集合与 `include/uniorm` 逐一相符 →
+  配置并构建 `tests/install/` 这个外部工程（刻意不设 `CMAKE_CXX_STANDARD`，靠导出目标
+  携带），跑起来的消费者调用 .so 里的 `dialect::detect`、`parse_scheme`、未注册 scheme
+  抛 `unknown_scheme`，ODBC 构建下另核对 `"odbc"` 已随载入自注册 → 再以 `99.0.0` 配置
+  一次，要求被 `SameMinorVersion` 拒掉 → 最后运行装出来的 `uniorm-gen --help`，它只可能
+  经 `$ORIGIN/../<libdir>` 载到库，故 RPATH 改写一并验了。
 
 ## 9. v2 路线图
 
-**v1 欠账**（对应"已知缺口"两项：前者是接线，后者只剩一个从未落地的类型
-（`decimal_t`）；都宜排在 v2 新特性之前）：
+**v1 欠账**（"已知缺口"只剩 DECIMAL 一条，其欠的部分也就是一个从未落地的类型
+（`decimal_t`）；宜排在 v2 新特性之前）：
 
-- ODBC 宽字符路径（§4.2）：确需宽字符时用 `SQL_C_WCHAR` 绑定并经 `src/unicode.hpp`
-  转换（含 Windows 下的 DSN 连接串）；若确认不做，则删掉这两个零调用者的函数，
-  以免文档与代码互相印证出一个不存在的特性。
+- ~~ODBC 宽字符路径（§4.2）~~ **已按该条目自己给出的第二条路了结**：确认不做，
+  删掉零调用者的 `utf8_to_utf16` / `utf16_to_utf8` 与只有它们会抛出的公开类型
+  `unicode_error`，边界策略写实为"一律窄字符、编码转换留在驱动侧"。何时值得重新
+  引入，见 §4.2 末尾的触发条件。
 - DECIMAL 无损动态路径（§4.3）：~~动态行按 `SQL_C_CHAR` 取原始字面量、
   `column_info` 保留 `scale`、清掉零引用的 `UNIORM_DECIMAL_AS_STRING`~~
   **已完成**——`sql_type::decimal` 归入 `slot_kind::text`，字面量精确进进程，
@@ -1410,8 +1432,9 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
 - ~~打包~~ **已完成（§3.1）**：`install(TARGETS/EXPORT)` + config/version 文件 +
   `VERSION`/`SOVERSION`，`$<INSTALL_INTERFACE:include>` 与 `project(VERSION)` 已
   生效，外部工程可用 `find_package(uniorm CONFIG)` 接入，`uniorm-gen` 也随
-  `UNIORM_BUILD_TOOLS` 装进 `<bindir>`。**待做**：用 CI 产出并验证制品——目前
-  安装面只有手工 `cmake --install` + 外部消费者工程的验证，装错不会有人报警。
+  `UNIORM_BUILD_TOOLS` 装进 `<bindir>`。**待做**：把这套验证接进 CI——安装面如今
+  有 `install_smoke`（§8）在一条 `ctest` 里跑完，但没有流水线在制品产出后替它报警，
+  装错仍只有本机知道。
 
 原有路线图：
 
@@ -1430,8 +1453,10 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
    让"只用一家"的部署不必在运行时载入其余驱动（见 §5.1）
 9. 能力清单落地：`capabilities` 的四个未读标志各自找到真实消费点，
    并把 `capability_not_supported` 的抛出接上（见 §5.2）
-10. 池归还时的状态清理：`release` 前 rollback 未决事务并复位 autocommit；
-    §4.9 现已按"调用方责任"写实，这条是给可选的实现侧兜底
+10. ~~池归还时的状态清理~~ **已完成**：`release` 见 `autocommit()` 为假即
+    rollback 后复位 autocommit，复位抛异常则淘汰该连接并扣回名额（见 §4.9）；
+    兜底不再只挂在 `orm` 借出侧，直接用 `connection_pool::acquire()` 的借用者
+    同样拿到干净的连接
 
 ## 10. 评审待定点
 
@@ -1441,7 +1466,7 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
    实体/投影随成员类型（`std::string` 即无损）；"可配"原先落在 CMake 选项
    `UNIORM_DECIMAL_DEFAULT` 上，但它只改生成物、不改库，已删除——配置改由
    生成器的 `[types]` / `cpp_type` / `converter` 按列承担（§6.4/§4.4）。仍缺
-   `decimal_t`，见"已知缺口"第 2 条与 §9 欠账；
+   `decimal_t`，见"已知缺口"的 DECIMAL 条与 §9 欠账；
 3. ~~`orm`（注册表）与 `connection` 的组合方式~~ **已定：`orm` 作为中心入口，内部持有 `connection`**，`db.query().of<T>()`、`db.insert()`、`db.update()` 等统一经 `orm` 调用（见 §4.8）；
 4. ~~头文件-only 还是编译库~~ **已定：动态库**（避免 header-only 升级后全量重编），非模板实现进 `libuniorm`，模板代码留头文件（见 §1）。
 

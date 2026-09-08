@@ -14,7 +14,7 @@ See [docs/design.md](docs/design.md) for the full design.
 - **Synchronous API with an exception-based error hierarchy** — every failure
   throws from the `uniorm_error` tree
 - **UTF-8 everywhere internally** — string binding is narrow (`SQL_C_CHAR`);
-  the UTF-16 path at the ODBC boundary is declared but not wired yet
+  conversion from whatever encoding the driver speaks stays in the driver
 - **Prepared statements + bind variables** — user values always go through
   `SQLBindParameter`; no string interpolation, no injection
 - **Transparent statement cache** — an LRU cache keyed by SQL text skips
@@ -93,6 +93,9 @@ repository:
 find_package(uniorm REQUIRED CONFIG)
 target_link_libraries(my_app PRIVATE uniorm::uniorm)
 ```
+
+The C++20 requirement travels with the target, so a consumer needs no
+`CMAKE_CXX_STANDARD` of its own.
 
 Source integration is unchanged: `add_subdirectory` or FetchContent hand over
 the same `uniorm::uniorm` target and install nothing. The install rules only
@@ -263,6 +266,12 @@ ctest --test-dir build --output-on-failure
 - **gen_e2e_tests**: `uniorm-gen` end-to-end — the generated output is
   byte-compared against a checked-in golden header, which is itself
   compiled, registered, and `validate(strict)`ed; needs a reachable DSN
+- **install_smoke**: packaging check — `cmake --install` into a throwaway prefix
+  under the build dir, then an outside project (`tests/install/`) configures,
+  builds and runs against it through `find_package(uniorm CONFIG)` without setting
+  a C++ standard of its own; it also asserts the package version gate turns away
+  another minor and that the installed `uniorm-gen` starts through its
+  `$ORIGIN`-relative RPATH. No DSN required
 
 ## Directory layout
 
@@ -278,10 +287,10 @@ src/                  implementation (built into libuniorm.so); private headers
   odbc/               ODBC backend: adapter, handle wrappers, errors
                         (the only <sql.h> in the tree)
   statement_cache.hpp prepared-statement LRU cache
-  unicode.hpp         UTF-8 <-> UTF-16 helpers
 tools/uniorm-gen      code-generation CLI (schema extraction + TOML config + generator)
 tests/unit            unit tests
 tests/integration     database integration tests (+ golden header for uniorm-gen)
+tests/install         external consumer project (drives the install_smoke check)
 tests/perf            performance benchmarks
 docs/design.md        design document (authoritative API reference)
 ```

@@ -11,8 +11,8 @@ ODBC 接口访问任意提供 ODBC 驱动的数据库，在通用层之上提供
 ## 特性
 
 - **同步 API + 异常错误体系**：所有失败以异常抛出（`uniorm_error` 派生树）
-- **内部统一 UTF-8**：字符串一律以窄字符（`SQL_C_CHAR`）绑定；ODBC 边界的
-  UTF-16 路径已声明但未接线
+- **内部统一 UTF-8**：字符串一律以窄字符（`SQL_C_CHAR`）绑定；编码转换发生在
+  驱动侧，不在本库
 - **预编译 + 绑定变量**：用户值一律经 `SQLBindParameter`，杜绝拼接注入
 - **透明的语句缓存**：按 SQL 文本的 LRU 缓存，重复执行免 prepare
   （观测：`statement_cache_hits()/misses()/statement_cache_size()`）
@@ -78,6 +78,8 @@ cmake --install build --prefix /path/to/prefix
 find_package(uniorm REQUIRED CONFIG)
 target_link_libraries(my_app PRIVATE uniorm::uniorm)
 ```
+
+C++20 的要求随目标一起导出，消费者无需自己再设 `CMAKE_CXX_STANDARD`。
 
 源码集成方式不变：`add_subdirectory` 或 FetchContent 同样拿到 `uniorm::uniorm`
 目标，且不安装任何东西。安装规则只在 uniorm 是顶层工程时生效。CLI 只在
@@ -236,6 +238,10 @@ ctest --test-dir build --output-on-failure
   （默认 10000），可用 `ctest -LE perf` 跳过
 - **gen_e2e_tests**：`uniorm-gen` 端到端——生成物与检入的 golden 头文件
   逐字节比对，golden 本身经编译、注册并 `validate(strict)`；需可达 DSN
+- **install_smoke**：安装面检查——`cmake --install` 装进构建树下的临时
+  prefix，再用一个外部工程（`tests/install/`）经 `find_package(uniorm CONFIG)`
+  配置、编译并运行，且它自己不设 C++ 标准；同时断言包版本门会拒掉另一个次版本、
+  装出来的 `uniorm-gen` 能靠 `$ORIGIN` 相对 RPATH 启动。无需 DSN
 
 ## 目录结构
 
@@ -251,10 +257,10 @@ src/                  实现（构建为 libuniorm.so）；私有头贴着对应
   odbc/               ODBC backend（适配器、句柄 RAII 封装、错误）
                         全仓库唯一出现 <sql.h> 之处
   statement_cache.hpp 预编译语句 LRU 缓存
-  unicode.hpp         UTF-8 <-> UTF-16 工具
 tools/uniorm-gen      代码生成 CLI（schema 提取 + TOML 配置 + 生成器）
 tests/unit            单元测试
 tests/integration     数据库集成测试（含 uniorm-gen 的 golden 头文件）
+tests/install         外部消费者工程（install_smoke 用它验证安装面）
 tests/perf            性能基准测试
 docs/design.md        设计文档（权威 API 参考）
 ```

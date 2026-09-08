@@ -36,7 +36,8 @@ private:
   std::vector<diagnostic> diags_;
 };
 
-// A core feature required a capability the backend does not offer.
+// Reserved until a core feature lacks a fallback: every capability with a
+// consumer today degrades instead of throwing, so nothing raises this yet.
 class UNIORM_API capability_not_supported : public uniorm_error {
 public:
   using uniorm_error::uniorm_error;

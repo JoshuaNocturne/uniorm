@@ -1,6 +1,5 @@
 add_executable(uniorm_unit_tests
     unit/test_main.cpp
-    unit/test_unicode.cpp
     unit/test_pfr.cpp
     unit/test_row.cpp
     unit/test_params.cpp
@@ -9,12 +8,13 @@ add_executable(uniorm_unit_tests
     unit/test_registry.cpp
     unit/test_orm_crud_helpers.cpp
     unit/test_backend_registry.cpp
+    unit/test_pool.cpp
 )
 # Deliberately links no ODBC: any driver-type leak into the public
 # headers above the statement layer fails this target's compile.
 target_link_libraries(uniorm_unit_tests PRIVATE uniorm::uniorm)
-# test_unicode and test_orm_crud_helpers exercise private headers that sit
-# beside their source; src/ is on the include path for no other reason.
+# test_orm_crud_helpers exercises a private header that sits beside its
+# source; src/ is on the include path for no other reason.
 target_include_directories(uniorm_unit_tests PRIVATE ${PROJECT_SOURCE_DIR}/src)
 if(UNIORM_BACKEND_ODBC)
     target_compile_definitions(uniorm_unit_tests PRIVATE UNIORM_TEST_BACKEND_ODBC)
@@ -68,4 +68,17 @@ if(UNIORM_BACKEND_ODBC)
         add_test(NAME gen_e2e_tests COMMAND uniorm_gen_e2e_tests)
         set_tests_properties(gen_e2e_tests PROPERTIES SKIP_RETURN_CODE 77)
     endif()
+endif()
+
+# Install rules exist only for a top-level build, and this check configures and
+# compiles an outside project, so a cross-compiled build cannot run it.
+# GNUInstallDirs is included here because the root file includes it later, in
+# the install section that follows add_subdirectory(tests).
+if(PROJECT_IS_TOP_LEVEL AND NOT CMAKE_CROSSCOMPILING)
+    include(GNUInstallDirs)
+    configure_file(install_smoke.cmake.in
+        ${CMAKE_CURRENT_BINARY_DIR}/install_smoke.cmake @ONLY)
+    add_test(NAME install_smoke
+        COMMAND ${CMAKE_COMMAND} -P
+                ${CMAKE_CURRENT_BINARY_DIR}/install_smoke.cmake)
 endif()

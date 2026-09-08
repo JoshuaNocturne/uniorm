@@ -24,7 +24,6 @@ public:
     std::size_t index, backend::column_buffer const& buffer) override;
   void bind_batch_params(std::vector<params> const& rows) override;
   backend::batch_writer_iface& prepare_batch() override;
-  void reset_parameters() override;
   void execute() override;
   bool fetch() override;
   std::size_t affected_rows() const override;

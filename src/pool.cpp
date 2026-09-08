@@ -267,10 +267,25 @@ unsigned long long connection_pool::heartbeats_executed() const {
 }
 
 void connection_pool::release(connection conn) {
+  // Pending work belongs to a lease nobody drives any more: drop it rather
+  // than let the next borrower inherit it. Round trips, so off the mutex.
+  bool reusable = true;
+  try {
+    if (!conn.autocommit()) {
+      conn.rollback();
+      conn.set_autocommit(true);
+    }
+  } catch (...) {
+    reusable = false;
+  }
   {
     std::lock_guard lock(impl_->mutex);
-    impl_->idle.push_back(
-      { std::move(conn), std::chrono::steady_clock::now() });
+    if (reusable) {
+      impl_->idle.push_back(
+        { std::move(conn), std::chrono::steady_clock::now() });
+    } else {
+      --impl_->created;  // unusable: retired instead of handed on
+    }
   }
   impl_->cv.notify_one();
 }

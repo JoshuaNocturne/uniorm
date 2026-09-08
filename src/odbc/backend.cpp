@@ -417,12 +417,6 @@ void backend_statement::bind_batch_params(std::vector<params> const& rows) {
   }
 }
 
-void backend_statement::reset_parameters() {
-  SQLRETURN rc = SQLFreeStmt(stmt_.native(), SQL_RESET_PARAMS);
-  odbc::throw_if_error(
-    rc, SQL_HANDLE_STMT, stmt_.native(), "reset statement parameters");
-}
-
 class backend_statement::odbc_batch_writer
   : public backend::batch_writer_iface {
 public:

@@ -81,9 +81,9 @@ struct column_buffer {
   std::int64_t* indicator;
 };
 
-// What a backend implementation offers. Core features requiring an
-// absent capability throw capability_not_supported; they never degrade
-// silently.
+// What a backend implementation offers. Each flag names an optional fast path
+// the core can do without: it takes a slower route rather than throwing, so a
+// backend that leaves every flag false is still correct.
 struct capabilities {
   bool streaming;
   bool async_io;
@@ -147,10 +147,6 @@ struct statement_iface {
   // valid until the next reset() or prepare_batch() call.
   virtual batch_writer_iface& prepare_batch() = 0;
 
-  // Reset all parameter bindings. Must be called before rebinding parameters
-  // when reusing a statement for multiple executions.
-  virtual void reset_parameters() = 0;
-
   virtual void execute() = 0;
   virtual bool fetch() = 0;  // false when the result set is exhausted
   virtual std::size_t affected_rows() const = 0;
@@ -173,8 +169,10 @@ struct statement_iface {
   virtual std::string read_long_text(std::size_t column) = 0;
   virtual std::vector<std::byte> read_long_bytes(std::size_t column) = 0;
 
-  // Cache-reuse contract: close the cursor, unbind columns, and clear
-  // bound parameters so the statement can be prepared-for-reuse.
+  // Cache-reuse contract: called before a cached statement is rebound for
+  // the same SQL text. Closing the cursor and dropping this statement's own
+  // bookkeeping suffices, since rebinding replaces each slot. A backend whose
+  // driver keeps stale bindings past a rebind must clear them here.
   virtual void reset() = 0;
 };
 

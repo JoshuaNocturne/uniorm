@@ -1,0 +1,135 @@
+# Install-then-consume smoke test, run as `cmake -P` from CTest. It assembles
+# the packaged tree into a throwaway prefix, then builds and runs an outside
+# project against it the way a stranger would. Everything stays under
+# <build>/install_smoke; nothing is written to the system prefix.
+
+set(SMOKE_CMAKE "@CMAKE_COMMAND@")
+set(SMOKE_CTEST "@CMAKE_CTEST_COMMAND@")
+set(SMOKE_BUILD_DIR "@CMAKE_BINARY_DIR@")
+set(SMOKE_SOURCE_DIR "@PROJECT_SOURCE_DIR@")
+set(SMOKE_GENERATOR "@CMAKE_GENERATOR@")
+set(SMOKE_COMPILER "@CMAKE_CXX_COMPILER@")
+set(SMOKE_VERSION "@PROJECT_VERSION@")
+set(SMOKE_EXE_SUFFIX "@CMAKE_EXECUTABLE_SUFFIX@")
+set(SMOKE_LIBDIR "@CMAKE_INSTALL_LIBDIR@")
+set(SMOKE_BINDIR "@CMAKE_INSTALL_BINDIR@")
+set(SMOKE_INCLUDEDIR "@CMAKE_INSTALL_INCLUDEDIR@")
+set(SMOKE_HAS_TOOLS "@UNIORM_BUILD_TOOLS@")
+set(SMOKE_HAS_ODBC "@UNIORM_BACKEND_ODBC@")
+
+set(SMOKE_ROOT "${SMOKE_BUILD_DIR}/install_smoke")
+set(SMOKE_PREFIX "${SMOKE_ROOT}/prefix")
+set(SMOKE_PACKAGE_DIR "${SMOKE_PREFIX}/${SMOKE_LIBDIR}/cmake/uniorm")
+set(SMOKE_CONSUMER "${SMOKE_ROOT}/consumer")
+
+file(REMOVE_RECURSE "${SMOKE_ROOT}")
+
+execute_process(
+  COMMAND ${SMOKE_CMAKE} --install "${SMOKE_BUILD_DIR}"
+          --prefix "${SMOKE_PREFIX}"
+  RESULT_VARIABLE rc
+  ERROR_VARIABLE err
+)
+if(NOT rc EQUAL 0)
+  message(FATAL_ERROR "cmake --install failed (${rc}):\n${err}")
+endif()
+
+foreach(entry
+    "${SMOKE_PACKAGE_DIR}/uniormConfig.cmake"
+    "${SMOKE_PACKAGE_DIR}/uniormConfigVersion.cmake"
+    "${SMOKE_PACKAGE_DIR}/uniormTargets.cmake"
+    "${SMOKE_PREFIX}/${SMOKE_INCLUDEDIR}/uniorm/uniorm.hpp")
+  if(NOT EXISTS "${entry}")
+    message(FATAL_ERROR "not installed: ${entry}")
+  endif()
+endforeach()
+
+file(GLOB shipped_libs "${SMOKE_PREFIX}/${SMOKE_LIBDIR}/*uniorm*")
+if(shipped_libs STREQUAL "")
+  message(FATAL_ERROR "no library landed in ${SMOKE_PREFIX}/${SMOKE_LIBDIR}")
+endif()
+
+# The whole of include/uniorm is public by construction, so an install rule
+# that starts filtering headers has to show up here.
+file(GLOB_RECURSE shipped_headers RELATIVE "${SMOKE_PREFIX}/${SMOKE_INCLUDEDIR}"
+     "${SMOKE_PREFIX}/${SMOKE_INCLUDEDIR}/uniorm/*.hpp")
+file(GLOB_RECURSE source_headers RELATIVE "${SMOKE_SOURCE_DIR}/include"
+     "${SMOKE_SOURCE_DIR}/include/uniorm/*.hpp")
+list(SORT shipped_headers)
+list(SORT source_headers)
+if(NOT shipped_headers STREQUAL source_headers)
+  message(FATAL_ERROR
+    "installed headers differ from include/\n"
+    "  installed: ${shipped_headers}\n"
+    "  in tree:   ${source_headers}")
+endif()
+
+function(configure_consumer build_dir want_version)
+  execute_process(
+    COMMAND ${SMOKE_CMAKE} -S "${SMOKE_SOURCE_DIR}/tests/install"
+            -B "${build_dir}" -G "${SMOKE_GENERATOR}"
+            "-DCMAKE_BUILD_TYPE=Debug"
+            "-DCMAKE_CXX_COMPILER=${SMOKE_COMPILER}"
+            "-Duniorm_DIR=${SMOKE_PACKAGE_DIR}"
+            "-DSMOKE_UNIORM_VERSION=${want_version}"
+            "-DSMOKE_HAS_ODBC=${SMOKE_HAS_ODBC}"
+    RESULT_VARIABLE rc
+    OUTPUT_VARIABLE out
+    ERROR_VARIABLE err
+  )
+  set(configure_rc "${rc}" PARENT_SCOPE)
+  set(configure_log "${out}${err}" PARENT_SCOPE)
+endfunction()
+
+configure_consumer("${SMOKE_CONSUMER}" "${SMOKE_VERSION}")
+if(NOT configure_rc EQUAL 0)
+  message(FATAL_ERROR
+    "find_package(uniorm ${SMOKE_VERSION}) rejected the installed package "
+    "(rc=${configure_rc}):\n${configure_log}")
+endif()
+
+execute_process(
+  COMMAND ${SMOKE_CMAKE} --build "${SMOKE_CONSUMER}"
+  RESULT_VARIABLE rc
+  ERROR_VARIABLE err
+)
+if(NOT rc EQUAL 0)
+  message(FATAL_ERROR "the consumer did not build:\n${err}")
+endif()
+
+execute_process(
+  COMMAND ${SMOKE_CTEST} --test-dir "${SMOKE_CONSUMER}" -C Debug
+          --output-on-failure
+  RESULT_VARIABLE rc
+  OUTPUT_VARIABLE out
+  ERROR_VARIABLE err
+)
+if(NOT rc EQUAL 0)
+  message(FATAL_ERROR
+    "the consumer did not run:\n${out}\n${err}")
+endif()
+
+# SameMinorVersion has to bite: a consumer asking for another minor must be
+# turned away at configure time, not build against an API it cannot have.
+configure_consumer("${SMOKE_ROOT}/gate" "99.0.0")
+if(configure_rc EQUAL 0)
+  message(FATAL_ERROR
+    "find_package(uniorm 99.0.0) succeeded against ${SMOKE_VERSION}")
+endif()
+
+# uniorm-gen ships with a prefix-relative RPATH; running the installed copy
+# proves it finds libuniorm without the absolute build-tree path baked in.
+if(SMOKE_HAS_TOOLS)
+  execute_process(
+    COMMAND "${SMOKE_PREFIX}/${SMOKE_BINDIR}/uniorm-gen${SMOKE_EXE_SUFFIX}"
+            --help
+    RESULT_VARIABLE rc
+    ERROR_VARIABLE err
+  )
+  if(NOT rc EQUAL 0)
+    message(FATAL_ERROR
+      "the installed uniorm-gen could not start (RPATH?):\n${err}")
+  endif()
+endif()
+
+message(STATUS "install smoke: ${SMOKE_PREFIX}")

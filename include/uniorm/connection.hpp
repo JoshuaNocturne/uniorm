@@ -50,15 +50,13 @@ public:
 
   // --- Transaction control ---
   transaction begin();
+  // The mode set_autocommit last installed, not "a transaction is open".
+  bool autocommit() const noexcept;
   // Off: nothing is durable until commit()/rollback(). On: commits whatever is
   // pending, per the ODBC contract for this attribute.
   void set_autocommit(bool enabled);
   void commit();
   void rollback();
-
-  // True in manual-commit mode, whether from begin() or a plain
-  // set_autocommit(false): nothing is durable until commit().
-  bool in_transaction() const noexcept;
 
   // --- Statement cache primitives ---
   // Acquire a prepared statement for the given SQL (from cache or newly

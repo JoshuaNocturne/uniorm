@@ -11,11 +11,6 @@ public:
   using std::runtime_error::runtime_error;
 };
 
-class UNIORM_API unicode_error : public uniorm_error {
-public:
-  using uniorm_error::uniorm_error;
-};
-
 class UNIORM_API column_not_found : public uniorm_error {
 public:
   using uniorm_error::uniorm_error;

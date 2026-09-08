@@ -7,7 +7,7 @@ namespace uniorm {
 transaction::transaction(connection& conn) : conn_(&conn) {
   // Only a transaction that switched autocommit off may switch it back on: a
   // caller who put the connection in manual mode on purpose keeps it.
-  owns_mode_ = !conn.in_transaction();
+  owns_mode_ = conn.autocommit();
   if (owns_mode_) {
     conn_->set_autocommit(false);
   }

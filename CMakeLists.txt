@@ -27,7 +27,6 @@ find_package(Threads REQUIRED)
 
 add_library(uniorm SHARED
     src/types.cpp
-    src/unicode.cpp
     src/row.cpp
     src/result_set.cpp
     src/connection.cpp
@@ -43,6 +42,9 @@ add_library(uniorm SHARED
 )
 add_library(uniorm::uniorm ALIAS uniorm)
 
+# The public headers need C++20 themselves (concepts, remove_cvref_t), and the
+# global CMAKE_CXX_STANDARD above does not cross into a consumer's flags.
+target_compile_features(uniorm PUBLIC cxx_std_20)
 target_include_directories(uniorm PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>

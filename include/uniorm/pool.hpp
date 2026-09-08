@@ -5,8 +5,10 @@
 // heartbeat_interval > 0) which periodically runs heartbeat_sql on idle
 // connections and drops any whose idle time exceeds max_idle_time or whose
 // heartbeat fails. Connections idle beyond max_idle_time are also dropped
-// when handed out by acquire(). The pool must outlive all connections still
-// checked out from it.
+// when handed out by acquire(). A connection coming back is reset first:
+// pending work is rolled back and autocommit restored, or it is retired if
+// that fails. The pool must outlive all connections still checked out
+// from it.
 
 #include <chrono>
 #include <cstddef>

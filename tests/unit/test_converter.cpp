@@ -152,7 +152,6 @@ public:
   backend::batch_writer_iface& prepare_batch() override {
     throw std::logic_error("unused by the read path");
   }
-  void reset_parameters() override {}
   void execute() override {}
   bool fetch() override {
     return false;

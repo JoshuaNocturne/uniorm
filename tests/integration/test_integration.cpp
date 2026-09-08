@@ -543,7 +543,7 @@ void test_auto_commit_scope(orm& db, std::string const& conn_string) {
     tx.rollback();
   }
   CHECK(mine() == 0);
-  CHECK(!db.native_connection().in_transaction());  // mode given back
+  CHECK(db.native_connection().autocommit());
 
   // Same shape committed.
   {
@@ -564,7 +564,7 @@ void test_auto_commit_scope(orm& db, std::string const& conn_string) {
   // Manual mode defers every kind of write, not just the batch one.
   db.auto_commit(false);
   CHECK(!db.auto_commit());
-  CHECK(db.native_connection().in_transaction());
+  CHECK(!db.native_connection().autocommit());
   orm other(conn_string);
   CHECK(db.insert(batch) == 2);
   User renamed = batch[0];
@@ -606,7 +606,7 @@ void test_auto_commit_scope(orm& db, std::string const& conn_string) {
   }
   {
     orm fresh(conn_string);
-    CHECK(!fresh.native_connection().in_transaction());
+    CHECK(fresh.native_connection().autocommit());
     put(fresh, 704);
     CHECK(mine() == 1);  // 704 durable, 703 gone
   }
@@ -619,7 +619,7 @@ void test_auto_commit_scope(orm& db, std::string const& conn_string) {
     orm manual;
     manual.auto_commit(false);
     manual.connect(conn_string);
-    CHECK(manual.native_connection().in_transaction());
+    CHECK(!manual.native_connection().autocommit());
     put(manual, 706);
     CHECK(seen_elsewhere(manual) == 2);  // 704 durable, plus its own 706
     CHECK(seen_elsewhere(other) == 1);   // just 704 so far

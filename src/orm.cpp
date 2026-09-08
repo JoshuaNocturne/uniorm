@@ -35,7 +35,7 @@ std::unordered_map<std::string, schema_column> load_table_schema(
 // Begin a lease in the mode its new owner asked for, discarding any pending
 // work a previous lease left behind: enabling autocommit would commit it.
 void adopt_connection(connection& conn, bool autocommit) {
-  if (conn.in_transaction()) {
+  if (!conn.autocommit()) {
     conn.rollback();
   }
   conn.set_autocommit(autocommit);
@@ -626,7 +626,7 @@ std::size_t columnar_batch_write(connection& conn, entity_meta const& m,
 // transaction. In manual mode the chunks already join the caller's.
 std::optional<transaction> begin_batch(connection& conn) {
   std::optional<transaction> txn;
-  if (!conn.in_transaction()) {
+  if (conn.autocommit()) {
     txn.emplace(conn.begin());
   }
   return txn;

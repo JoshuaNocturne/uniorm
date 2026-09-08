@@ -100,8 +100,8 @@ transaction connection::begin() {
   return transaction(*this);
 }
 
-bool connection::in_transaction() const noexcept {
-  return !autocommit_;
+bool connection::autocommit() const noexcept {
+  return autocommit_;
 }
 
 std::string connection::dbms_name() const {

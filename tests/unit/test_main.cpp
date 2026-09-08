@@ -1,6 +1,5 @@
 #include "check.hpp"
 
-void test_unicode();
 void test_pfr();
 void test_row();
 void test_params();
@@ -9,9 +8,9 @@ void test_expression();
 void test_registry();
 void test_orm_crud_helpers();
 void test_backend_registry();
+void test_pool();
 
 int main() {
-  test_unicode();
   test_pfr();
   test_row();
   test_params();
@@ -20,6 +19,7 @@ int main() {
   test_registry();
   test_orm_crud_helpers();
   test_backend_registry();
+  test_pool();
 
   int failures = uniorm::test::failure_count();
   if (failures == 0) {

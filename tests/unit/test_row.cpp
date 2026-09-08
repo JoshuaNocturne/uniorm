@@ -48,4 +48,19 @@ void test_row() {
     std::make_shared<column_names>(std::vector<std::string>{ "big" });
   row big(std::move(names), std::move(values));
   CHECK_THROWS(big.get<std::int32_t>("big"), type_mismatch);
+
+  // a DECIMAL column arrives as its exact literal text
+  std::vector<sql_value> text{ std::string{ "12345678901234.5678" },
+    std::string{ "42" }, std::string{ "alice" } };
+  auto text_names = std::make_shared<column_names>(
+    std::vector<std::string>{ "amount", "whole", "label" });
+  row dec(std::move(text_names), std::move(text));
+  CHECK(dec.get<std::string>("amount") == "12345678901234.5678");
+  CHECK(dec.get<double>("amount") > 12345678901234.56);
+  CHECK(dec.get<double>("amount") < 12345678901234.57);
+  CHECK(dec.get<std::int64_t>("whole") == 42);
+  CHECK_THROWS(dec.get<std::int64_t>("amount"), type_mismatch);
+  CHECK_THROWS(dec.get<std::int32_t>("amount"), type_mismatch);
+  CHECK_THROWS(dec.get<std::int64_t>("label"), type_mismatch);
+  CHECK_THROWS(dec.get<bool>("whole"), type_mismatch);
 }

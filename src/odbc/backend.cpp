@@ -589,6 +589,7 @@ std::vector<column_info> backend_statement::column_meta() const {
     info.name.assign(reinterpret_cast<char const*>(name_buf), name_len);
     info.type = sql_type_from_native(odbc_type);
     info.display_size = display_size;
+    info.scale = decimals > 0 ? static_cast<std::size_t>(decimals) : 0;
     info.nullable = nullable != SQL_NO_NULLS;
   }
   return meta;

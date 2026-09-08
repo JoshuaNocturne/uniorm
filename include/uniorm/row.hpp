@@ -1,5 +1,6 @@
 #pragma once
 
+#include <charconv>
 #include <cstddef>
 #include <limits>
 #include <memory>
@@ -17,14 +18,27 @@
 
 namespace uniorm {
 
-// Convert a dynamic sql_value to T. Tolerates narrowing between integral
-// widths (range-checked) and integral-to-double; everything else must match
-// exactly. A T with a uniorm::converter is decoded from its representation.
-// Throws type_mismatch.
+// Convert a dynamic sql_value to T. Tolerates integral-width narrowing
+// (range-checked), integral-to-double and text-to-arithmetic (any numeric
+// text, which is how a DECIMAL arrives); anything else must match exactly.
+// A T with a uniorm::converter is decoded from its representation. Throws
+// type_mismatch.
 template <class T>
 T value_cast(sql_value const& v);
 
 namespace detail {
+
+// from_chars consumes the whole span or fails, so a fractional literal is
+// rejected for an integral target rather than silently truncated.
+template <class To>
+To parse_numeric_text(std::string_view s) {
+  To out{};
+  auto [ptr, ec] = std::from_chars(s.data(), s.data() + s.size(), out);
+  if (ec != std::errc{} || ptr != s.data() + s.size()) {
+    throw type_mismatch("sql_value text is not a number for this target");
+  }
+  return out;
+}
 
 template <class To>
 To narrow_checked(sql_value const& v) {
@@ -60,18 +74,16 @@ To narrow_checked(sql_value const& v) {
     return check_and_cast(*p);
   if (auto* p = std::get_if<std::int64_t>(&v))
     return check_and_cast(*p);
-  if (auto* p = std::get_if<bool>(&v)) {
-    if constexpr (std::is_same_v<To, bool>)
-      return *p;
-    else
-      return check_and_cast(static_cast<int>(*p));
-  }
+  if (auto* p = std::get_if<bool>(&v))
+    return check_and_cast(static_cast<int>(*p));
   if (auto* p = std::get_if<double>(&v)) {
     if constexpr (std::is_floating_point_v<To>)
       return static_cast<To>(*p);
     else
       throw type_mismatch("cannot convert double to integral target");
   }
+  if (auto* p = std::get_if<std::string>(&v))
+    return parse_numeric_text<To>(*p);
   throw type_mismatch("incompatible sql_value type");
 }
 
@@ -79,10 +91,16 @@ To narrow_checked(sql_value const& v) {
 
 template <class T>
 T value_cast(sql_value const& v) {
-  if constexpr (std::is_same_v<T, bool> || std::is_same_v<T, std::int8_t> ||
-                std::is_same_v<T, std::int16_t> ||
-                std::is_same_v<T, std::int32_t> ||
-                std::is_same_v<T, std::int64_t> || std::is_same_v<T, double>) {
+  if constexpr (std::is_same_v<T, bool>) {
+    // No make_unsigned<bool>, so bool cannot share the numeric path below.
+    if (auto* p = std::get_if<bool>(&v))
+      return *p;
+    throw type_mismatch("sql_value does not hold a bool");
+  } else if constexpr (std::is_same_v<T, std::int8_t> ||
+                       std::is_same_v<T, std::int16_t> ||
+                       std::is_same_v<T, std::int32_t> ||
+                       std::is_same_v<T, std::int64_t> ||
+                       std::is_same_v<T, double>) {
     if (auto* p = std::get_if<T>(&v))
       return *p;
     return detail::narrow_checked<T>(v);

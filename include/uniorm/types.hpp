@@ -55,8 +55,11 @@ UNIORM_API char const* sql_type_name(sql_type t) noexcept;
 struct column_info {
   std::string name;
   sql_type type;
-  std::size_t display_size;
+  std::size_t display_size;  // DECIMAL/NUMERIC: the precision
   bool nullable;
+  // Appended, not inserted: consumers on older 0.1 headers must still read the
+  // fields they know at the same offset.
+  std::size_t scale = 0;  // digits after the radix point
 };
 
 }  // namespace uniorm

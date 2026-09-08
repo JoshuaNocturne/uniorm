@@ -80,6 +80,7 @@ namespace {
 char const* k_table = "uniorm_it_user";
 char const* k_pair_table = "uniorm_it_pair";
 char const* k_order_table = "uniorm_it_order";
+char const* k_dec_table = "uniorm_it_decimal";
 std::string const long_note(1000, 'x');
 
 void prepare_schema(orm& db) {
@@ -102,6 +103,12 @@ void prepare_schema(orm& db) {
                       " (id BIGINT NOT NULL PRIMARY KEY,"
                       " state VARCHAR(16) NOT NULL,"
                       " note VARCHAR(16) NULL)");
+  db.execute_update(std::string("DROP TABLE IF EXISTS ") + k_dec_table);
+  db.execute_update(std::string("CREATE TABLE ") + k_dec_table +
+                      " (id BIGINT NOT NULL PRIMARY KEY,"
+                      " amount DECIMAL(20,4) NULL,"
+                      " whole DECIMAL(20,0) NULL,"
+                      " big DECIMAL(38,0) NULL)");
 }
 
 void seed_rows(orm& db) {
@@ -138,6 +145,46 @@ void test_dynamic_rows(orm& db) {
   CHECK(r.get<std::string>("name") == "bob");
   CHECK(r.is_null("age"));
   CHECK(r.get<std::string>("note").size() == long_note.size());
+  CHECK(!rs.next());
+}
+
+void test_decimal_dynamic(orm& db) {
+  db.execute_update(std::string("DELETE FROM ") + k_dec_table);
+  db.execute_update(std::string("INSERT INTO ") + k_dec_table +
+                    " (id, amount, whole, big) VALUES"
+                    " (1, '12345678901234.5678', '42',"
+                    " '123456789012345678901234567890')");
+  db.execute_update(std::string("INSERT INTO ") + k_dec_table +
+                    " (id, amount, whole, big) VALUES (2, '0.1', '0', '0')");
+  db.execute_update(std::string("INSERT INTO ") + k_dec_table +
+                    " (id, amount, whole, big) VALUES (3, NULL, NULL, NULL)");
+
+  result_set rs = db.execute(
+    std::string("SELECT id, amount, whole, big FROM ") + k_dec_table +
+    " ORDER BY id");
+  CHECK(rs.column(1).type == sql_type::decimal);
+  CHECK(rs.column(1).scale == 4);
+  CHECK(rs.column(1).display_size >= 20);
+
+  CHECK(rs.next());
+  row r1 = rs.current();
+  CHECK(r1.get<std::string>("amount") == "12345678901234.5678");
+  double amount = r1.get<double>("amount");
+  CHECK(amount > 12345678901234.56 && amount < 12345678901234.57);
+  CHECK_THROWS(r1.get<std::int64_t>("amount"), type_mismatch);  // fractional
+  CHECK(r1.get<std::string>("whole") == "42");
+  CHECK(r1.get<std::int64_t>("whole") == 42);
+  CHECK(r1.get<std::string>("big") == "123456789012345678901234567890");
+  CHECK_THROWS(r1.get<std::int64_t>("big"), type_mismatch);  // out of range
+
+  CHECK(rs.next());
+  row r2 = rs.current();
+  CHECK(r2.get<std::string>("amount") == "0.1000");  // scale preserved
+
+  CHECK(rs.next());
+  row r3 = rs.current();
+  CHECK(r3.is_null("amount"));
+  CHECK_THROWS(r3.get<std::string>("amount"), type_mismatch);
   CHECK(!rs.next());
 }
 
@@ -1034,6 +1081,7 @@ int main() {
     seed_rows(db);
 
     test_dynamic_rows(db);
+    test_decimal_dynamic(db);
     test_zero_block_fetch_size(db);
     test_projection(db);
     test_converter_round_trip(db);
@@ -1055,6 +1103,7 @@ int main() {
     db.execute_update(std::string("DROP TABLE ") + k_table);
     db.execute_update(std::string("DROP TABLE ") + k_pair_table);
     db.execute_update(std::string("DROP TABLE ") + k_order_table);
+    db.execute_update(std::string("DROP TABLE ") + k_dec_table);
   } catch (std::exception const& e) {
     std::printf("FATAL: unexpected exception: %s\n", e.what());
     ++uniorm::test::failure_count();

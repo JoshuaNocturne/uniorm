@@ -38,8 +38,9 @@ slot_kind kind_for(sql_type type) {
     return slot_kind::integer;
   case sql_type::real:
   case sql_type::double_precision:
-  case sql_type::decimal:
     return slot_kind::floating;
+  case sql_type::decimal:
+    return slot_kind::text;  // exact literal, not a rounded double
   case sql_type::binary:
   case sql_type::varbinary:
     return slot_kind::bytes;
@@ -143,6 +144,10 @@ struct result_set::impl {
       default: {
         std::size_t capacity =
           std::max<std::size_t>(meta[i].display_size, 31) + 1;
+        if (meta[i].type == sql_type::decimal) {
+          // sign and radix point on top of the declared precision
+          capacity = std::max<std::size_t>(meta[i].display_size + 3, 32);
+        }
         s.text_buf.resize(row_array_size_ * capacity);
         s.indicators.resize(row_array_size_);
         buffer = {backend::buffer_type::chars, s.text_buf.data(),
@@ -171,10 +176,12 @@ struct result_set::impl {
     case slot_kind::floating:
       return s.dbl_vals[row_index];
     case slot_kind::text: {
-      std::size_t offset = row_index * (s.text_buf.size() / row_array_size_);
+      std::size_t capacity = s.text_buf.size() / row_array_size_;
+      std::size_t offset = row_index * capacity;
       std::int64_t ind = s.indicators[row_index];
-      if (ind == backend::no_total ||
-          ind > static_cast<std::int64_t>(s.text_buf.size() / row_array_size_) - 1) {
+      // Any negative left (SQL_NO_TOTAL, SQL_NTS) means the driver gave no
+      // length; casting one to size_t would read out of bounds.
+      if (ind < 0 || ind > static_cast<std::int64_t>(capacity) - 1) {
         return stmt->read_long_text(i + 1);
       }
       return std::string(
@@ -184,8 +191,8 @@ struct result_set::impl {
       std::size_t capacity = s.bin_buf.size() / row_array_size_;
       std::size_t offset = row_index * capacity;
       std::int64_t ind = s.indicators[row_index];
-      bool truncated = ind == backend::no_total ||
-                       ind > static_cast<std::int64_t>(capacity);
+      bool truncated =
+        ind < 0 || ind > static_cast<std::int64_t>(capacity);
       if (truncated) {
         return stmt->read_long_bytes(i + 1);
       }

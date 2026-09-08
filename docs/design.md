@@ -1,7 +1,7 @@
 # uniorm v1 设计文档
 
 状态：v1 实现完成（单元测试 + MariaDB 集成测试 + 性能基准通过）
-日期：2026-09-04（本版按当前代码逐节核对，偏差集中记于"已知缺口"）
+日期：2026-09-08（本版按当前代码逐节核对，偏差集中记于"已知缺口"）
 
 ## 1. 目标与范围
 
@@ -32,11 +32,12 @@ uniorm 是一个基于 **ODBC**（而非各数据库专有 C 客户端）的现�
 - 游标更新（可更新结果集游标；批量写入走数组参数绑定，见 §4.5.2）
 - Schema 迁移管理（migration）
 
-### 已知缺口（v1 声明未接线 / 实现偏离承诺）
+### 已知缺口（v1 声明未接线 / 实现留有欠账）
 
-以下条目在本文档中是设计契约，但代码只落地了声明侧或偏离了承诺。列在此处而非埋在
+以下条目在本文档中是设计契约，但代码只落地了一部分。列在此处而非埋在
 正文，是为了让"文档承诺 = 当前实现"这条约束成立（§3.1/§4.2/§4.3/§10
-已就地标注）。前者是"声明未接线"，后者是"实现与承诺不符"。
+已就地标注）。第 1 项是"声明未接线"；第 2 项的承诺（动态行无损）已兑现，
+只剩 `decimal_t` 未做。
 
 另有三处较小的偏差体量不足以单列，直接在正文就地写实并进了 §9：池归还连接时
 不清理事务/autocommit 状态（§4.9）、"不碰 ODBC"只到链接行为止（§5.1）、
@@ -49,18 +50,22 @@ uniorm 是一个基于 **ODBC**（而非各数据库专有 C 客户端）的现�
    自己的注释除外）。宽 SQL 类型（WVARCHAR 等）的实际读取依赖
    驱动侧字符集转换，库本身不做 UTF-16 → UTF-8。
 
-2. **DECIMAL 的动态路径有损**（§4.3）：`result_set`/`row` 把
-   `sql_type::decimal` 归入 `slot_kind::floating`（`src/result_set.cpp`），以
-   `buffer_type::float64` → `SQL_C_DOUBLE` 绑定，即动态行取到的 DECIMAL 是
-   `double`，**不无损**；无损只发生在实体/投影侧——字段声明为 `std::string`，或声明为
-   以 `std::string` 为 `db_type` 表示的 converter 类型（§4.4），都按 `SQL_C_CHAR` 直绑。
-   `decimal_t` 别名不存在；`UNIORM_DECIMAL_AS_STRING` 被
-   CMake 定义但代码中零引用（`UNIORM_DECIMAL_AS_DOUBLE` 仅在 `uniorm-gen` 的默认
-   类型映射里被 `#ifdef`），所以 `UNIORM_DECIMAL_DEFAULT` 目前只改变生成物、
-   不改变库；该宏只到 `$<BUILD_INTERFACE:>` 为止，不进已安装接口（§3.1）；
-   `SQLDescribeCol` 读到的 scale 被丢弃，`column_info` 无法表达精度；
+2. **DECIMAL 的动态路径**（§4.3）：`result_set`/`row` 现把 `sql_type::decimal`
+   归入 `slot_kind::text`（`src/result_set.cpp`），以 `SQL_C_CHAR` 绑定，动态行取到
+   驱动给出的**精确定点字面量**（含 scale，如 `0.1000`），不再经 `SQL_C_DOUBLE`
+   舍入。`value_cast` 按需把字面量解析回算术目标：`get<double>` 仍可用（解析后仍受
+   double 精度所限），`get<std::int64_t>` 对 scale-0 列成立、对带小数或超 int64
+   范围的字面量抛 `type_mismatch`（与既有 double→整数拒绝一致；`sql_value` 不带列
+   类型，故这条解析对任何恰为数字的文本生效，不限于 decimal 列）。`column_info` 新增
+   `scale`（取自 `SQLDescribeCol` 的 DecimalDigits），`display_size` 对 decimal 即
+   precision。无损读取仍推荐实体/投影侧声明 `std::string` 或 `db_type = std::string`
+   的 converter（§4.4），两者按 `SQL_C_CHAR` 直绑。
+   剩余欠账：真正的 `decimal_t`（尾数 + scale）尚未做——字面量已进进程，它只是其上
+   一层解析，可后置。（原先的 CMake 选项 `UNIORM_DECIMAL_DEFAULT` 及其派生宏已删除：
+   库代码从不读它，只有 `uniorm-gen` 的默认映射读，而那个默认现在恒为无损一侧，
+   要 `double` 走生成器配置的 `[types]` / `cpp_type`，见 §4.3/§6.4。）
 
-两项均已进 §9 路线图。
+第 1 项与第 2 项的剩余部分（`decimal_t`）已进 §9 路线图。
 
 ### 基础决策
 
@@ -190,8 +195,7 @@ uniorm/
   可守——给 `connection` 加一个成员就足以让已编译的消费者崩在运行期——与其用
   `libuniorm.so.0` 掩盖这种破坏，不如让链接期直接失败；
 - ODBC 与线程都是 PRIVATE 依赖，不进导出接口：`libodbc.so` 由 `libuniorm.so` 自己的
-  `DT_NEEDED` 载入，消费者无需 `find_dependency(ODBC)`；`UNIORM_DECIMAL_DEFAULT`
-  派生的宏同理只到 `$<BUILD_INTERFACE:>` 为止（库代码并不读它，见已知缺口 2）。
+  `DT_NEEDED` 载入，消费者无需 `find_dependency(ODBC)`。
 - `uniorm-gen` 走 RUNTIME 安装但不进 `EXPORT`：它是"跑一遍"的程序，不是被链接的
   目标，导出它便等于把 `uniorm_gen_core`（内部静态切分，靠 `-I src` 读私有头）
   伪装成对外 API。它的 `DT_NEEDED` 写死 `libuniorm.so.0.1`，而构建树留下的
@@ -284,7 +288,7 @@ class statement {                      // SQLHSTMT，move-only
 - 字符串列与参数一律按窄字符绑定（`SQL_C_CHAR` / `SQL_VARCHAR`）；宽字符绑定路径
   未实现，WVARCHAR 等宽 SQL 类型只能指望驱动自己的窄字符转换（无测试覆盖），
   见"已知缺口"；
-- 长数据（长 VARCHAR / BLOB）v1 策略：绑定固定缓冲，截断（indicator 超界或 `SQL_NO_TOTAL`）时经 `SQLGetData` 循环重取**完整值**整体替换——MariaDB Connector/ODBC 在截断续读时返回的是全量值而非剩余部分，追加式拼接会重复计数据；
+- 长数据（长 VARCHAR / BLOB）v1 策略：绑定固定缓冲，截断（indicator 为负——`SQL_NO_TOTAL` 或 `SQL_NTS`——或超出缓冲）时经 `SQLGetData` 循环重取**完整值**整体替换——MariaDB Connector/ODBC 在截断续读时返回的是全量值而非剩余部分，追加式拼接会重复计数据；
 - 实际设置的 ODBC 属性全集：`SQL_ATTR_ODBC_VERSION`（先试 `SQL_OV_ODBC3_80`，
   失败回退 `SQL_OV_ODBC3`）、`SQL_ATTR_AUTOCOMMIT`、`SQL_ATTR_ROW_ARRAY_SIZE`、
   `SQL_ATTR_ROWS_FETCHED_PTR`（构造语句时一次性绑定，故 `fetch()` 后直接读计数）、
@@ -349,27 +353,27 @@ ODBC adapter 内翻成 `SQL_C_*`；`uniorm-gen` 的默认映射决定生成实�
 | BIT | `bool` |
 | TINYINT / SMALLINT / INTEGER / BIGINT | `int16_t` / `int32_t` / `int64_t`（TINYINT 也接受 `int8_t`） |
 | REAL / FLOAT / DOUBLE | `double`（`float` 不是可绑定成员类型，单精度列一律落 `double`；`uniorm-gen` 对此告警） |
-| DECIMAL / NUMERIC | 见下方"DECIMAL 策略"（实体/投影随字段类型：`std::string` 即无损；动态行取 `double`，有损） |
+| DECIMAL / NUMERIC | 见下方"DECIMAL 策略"（实体/投影随字段类型：`std::string` 即无损；动态行取精确定点字面量，`get<std::string>` 无损、`get<double>` 按需解析） |
 | CHAR / VARCHAR / LONGVARCHAR | `std::string` |
 | WCHAR / WVARCHAR / WLONGVARCHAR | `std::string`（走窄字符路径，转换归驱动；库内未接线，见 §4.2） |
 | DATE / TIME / TIMESTAMP | `timestamp`（DATE/TIME 补零时间部分后同样落为 `timestamp`；v1 不单独提供日历/时刻类型） |
 | BINARY / VARBINARY / LONGVARBINARY | `std::vector<std::byte>` |
 | GUID | `std::string`（v1 以字符串形式暴露） |
 
-**DECIMAL 策略（两级选择）**：
+**DECIMAL 策略（默认无损，覆写按列）**：
 
-1. **全局默认**：CMake 选项 `UNIORM_DECIMAL_DEFAULT`（`string`（默认）/ `double`，
-   非法值即 `FATAL_ERROR`）以 PUBLIC 编译定义 `UNIORM_DECIMAL_AS_STRING` /
-   `UNIORM_DECIMAL_AS_DOUBLE` 注入。实际作用范围有限：只有 `uniorm-gen` 的默认类型
-   映射 `#ifdef UNIORM_DECIMAL_AS_DOUBLE`（据此把 DECIMAL 列生成为 `double` 或
-   `std::string`），库自身零引用 `_AS_STRING`；`decimal_t` 别名不存在；动态行路径
-   完全绕过该开关，一律 `SQL_C_DOUBLE`。因此"默认无损"只在成员/字段声明为
-   `std::string` 时成立（见已知缺口）；
-2. **逐列覆写**：任一列可通过 `converter<C>` 特化（§4.4）映射到自定义类型（含
-   `double` / `std::string` / 第三方 decimal 类），其 `db_type` 为 `std::string` 时即
-   无损；`uniorm-gen` 侧的入口是 `converter = "..."`（§6.4），生成的成员就是该域
-   类型，头文件以 `static_assert(uniorm::has_converter<C>)` 要求特化存在。`cpp_type`
-   （含 `[types]` 全局覆写）仍限于本节的可绑定集合。
+1. **默认**：动态行一律按 `SQL_C_CHAR` 取精确定点字面量（`slot_kind::text`），
+   `get<std::string>` 得字面量，`get<double>` 经 `value_cast` 解析（仍受 double
+   精度所限）；`uniorm-gen` 把 DECIMAL/NUMERIC 列一律生成为 `std::string` 成员，
+   实体/投影侧因此也按 `SQL_C_CHAR` 直绑。这个默认曾经可配（CMake 选项
+   `UNIORM_DECIMAL_DEFAULT`，`string` / `double`），但库代码从不读它派生的宏，
+   只有生成器的默认映射读，一个"只改生成物"的构建期旋钮不足以承担配置项的名义，
+   故已删除；`decimal_t` 别名不存在（见已知缺口第 2 项）；
+2. **逐列覆写**：要 `double` 或第三方 decimal 类，走生成器配置的 `cpp_type` /
+   `[types]`（§6.4，取值限于本节的可绑定集合），或 `converter<C>` 特化（§4.4）——
+   其 `db_type` 为 `std::string` 时即无损；`uniorm-gen` 侧的入口是
+   `converter = "..."`，生成的成员就是该域类型，头文件以
+   `static_assert(uniorm::has_converter<C>)` 要求特化存在。
 
 可空列对应 `std::optional<T>`；绑定与取值逻辑对 `optional` 做特化
 （indicator 写 `backend::null_indicator`，其值即 ODBC 侧的 `SQL_NULL_DATA`）。
@@ -444,8 +448,10 @@ namespace uniorm {
 struct column_info {
     std::string name;
     sql_type type;                 // backend 中立枚举（types.hpp）
-    std::size_t display_size;
+    std::size_t display_size;      // DECIMAL/NUMERIC 即 precision
     bool nullable;
+    std::size_t scale = 0;         // 小数位数（取自 DecimalDigits）；追加在
+                                   // 末尾，旧头文件读到的字段偏移不变
 };
 
 // 行式绑定结果集；move-only，pimpl；由 connection::execute 创建
@@ -456,7 +462,8 @@ class result_set {
     column_info const& column(std::size_t index) const;
 };
 
-// sql_value → T：精确匹配优先，整数宽度间范围检查收窄，
+// sql_value → T：精确匹配优先，整数宽度间范围检查收窄，文本按需解析成
+// 算术目标（DECIMAL 即以字面量文本进进程；带小数或超范围即拒），
 // 支持 std::optional<U>；失败抛 type_mismatch
 template <class T> T value_cast(sql_value const& v);
 
@@ -1341,7 +1348,8 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
 - **单元测试**（无数据库，已实现，拆为两个目标）：
   `uniorm_unit_tests` 不链接 ODBC——`test_unicode`（UTF-8/16 往返与非法
   输入）、`test_pfr`（字段数探测/展开/concept 负例）、`test_row`
-  （value_cast/收窄/optional）、`test_params`（值归一化）、`test_converter`
+  （value_cast/收窄/optional/文本字面量按需解析成算术目标）、
+  `test_params`（值归一化）、`test_converter`
   （converter 优先于枚举与隐式转字符串两支、表示决定读侧绑定与批量暂存、列的可接受
   类型族、按值取槽位的 `from_db` 搬走暂存缓冲区且跨行复用绑定后仍成立）、
   `test_expression`（谓词 SQL 生成、方言、分页）、`test_registry`
@@ -1356,7 +1364,7 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
   `test_gen_output`（命名转换边界 + 生成器快照与覆写/跳表/converter 生成/错误路径）；
   后两个只在 `UNIORM_BUILD_TOOLS` 打开时编入（同时定义 `UNIORM_TEST_GEN`），
   因为它们要链 `uniorm_gen_core`；
-- **集成测试**（已实现，DSN/凭据由 `UNIORM_IT_DSN` / `UNIORM_IT_USER` / `UNIORM_IT_PWD` 指定，凭据以 `UID`/`PWD` 写进连接串；连不上时 ctest SKIP）：execute/params 往返、动态行（含 `connection::execute` 显式块取行大小 0 退回逐行）、聚合投影（含长字符串与 timestamp）、converter 往返（批量插入、实体物化含 NULL、
+- **集成测试**（已实现，DSN/凭据由 `UNIORM_IT_DSN` / `UNIORM_IT_USER` / `UNIORM_IT_PWD` 指定，凭据以 `UID`/`PWD` 写进连接串；连不上时 ctest SKIP）：execute/params 往返、动态行（含 `connection::execute` 显式块取行大小 0 退回逐行）、DECIMAL 动态路径（`DECIMAL(20,4)` / `(20,0)` / `(38,0)` 取回精确定点字面量与 `column_info::scale`，按需解析成 double、scale-0 解析成 int64，带小数或超 int64 范围的字面量抛 `type_mismatch`，NULL 仍报 `is_null`）、聚合投影（含长字符串与 timestamp）、converter 往返（批量插入、实体物化含 NULL、
 `in` 谓词、投影、构建器 `set`/批量 update、动态行 `get<T>`）、orm validate（含 strict
 的列缺失/可空/类型族三条失败路径）、查询构建器全谓词与分页、事务 commit/rollback/析构回滚、批量插入（含空 optional 写 NULL、1500 行跨 `paramset_size` 分批）、批量 update / 批量 remove（实体版按主键与全字段两种 WHERE，含一张复合主键表验证单实体与批量都按全部键列命中、非键行不被牵连，动态版 `orm::update(table)` / `orm::remove(table)`，以及 `query<T>::set/update/remove` 与无 WHERE / 无 SET / WHERE 字段未映射的守卫抛错）、语句缓存（hit/miss 计数、流式 result_set 借出期间并发 miss、清空）、跨层错误上报（驱动失败以 `backend_error` 捕获，核对 `backend_name()`
 与 SQLSTATE 诊断）、连接池借还与超时、连接池维护（心跳保活计数、空闲超时驱逐、失败心跳丢弃；"排空"一律轮询等待而非单次采样，因为正被心跳的连接仍计入 `idle_count()`）；后续按库加条件标签覆盖方言与类型怪癖；
@@ -1382,19 +1390,23 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
   （`golden/gen_it.toml`，其 `converter` 键让 `note` 生成为域类型）生成 →
   与 golden 头文件逐字节比对；golden 本身被编译进测试，执行注册 +
   `validate(strict)` + 构建器 `count()` + 实体写入与物化读回，覆盖"生成 → 编译 →
-  注册 → 校验 → 读写"全链路。golden 假定默认 `UNIORM_DECIMAL_DEFAULT=string`。
+  注册 → 校验 → 读写"全链路。
 
 ## 9. v2 路线图
 
-**v1 欠账**（对应"已知缺口"两项：前者是接线，后者是补做从未落地的实现；
-都宜排在 v2 新特性之前）：
+**v1 欠账**（对应"已知缺口"两项：前者是接线，后者只剩一个从未落地的类型
+（`decimal_t`）；都宜排在 v2 新特性之前）：
 
 - ODBC 宽字符路径（§4.2）：确需宽字符时用 `SQL_C_WCHAR` 绑定并经 `src/unicode.hpp`
   转换（含 Windows 下的 DSN 连接串）；若确认不做，则删掉这两个零调用者的函数，
   以免文档与代码互相印证出一个不存在的特性。
-- DECIMAL 无损动态路径（§4.3）：定一个真正的 `decimal_t`（值 + scale），
-  动态行按 `SQL_C_CHAR` 取原始字面量而非经由 `SQL_C_DOUBLE`，并把保留的
-  `scale` 用起来；顺带清掉零引用的 `UNIORM_DECIMAL_AS_STRING`；
+- DECIMAL 无损动态路径（§4.3）：~~动态行按 `SQL_C_CHAR` 取原始字面量、
+  `column_info` 保留 `scale`、清掉零引用的 `UNIORM_DECIMAL_AS_STRING`~~
+  **已完成**——`sql_type::decimal` 归入 `slot_kind::text`，字面量精确进进程，
+  `value_cast` 按需解析回算术目标；`scale` 目前只对外暴露，库内无消费点；
+  `UNIORM_DECIMAL_DEFAULT` 连同派生宏一并删除，生成器的 DECIMAL 默认恒为
+  `std::string`，要 `double` 走配置的 `[types]` / `cpp_type`。**待做**：真正的
+  `decimal_t`（尾数 + scale）；
 - ~~打包~~ **已完成（§3.1）**：`install(TARGETS/EXPORT)` + config/version 文件 +
   `VERSION`/`SOVERSION`，`$<INSTALL_INTERFACE:include>` 与 `project(VERSION)` 已
   生效，外部工程可用 `find_package(uniorm CONFIG)` 接入，`uniorm-gen` 也随
@@ -1424,13 +1436,14 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
 ## 10. 评审待定点
 
 1. ~~聚合投影自实现 PFR 手法还是依赖 Boost.PFR~~ **已定：自实现 pfr-lite，字段上限 64，不引入 Boost**（见 §4.6）；
-2. ~~DECIMAL/NUMERIC v1 默认映射~~ **已定方向：可配，默认取无损一侧**（见 §4.3）。
-   v1 落地的部分远小于此：`UNIORM_DECIMAL_DEFAULT` 只决定 `uniorm-gen` 生成的
-   成员类型（`string` → `std::string`，`double` → `double`），既没有 `decimal_t`，
-   动态行也一律走 `double`（有损）；逐列覆写经 converter（§4.4）已可用。缺口见
-   "已知缺口"第 2 条与 §9 欠账；
+2. ~~DECIMAL/NUMERIC v1 默认映射~~ **已定方向：默认取无损一侧**（见 §4.3）。
+   动态行取精确定点字面量（无损），`uniorm-gen` 恒生成 `std::string` 成员，
+   实体/投影随成员类型（`std::string` 即无损）；"可配"原先落在 CMake 选项
+   `UNIORM_DECIMAL_DEFAULT` 上，但它只改生成物、不改库，已删除——配置改由
+   生成器的 `[types]` / `cpp_type` / `converter` 按列承担（§6.4/§4.4）。仍缺
+   `decimal_t`，见"已知缺口"第 2 条与 §9 欠账；
 3. ~~`orm`（注册表）与 `connection` 的组合方式~~ **已定：`orm` 作为中心入口，内部持有 `connection`**，`db.query().of<T>()`、`db.insert()`、`db.update()` 等统一经 `orm` 调用（见 §4.8）；
 4. ~~头文件-only 还是编译库~~ **已定：动态库**（避免 header-only 升级后全量重编），非模板实现进 `libuniorm`，模板代码留头文件（见 §1）。
 
-**四项决策均已定。**注意"决策定了"不等于"实现到位"——第 2 项落地最少，
-差距集中在"已知缺口"。
+**四项决策均已定。**注意"决策定了"不等于"实现到位"——第 2 项仍欠一个
+`decimal_t`，见"已知缺口"。

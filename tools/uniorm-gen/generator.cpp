@@ -69,12 +69,7 @@ std::string default_cpp_type(
     return "double";
   case sql_type::double_precision:
     return "double";
-  case sql_type::decimal:
-#ifdef UNIORM_DECIMAL_AS_DOUBLE
-    return "double";
-#else
-    return "std::string";
-#endif
+  case sql_type::decimal:  // exact literal; [types] or cpp_type can override
   case sql_type::character:
   case sql_type::varchar:
   case sql_type::longvarchar:

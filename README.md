@@ -70,7 +70,6 @@ Options:
 | Option | Default | Description |
 | --- | --- | --- |
 | `CMAKE_BUILD_TYPE` | `Debug` | Debug / Release / RelWithDebInfo / MinSizeRel |
-| `UNIORM_DECIMAL_DEFAULT` | `string` | Default C++ mapping for DECIMAL/NUMERIC (`string` or `double`) |
 | `UNIORM_BUILD_TESTS` | `ON` | Build unit/integration/perf tests |
 | `UNIORM_BUILD_TOOLS` | `ON` | Build tools (`uniorm-gen`) |
 | `UNIORM_BACKEND_ODBC` | `ON` | Build the ODBC backend into `libuniorm`; off builds are core-only (`UNIORM_BUILD_TOOLS` must be off too) |

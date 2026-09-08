@@ -57,7 +57,6 @@ cmake --build build -j
 | 选项 | 默认 | 说明 |
 | --- | --- | --- |
 | `CMAKE_BUILD_TYPE` | `Debug` | Debug / Release / RelWithDebInfo / MinSizeRel |
-| `UNIORM_DECIMAL_DEFAULT` | `string` | DECIMAL/NUMERIC 的默认 C++ 映射（`string` 或 `double`） |
 | `UNIORM_BUILD_TESTS` | `ON` | 构建单元/集成/性能测试 |
 | `UNIORM_BUILD_TOOLS` | `ON` | 构建工具（`uniorm-gen`） |
 | `UNIORM_BACKEND_ODBC` | `ON` | 将 ODBC backend 编入 `libuniorm`；关闭后为纯核心构建（须同时关闭 `UNIORM_BUILD_TOOLS`） |

@@ -16,12 +16,6 @@ endif()
 set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS Debug Release RelWithDebInfo MinSizeRel)
 message(STATUS "uniorm build type: ${CMAKE_BUILD_TYPE}")
 
-set(UNIORM_DECIMAL_DEFAULT "string" CACHE STRING "Default C++ mapping for DECIMAL/NUMERIC columns")
-set_property(CACHE UNIORM_DECIMAL_DEFAULT PROPERTY STRINGS string double)
-if(NOT UNIORM_DECIMAL_DEFAULT MATCHES "^(string|double)$")
-    message(FATAL_ERROR "UNIORM_DECIMAL_DEFAULT must be 'string' or 'double'")
-endif()
-
 option(UNIORM_BUILD_TESTS "Build uniorm tests" ON)
 option(UNIORM_BUILD_TOOLS "Build uniorm tools (uniorm-gen)" ON)
 option(UNIORM_BACKEND_ODBC "Build the ODBC backend" ON)
@@ -69,16 +63,6 @@ if(UNIORM_BACKEND_ODBC)
     target_link_libraries(uniorm PRIVATE ODBC::ODBC)
 endif()
 target_compile_definitions(uniorm PRIVATE UNIORM_BUILDING_DLL)
-# The mapping only uniorm-gen reads, so it stays a build-tree concern: shipping
-# it in the installed interface would tell consumers they must match a
-# configuration the library itself never consults.
-if(UNIORM_DECIMAL_DEFAULT STREQUAL "string")
-    target_compile_definitions(uniorm PUBLIC
-        $<BUILD_INTERFACE:UNIORM_DECIMAL_AS_STRING>)
-else()
-    target_compile_definitions(uniorm PUBLIC
-        $<BUILD_INTERFACE:UNIORM_DECIMAL_AS_DOUBLE>)
-endif()
 
 if(UNIORM_BUILD_TOOLS AND NOT UNIORM_BACKEND_ODBC)
     message(FATAL_ERROR

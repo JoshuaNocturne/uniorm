@@ -18,7 +18,6 @@
 //     --tables=uniorm_gen_user,uniorm_gen_order --name=gen_it \
 //     --config=tests/integration/golden/gen_it.toml \
 //     --out=tests/integration/golden
-// (assumes the default UNIORM_DECIMAL_DEFAULT=string build).
 // The macros expand to quoted string literals provided by CMake.
 
 // The domain type the override file names. A generated header reaches a

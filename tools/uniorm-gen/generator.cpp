@@ -37,6 +37,8 @@ bool is_bindable_cpp_type(std::string const& t) {
     "std::vector<std::byte>",
     "uniorm::timestamp",
     "timestamp",
+    "uniorm::decimal_t",
+    "decimal_t",
   };
   return allowed.count(normalize_type(t)) != 0;
 }
@@ -46,8 +48,9 @@ std::string check_bindable(std::string const& t, std::string const& where) {
     throw config_error(where + ": cpp type '" + t +
                        "' cannot be bound by the v1 registry (allowed: "
                        "bool, std::int8_t..int64_t, double, std::string, "
-                       "std::vector<std::byte>, uniorm::timestamp; a domain "
-                       "type goes under converter = \"...\")");
+                       "std::vector<std::byte>, uniorm::timestamp, "
+                       "uniorm::decimal_t; a domain type goes under "
+                       "converter = \"...\")");
   }
   return normalize_type(t);
 }

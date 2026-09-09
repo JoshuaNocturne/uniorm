@@ -35,7 +35,7 @@ inline void register_UniormGenUser_mapping(uniorm::orm& registry) {
 struct UniormGenOrder {
   std::int64_t id;  // BIGINT(19) PK NOT NULL
   std::int64_t userId;  // BIGINT(19) NOT NULL
-  std::string amount;  // DECIMAL(10,2) NOT NULL
+  uniorm::decimal_t amount;  // DECIMAL(10,2) NOT NULL
   std::optional<order_state> note;  // VARCHAR(128) DEFAULT NULL
 };
 

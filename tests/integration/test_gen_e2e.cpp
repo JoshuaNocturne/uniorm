@@ -9,6 +9,7 @@
 
 #include <uniorm/connection.hpp>
 #include <uniorm/converter.hpp>
+#include <uniorm/decimal.hpp>
 #include "uniorm/mapping/registry.hpp"
 #include "uniorm/builder/builder.hpp"
 
@@ -92,8 +93,9 @@ void test_golden(std::string_view conn_string) {
   db.validate(validation_mode::strict);
   CHECK(db.query().of<gen_it::UniormGenUser>().count() == 0);
 
-  // The generated entity carries a converter-backed column, so a write and a
-  // materialized read here cover the whole generated mapping.
+  // The generated entity carries both a converter-backed column and a
+  // decimal_t one, so a write and a materialized read here cover the whole
+  // generated mapping.
   gen_it::UniormGenUser user;
   user.id = 1;
   user.name = "ada";
@@ -101,13 +103,14 @@ void test_golden(std::string_view conn_string) {
   gen_it::UniormGenOrder order;
   order.id = 1;
   order.userId = 1;
-  order.amount = "10.50";
+  order.amount = decimal_t::from_literal("10.50");
   order.note = order_state::shipped;
   CHECK(db.insert(std::vector<gen_it::UniormGenOrder>{ order }) == 1);
 
   auto back = db.query().of<gen_it::UniormGenOrder>().one();
   CHECK(back.has_value());
-  CHECK(back->amount == "10.50");
+  CHECK(back->amount == decimal_t::from_literal("10.5"));
+  CHECK(back->amount.to_literal() == "10.50");  // the column's scale
   CHECK(back->note && *back->note == order_state::shipped);
 }
 

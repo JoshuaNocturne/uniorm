@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(uniorm VERSION 0.1.0 LANGUAGES CXX)
+project(uniorm VERSION 0.2.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -27,6 +27,7 @@ find_package(Threads REQUIRED)
 
 add_library(uniorm SHARED
     src/types.cpp
+    src/decimal.cpp
     src/row.cpp
     src/result_set.cpp
     src/connection.cpp

@@ -14,6 +14,7 @@
 
 #include <uniorm/backend/backend.hpp>
 #include <uniorm/converter.hpp>
+#include <uniorm/decimal.hpp>
 #include <uniorm/detail/projection.hpp>
 #include <uniorm/detail/time.hpp>
 #include <uniorm/detail/traits.hpp>

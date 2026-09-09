@@ -4,6 +4,7 @@
 // Users can include this single header instead of picking individual ones.
 
 #include <uniorm/converter.hpp>
+#include <uniorm/decimal.hpp>
 #include <uniorm/dialect.hpp>
 #include <uniorm/error.hpp>
 #include <uniorm/mapping/registry.hpp>

@@ -2,6 +2,7 @@
 
 void test_pfr();
 void test_row();
+void test_decimal();
 void test_params();
 void test_converter();
 void test_expression();
@@ -13,6 +14,7 @@ void test_pool();
 int main() {
   test_pfr();
   test_row();
+  test_decimal();
   test_params();
   test_converter();
   test_expression();

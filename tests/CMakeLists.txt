@@ -2,6 +2,7 @@ add_executable(uniorm_unit_tests
     unit/test_main.cpp
     unit/test_pfr.cpp
     unit/test_row.cpp
+    unit/test_decimal.cpp
     unit/test_params.cpp
     unit/test_converter.cpp
     unit/test_expression.cpp

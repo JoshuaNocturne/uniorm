@@ -15,6 +15,7 @@
 #include <uniorm/backend/error.hpp>
 #include <uniorm/connection.hpp>
 #include <uniorm/converter.hpp>
+#include <uniorm/decimal.hpp>
 #include <uniorm/detail/time.hpp>
 #include <uniorm/mapping/registry.hpp>
 #include <uniorm/orm.hpp>
@@ -40,6 +41,14 @@ struct Pair {
   std::int64_t grp = 0;
   std::int64_t idx = 0;
   std::string label;
+};
+
+// Exact numerics as members rather than as the text a DECIMAL defaults to.
+struct Money {
+  std::int64_t id = 0;
+  decimal_t amount;
+  std::optional<decimal_t> wide;
+  decimal_t whole;
 };
 
 // A domain type the database stores as text rather than as its ordinal.
@@ -81,6 +90,7 @@ char const* k_table = "uniorm_it_user";
 char const* k_pair_table = "uniorm_it_pair";
 char const* k_order_table = "uniorm_it_order";
 char const* k_dec_table = "uniorm_it_decimal";
+char const* k_money_table = "uniorm_it_money";
 std::string const long_note(1000, 'x');
 
 void prepare_schema(orm& db) {
@@ -109,6 +119,12 @@ void prepare_schema(orm& db) {
                       " amount DECIMAL(20,4) NULL,"
                       " whole DECIMAL(20,0) NULL,"
                       " big DECIMAL(38,0) NULL)");
+  db.execute_update(std::string("DROP TABLE IF EXISTS ") + k_money_table);
+  db.execute_update(std::string("CREATE TABLE ") + k_money_table +
+                      " (id BIGINT NOT NULL PRIMARY KEY,"
+                      " amount DECIMAL(20,4) NOT NULL,"
+                      " wide DECIMAL(65,30) NULL,"
+                      " whole DECIMAL(20,0) NOT NULL)");
 }
 
 void seed_rows(orm& db) {
@@ -186,6 +202,56 @@ void test_decimal_dynamic(orm& db) {
   CHECK(r3.is_null("amount"));
   CHECK_THROWS(r3.get<std::string>("amount"), type_mismatch);
   CHECK(!rs.next());
+}
+
+void test_decimal_mapped(orm& db) {
+  struct money_row {
+    std::int64_t id;
+    decimal_t amount;
+    std::optional<decimal_t> wide;
+  };
+
+  db.execute_update(std::string("DELETE FROM ") + k_money_table);
+  std::vector<Money> batch{
+    Money{ 1, decimal_t::from_literal("12345678901234.5678"),
+      decimal_t::from_literal("0.000000000000000000000000000001"),
+      decimal_t::from_literal("42") },
+    Money{ 2, decimal_t::from_literal("-0.05"), std::nullopt,
+      decimal_t::from_literal("0") },
+  };
+  CHECK(db.insert(batch) == 2);
+
+  auto back = db.query().of<Money>().order_by(&Money::id).all();
+  CHECK(back.size() == 2);
+  CHECK(back[0].amount.to_literal() == "12345678901234.5678");
+  CHECK(back[0].whole.to_int64() == 42);
+  // DECIMAL(65,30): no integer type holds this, and no double survives it.
+  CHECK(back[0].wide.has_value() &&
+        back[0].wide->to_literal() == "0.000000000000000000000000000001");
+  CHECK_THROWS(back[0].wide->to_int64(), type_mismatch);
+  CHECK(back[1].amount.to_literal() == "-0.0500");  // the column's scale
+  CHECK(back[1].amount == decimal_t::from_literal("-0.05"));
+  CHECK(!back[1].wide.has_value());
+
+  auto rows = db.query<money_row>(
+    "SELECT id, amount, wide FROM uniorm_it_money ORDER BY id");
+  CHECK(rows.size() == 2);
+  CHECK(rows[0].amount == back[0].amount);
+  CHECK(rows[1].wide == std::nullopt);
+
+  result_set rs = db.execute(
+    "SELECT id, amount FROM uniorm_it_money WHERE id = ?",
+    params{ std::int64_t{ 2 } });
+  CHECK(rs.next());
+  row r = rs.current();
+  CHECK(r.get<decimal_t>("amount") == decimal_t::from_literal("-0.05"));
+  CHECK(r.get<std::string>("amount") == "-0.0500");
+
+  // A decimal_t query value reaches the driver as that same literal.
+  CHECK(db.query()
+          .of<Money>()
+          .where(gt(&Money::amount, decimal_t::from_literal("1")))
+          .count() == 1);
 }
 
 void test_zero_block_fetch_size(orm& db) {
@@ -349,6 +415,11 @@ orm build_registry(std::string_view conn_string) {
     .primary_key("id", &Order::id)
     .column("state", &Order::state)
     .column("note", &Order::note);
+  db.map<Money>(k_money_table)
+    .primary_key("id", &Money::id)
+    .column("amount", &Money::amount)
+    .column("wide", &Money::wide)
+    .column("whole", &Money::whole);
   return db;
 }
 
@@ -1082,6 +1153,7 @@ int main() {
 
     test_dynamic_rows(db);
     test_decimal_dynamic(db);
+    test_decimal_mapped(db);
     test_zero_block_fetch_size(db);
     test_projection(db);
     test_converter_round_trip(db);
@@ -1104,6 +1176,7 @@ int main() {
     db.execute_update(std::string("DROP TABLE ") + k_pair_table);
     db.execute_update(std::string("DROP TABLE ") + k_order_table);
     db.execute_update(std::string("DROP TABLE ") + k_dec_table);
+    db.execute_update(std::string("DROP TABLE ") + k_money_table);
   } catch (std::exception const& e) {
     std::printf("FATAL: unexpected exception: %s\n", e.what());
     ++uniorm::test::failure_count();

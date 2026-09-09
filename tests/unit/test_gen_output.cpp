@@ -132,6 +132,19 @@ void test_generate_converter() {
   CHECK(out.warnings.empty());
 }
 
+void test_generate_decimal_member() {
+  gen_config cfg;
+  cfg.tables["t_order"].columns["amount"].cpp_type = "uniorm::decimal_t";
+  generated_output out = generate_header(make_fixture(), cfg);
+  std::string const& text = out.text;
+
+  // The type arrives with the library, so unlike a domain type it needs no
+  // specialization the caller has to declare first.
+  CHECK(contains(text, "std::optional<uniorm::decimal_t> amount;"));
+  CHECK(!contains(text, "has_converter<uniorm::decimal_t>"));
+  CHECK(out.warnings.empty());
+}
+
 void test_generate_errors() {
   gen_config cfg;
   cfg.tables["t_order"].columns["status"].cpp_type = "money";
@@ -157,6 +170,7 @@ void test_gen_output() {
   test_generate();
   test_generate_class_override();
   test_generate_converter();
+  test_generate_decimal_member();
   test_generate_errors();
   test_generate_real_warning();
 }

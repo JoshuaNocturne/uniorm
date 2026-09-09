@@ -32,6 +32,11 @@ See [docs/design.md](docs/design.md) for the full design.
   representation a domain type binds as, and that representation carries it
   through entity fields, parameters and projections; `validate(strict)`
   compares it against the live column type
+- **Exact decimals** — `uniorm::decimal_t` holds a fixed-point value (digits
+  plus scale) that compares by value and allocates nothing per value;
+  DECIMAL/NUMERIC columns default to a lossless `std::string` member, and a
+  per-column `cpp_type` override swaps in `decimal_t`, which binds as exactly
+  that string representation
 - **Batch writes** — `db.insert(rows)` and batch `db.update(rows)` /
   `db.remove(rows)`: one row of placeholders sent with array parameter binding
   (`SQL_ATTR_PARAMSET_SIZE`), chunked by `paramset_size`, wrapped in a
@@ -300,6 +305,7 @@ docs/design.md        design document (authoritative API reference)
 v1 is complete and verified against MariaDB, including the `uniorm-gen`
 end-to-end flow. v2 is underway: the backend abstraction is in place
 (neutral interface + scheme-based registry, ODBC migrated behind it,
-ODBC linked privately, core unit tests compile and run without ODBC);
-native libpq / Oracle OCI backends and more follow — see design doc §5
-and §9.
+ODBC linked privately, core unit tests compile and run without ODBC), and
+v1's last type-level debt is closed (`uniorm::decimal_t`); wiring the test
+suite into CI and native libpq / Oracle OCI backends follow — see design doc
+§5 and §9.

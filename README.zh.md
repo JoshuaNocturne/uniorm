@@ -25,6 +25,9 @@ ODBC 接口访问任意提供 ODBC 驱动的数据库，在通用层之上提供
 - **自定义类型映射**：特化 `uniorm::converter<T>` 即命名域类型所绑定的 SQL
   表示，该表示带着域类型走通实体字段、参数与投影；`validate(strict)`
   会拿它与活库的列类型比对
+- **精确定点小数值**：`uniorm::decimal_t` 存尾数 + scale，按值比较、逐值零分配；
+  DECIMAL/NUMERIC 列默认生成为无损的 `std::string` 成员，按列 `cpp_type` 覆写即
+  换成 `decimal_t`，而它绑定的正是这个字符串表示
 - **批量写入**：`db.insert(rows)` 与批量 `db.update(rows)` /
   `db.remove(rows)`：一条占位符语句经数组参数绑定
   （`SQL_ATTR_PARAMSET_SIZE`）展开，按 `paramset_size` 分批并包进事务
@@ -269,5 +272,6 @@ docs/design.md        设计文档（权威 API 参考）
 
 v1 已完成并通过 MariaDB 集成验证（含 `uniorm-gen` 端到端）。v2 进行中：
 backend 抽象已落地（中立接口 + scheme 注册表，ODBC 迁移至接口之后、
-改为 PRIVATE 链接，核心单测在不链接 ODBC 的情况下编译运行）；后续为
+改为 PRIVATE 链接，核心单测在不链接 ODBC 的情况下编译运行），v1 最后一笔
+类型层面的欠账已清（`uniorm::decimal_t`）；后续为把测试接进 CI、
 libpq / Oracle OCI 原生 backend 等，见设计文档 §5 与 §9。

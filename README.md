@@ -303,9 +303,14 @@ docs/design.md        design document (authoritative API reference)
 ## Status
 
 v1 is complete and verified against MariaDB, including the `uniorm-gen`
-end-to-end flow. v2 is underway: the backend abstraction is in place
-(neutral interface + scheme-based registry, ODBC migrated behind it,
-ODBC linked privately, core unit tests compile and run without ODBC), and
-v1's last type-level debt is closed (`uniorm::decimal_t`); wiring the test
-suite into CI and native libpq / Oracle OCI backends follow — see design doc
-§5 and §9.
+end-to-end flow; the same suite also passes against a real MySQL server
+through Connector/ODBC with server-side prepares. v2 is underway: the
+backend abstraction is in place (neutral interface + scheme-based registry,
+ODBC migrated behind it, ODBC linked privately, core unit tests compile and
+run without ODBC), and v1's last type-level debt is closed
+(`uniorm::decimal_t`). A CI workflow now guards both shapes — the ODBC-free
+compile contract and a live-server run under each driver. All three jobs have
+been replayed inside the image the runner uses, against the same MariaDB the
+job itself serves, and that replay is what settled which connector each leg
+installs and which version of it. Only its first execution on GitHub is still
+ahead. Native libpq / Oracle OCI backends follow — see design doc §5 and §9.

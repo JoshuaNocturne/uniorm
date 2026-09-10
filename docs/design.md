@@ -143,7 +143,8 @@ uniorm/
 │   └── perf/                    # test_perf.cpp（ctest 标签 perf）
 ├── docs/design.md
 ├── README.md / README.zh.md     # 双语入口文档
-├── .clang-format                # Google 风格基线（未挂 hook，无 CI）
+├── .clang-format                # Google 风格基线（未挂 hook，流水线也不校验格式）
+├── .github/workflows/ci.yml     # 两条形状：无 ODBC 的编译契约 + 双驱动对活库跑 ctest
 └── .gitignore
 ```
 
@@ -1431,7 +1432,8 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
   夹具表（含 PK/FK/索引/DECIMAL/DATETIME）→ 工具带检入的覆写文件
   （`golden/gen_it.toml`，其 `converter` 键让 `note` 生成为域类型，`cpp_type` 键把
   `amount` 生成为 `uniorm::decimal_t`）生成 →
-  与 golden 头文件逐字节比对；golden 本身被编译进测试，执行注册 +
+  与 golden 头文件逐字节比对（`UNIORM_GEN_SKIP_GOLDEN` 非空则只生成不比字节，见 §8 的
+  矩阵条目）；golden 本身被编译进测试，执行注册 +
   `validate(strict)` + 构建器 `count()` + 实体写入与物化读回（读回同时核对
   `decimal_t` 的值相等与按列 scale 还原出的字面量），覆盖"生成 → 编译 →
   注册 → 校验 → 读写"全链路。
@@ -1443,11 +1445,60 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
   抛 `unknown_scheme`，ODBC 构建下另核对 `"odbc"` 已随载入自注册 → 再以 `99.0.0` 配置
   一次，要求被 `SameMinorVersion` 拒掉 → 最后运行装出来的 `uniorm-gen --help`，它只可能
   经 `$ORIGIN/../<libdir>` 载到库，故 RPATH 改写一并验了。
+- **CI**（已写入 `.github/workflows/ci.yml`；三支作业都已按作业原样在它所要用的镜像里
+  跑过——`core` 与两条驱动腿在 ubuntu:24.04 容器里执行，服务端用的是一只照抄作业
+  `services` 块起出的 `mariadb:11`（实测 11.8.9），连 `MARIADB_DATABASE`/`MARIADB_USER`
+  生成的授权与 `mariadb-admin ping` 健康门（约 20 s 转 healthy）也一并验了；runner 上
+  还没有）：
+  一支 `UNIORM_BACKEND_ODBC=OFF`
+  的构建只跑 `unit_tests`，替 §3 那条"驱动类型不漏进 statement 层之上的公开头"把关——
+  这条承诺此前只在注释里，没有任何东西在守它。另一支按**驱动**成矩阵，对 `mariadb:11`
+  服务容器跑除 `perf` 外的全部五条：MySQL Connector/ODBC 取自 MySQL 自己的 apt 组件
+  （Ubuntu 归档里没有它），MariaDB Connector/ODBC 只能从 tag 拉源码构建（Ubuntu 任何
+  发行版都不打包它，上游 release 也不带二进制）。两支都带 `-Wall -Wextra`——今天零告警，
+  但不 `-Werror`，免得依赖头升级把与回归无关的红压进分支。数据库那一支另有一道报警：
+  测试连不上就返回 77，而 ctest 把 77 记成 Skip 并照样打印"100% tests passed"，所以作业
+  见到输出里的 `Skipped` 即判失败（真正的失败交给 `set -o pipefail`，测试条数不写死），
+  并在构建之前先用 `isql` 打通一次 DSN，把"驱动没装对"与"库有回归"分成两种红。
+  这趟按镜像原样的重放换到的比之前所有手工仿真都多，因为**两条腿拿到的驱动都不是先前那两
+  支**。apt 给的 MySQL 连接器是 `26.7.1`，不是本地仿真那支 `8.4.0`，而 2031 属于 8.4 那一
+  代：同样七种参数形状，26.7.1 在服务端预处理**开着**时对 `10.6.4`、`11.8.9` 两个 banner 与
+  `mysqld-8.4.11` 全通，五条测试也全绿，于是那支腿不再需要 `NO_SSPS`，矩阵里那个键退回成
+  一段写给 8.4.0 的注释，`dsn_extra` 留作逃生口。它同时回答了这个条目原先留给 runner 的
+  未知项：apt 装出的文件叫 `libmyodbc26a.so` / `libmyodbc26w.so`（不沿用 8.4 tarball 的
+  `libmyodbc8*.so`，故驱动经 `dpkg -L` 找，不按名字 glob），而 `w` 那一支会把普通 `varchar`
+  列渲染成 `SQL_WVARCHAR(-9)`，所以注册的是 `a` 那一支；golden 的字节差照旧（`bigint(19)`
+  外加一句服务端从未存过的 `DEFAULT NULL`），逐字节比对仍只属于拥有 golden 的那条腿。
+  MariaDB 那条腿的账在版本与装载上：从 tag 构建出的 `3.2.9` 对**数组绑定的六参数 INSERT**
+  （实体批量插入那条）回 `(2008) Client run out of memory`，两台服务端一样，而把同一绑定
+  形状用裸 ODBC 原样写出来——含混合 NULL、`SQL_C_TYPE_TIMESTAMP`、65 字节步长的 varchar
+  数组、显式长度而非 `SQL_NTS` 的 prepare、`SQL_ATTR_ROWS_FETCHED_PTR`、execute 前
+  `SQLFreeStmt(SQL_CLOSE)`——在 3.2.9 上全部通过，所以这笔账在驱动侧，不在 `uniorm` 的用法
+  上；`3.1.23` 同一趟五条全绿且 golden 逐字节相符，这条腿因此钉在 3.1 线上。构建出的驱动与
+  它自己链接的那份 `libmariadb.so.3` 并排装进 `/usr/local/lib/mariadb`，安装时 RPATH 又被
+  清空，不把该目录写进 `/etc/ld.so.conf.d` 再 `ldconfig`，驱动管理器只回一句
+  `Can't open lib ... file not found`——那是 dlopen 的失败，与被点名的路径存不存在无关。
+  另三处只有 runner 的镜像才会撞到：`odbcinst` 这个命令行在 Ubuntu 上是独立的一个包，不随
+  `unixodbc` 装，作业因此不用它，探测全交给 `isql`；`sources.list` 的一条 `deb` 必须是一个
+  物理行，按 YAML 折行会把源拆成两行，apt 静默读不到那个组件；而 MySQL 那个归档的签名 key
+  虽仍是同一把 `B7B3B788A8D3785C`，`RPM-GPG-KEY-mysql-2023` 那份副本的有效期已在 2025 年 10
+  月过去，apt 于是报 `EXPKEYSIG` 把归档当成未签名而拒掉，要取 `RPM-GPG-KEY-mysql-2025`
+  那份续过期的副本（取到后 `apt-get install --reinstall` 确实从 `noble/mysql-tools` 拉回
+  `26.7.1`）。
+  至于先前那笔 SSPS 与 `NO_SSPS` 的代价对照，量的是 `8.4.0` 对 `8.4.0`（服务端
+  `mysqld-8.4.11`，只切那一把）：缓存命中的形状上 SSPS 略优（每语句 0.212 ms 对 0.228 ms，
+  数组绑定批量 0.193 对 0.218——驱动得在本地把值格式化进语句文本），每个只出现一次的语句
+  文本上反过来（0.476 对 0.295，SSPS 多付的正好是一次 prepare 往返，量级等于一次
+  `SELECT 1`）。那是那支连接器上的账，留着只为说明 2031 的来路。同一趟下 ASAN 会抓到
+  连接器自己在 `fill_fetch_buffers` 里对 `allocate_buffer_for_field` 分配的 1024 字节
+  结果缓冲做 `strlen`（越界 1 字节，正好没有 NUL 位）——那是厂商的账，只在 ASAN 构建下
+  显形，别把它当成库的回归。
 
 ## 9. v2 路线图
 
-**v1 欠账**（`decimal_t` 随 0.2.0 落地后，本清单只剩"把安装面验证接进 CI"一项，
-即打包条目末尾的 **待做**）：
+**v1 欠账**（`decimal_t` 随 0.2.0 落地、CI 的三条作业也都在它们所要用的镜像里按作业原样
+重放过一遍后，本清单只剩"让流水线在 GitHub 上真跑一次"这件只能在 push 之后了结的事，见
+打包条目末尾）：
 
 - ~~ODBC 宽字符路径（§4.2）~~ **已按该条目自己给出的第二条路了结**：确认不做，
   删掉零调用者的 `utf8_to_utf16` / `utf16_to_utf8` 与只有它们会抛出的公开类型
@@ -1467,9 +1518,14 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
 - ~~打包~~ **已完成（§3.1）**：`install(TARGETS/EXPORT)` + config/version 文件 +
   `VERSION`/`SOVERSION`，`$<INSTALL_INTERFACE:include>` 与 `project(VERSION)` 已
   生效，外部工程可用 `find_package(uniorm CONFIG)` 接入，`uniorm-gen` 也随
-  `UNIORM_BUILD_TOOLS` 装进 `<bindir>`。**待做**：把这套验证接进 CI——安装面如今
-  有 `install_smoke`（§8）在一条 `ctest` 里跑完，但没有流水线在制品产出后替它报警，
-  装错仍只有本机知道。
+  `UNIORM_BUILD_TOOLS` 装进 `<bindir>`。**待做**：让这套验证在流水线上跑一次——
+  `.github/workflows/ci.yml`（§8）的三条形状都已按作业原样在它所要用的镜像里跑过，这一趟
+  把该条目原先留给 runner 的四个未知都收掉了：apt 组件里的 MySQL 连接器确实落地，是
+  `26.7.1`，文件名为 `libmyodbc26a.so` / `libmyodbc26w.so`；从 tag 源码构建的 MariaDB
+  连接器编得过（`3.1.23` 与 `3.2.9` 都编得过，但后者跑不过套件，见 §8）；golden 的逐字节
+  比对在 mariadb 腿上成立、在 mysql 腿上只差一处连接器渲染，故矩阵按腿开关；驱动与 DSN 的
+  注册、`isql` 预检、`-LE perf` 过滤后的五条，连同作业那段 `services`（授权与健康门）也
+  都在镜像里绿过。剩下的只有 GitHub 会不会把这份 YAML 跑起来——文件从未被它执行过。
 
 原有路线图：
 

@@ -270,8 +270,12 @@ docs/design.md        设计文档（权威 API 参考）
 
 ## 状态
 
-v1 已完成并通过 MariaDB 集成验证（含 `uniorm-gen` 端到端）。v2 进行中：
+v1 已完成并通过 MariaDB 集成验证（含 `uniorm-gen` 端到端）；同一套测试经
+Connector/ODBC 走服务端预处理，对一个真 MySQL 服务端也全绿。v2 进行中：
 backend 抽象已落地（中立接口 + scheme 注册表，ODBC 迁移至接口之后、
 改为 PRIVATE 链接，核心单测在不链接 ODBC 的情况下编译运行），v1 最后一笔
-类型层面的欠账已清（`uniorm::decimal_t`）；后续为把测试接进 CI、
-libpq / Oracle OCI 原生 backend 等，见设计文档 §5 与 §9。
+类型层面的欠账已清（`uniorm::decimal_t`）；CI 工作流已入仓库，两条形状
+都有人守（不链接 ODBC 的编译契约 + 对活库跑两支驱动的矩阵），三支作业都已在
+runner 所用的那款镜像里、对着作业自带的同一款 MariaDB 重跑过一趟（每支腿装哪个
+连接器、装哪一版就是这么定下来的），只待 GitHub 上的首跑；后续为 libpq / Oracle
+OCI 原生 backend 等，见设计文档 §5 与 §9。

@@ -14,10 +14,11 @@
 #include "uniorm/builder/builder.hpp"
 
 // The checked-in golden header was produced by uniorm-gen against the
-// fixture tables below and the override file beside it; regenerate it with:
-//   uniorm-gen --dsn=<dsn> --user=<u> --password=<p> \
-//     --tables=uniorm_gen_user,uniorm_gen_order --name=gen_it \
-//     --config=tests/integration/golden/gen_it.toml \
+// fixture tables below and the override file beside it; regenerate it with
+// this one command, wrapped here only for width:
+//   uniorm-gen --dsn=<dsn> --user=<u> --password=<p>
+//     --tables=uniorm_gen_user,uniorm_gen_order --name=gen_it
+//     --config=tests/integration/golden/gen_it.toml
 //     --out=tests/integration/golden
 // The macros expand to quoted string literals provided by CMake.
 
@@ -126,9 +127,11 @@ std::string read_normalized(std::string const& path) {
   return text;
 }
 
-// Live extraction: run the tool against the fixture tables and compare the
-// result byte-for-byte with the checked-in golden.
-void test_generate_matches_golden(std::string const& conn_string) {
+// Live extraction: run the tool against the fixture tables and, when the
+// driver is the one the golden was recorded under, compare the result
+// byte-for-byte with it.
+void test_generate_matches_golden(
+  std::string const& conn_string, bool compare) {
   std::string cmd = std::string(UNIORM_GEN_PATH) + " --connection-string=\"" +
                     conn_string + "\" --out=" + UNIORM_GEN_OUT_DIR +
                     " --tables=uniorm_gen_user,uniorm_gen_order"
@@ -140,6 +143,13 @@ void test_generate_matches_golden(std::string const& conn_string) {
     read_normalized(std::string(UNIORM_GEN_OUT_DIR) + "/gen_it_schema.hpp");
   std::string golden = read_normalized(UNIORM_GEN_GOLDEN);
   CHECK(!generated.empty());
+  if (!compare) {
+    // The golden spells column types the way one driver's metadata reports
+    // them: Connector/ODBC gives bigint(19) where MariaDB's connector gives
+    // BIGINT(19), and adds a DEFAULT NULL the server never stored.
+    std::printf("note: golden compare skipped, driver metadata differs\n");
+    return;
+  }
   if (generated != golden) {
     std::size_t pos = 0;
     while (pos < generated.size() && pos < golden.size() &&
@@ -185,7 +195,9 @@ int main() {
     connection conn(conn_string);
     prepare_schema(conn);
     test_golden(conn_string);
-    test_generate_matches_golden(conn_string);
+    char const* skip_golden = std::getenv("UNIORM_GEN_SKIP_GOLDEN");
+    test_generate_matches_golden(conn_string,
+      skip_golden == nullptr || *skip_golden == '\0');
     drop_schema(conn);
   } catch (std::exception const& e) {
     std::printf("FATAL: unexpected exception: %s\n", e.what());

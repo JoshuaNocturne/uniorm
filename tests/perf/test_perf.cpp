@@ -214,8 +214,8 @@ perf_clock::duration best_of(Fn&& fn, int runs) {
   return best;
 }
 
-std::vector<bench_result> run_benchmarks(
-  connection& conn, orm& registry, orm& conv_registry, std::size_t n) {
+std::vector<bench_result> run_benchmarks(connection& conn, orm& registry,
+  orm& conv_registry, std::string const& conn_string, std::size_t n) {
   std::vector<bench_result> results;
   int const runs = 3;
   std::printf("rows per case: %zu (best of %d runs)\n", n, runs);
@@ -226,7 +226,6 @@ std::vector<bench_result> run_benchmarks(
 
   // Standalone update test: fresh ORM, insert rows, then update only
   {
-    std::string conn_string = "DSN=docker_maria;UID=Joshua;PWD=joshua";
     orm fresh_registry = build_registry(conn_string);
     conn.execute_update(std::string("DELETE FROM ") + k_table);
     fresh_registry.insert(rows);
@@ -236,7 +235,7 @@ std::vector<bench_result> run_benchmarks(
     for (auto& b : update_rows) { b.score += 1; }
 
     auto start = perf_clock::now();
-    auto updated = fresh_registry.update(update_rows);
+    fresh_registry.update(update_rows);
     auto elapsed = perf_clock::now() - start;
     double ms = std::chrono::duration<double, std::milli>(elapsed).count();
     std::printf("update (fresh orm, no prior cache)  %8.2f ms %12.1f krows/s\n",
@@ -945,7 +944,6 @@ std::vector<bench_result> run_raw_benchmarks(std::string const& conn_string, std
                      65, note_inds.data()),
       SQL_HANDLE_STMT, ins.stmt, "bind paramset note");
 
-    std::size_t reinserted = 0;
     for (std::size_t start = 0; start < n; start += 2 * batch_size) {
       std::size_t count = std::min(batch_size, (n - start + 1) / 2);
       if (count == 0) break;
@@ -1160,7 +1158,8 @@ int main() {
     orm conv_registry = build_conv_registry(conn_string);
     conv_registry.row_array_size(1000);
     conv_registry.validate();
-    auto orm_results = run_benchmarks(conn, registry, conv_registry, n);
+    auto orm_results =
+      run_benchmarks(conn, registry, conv_registry, conn_string, n);
     auto raw_results = run_raw_benchmarks(conn_string, n);
     print_comparison_table(orm_results, raw_results);
     conn.execute_update(std::string("DROP TABLE ") + k_table);

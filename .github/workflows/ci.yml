@@ -1,0 +1,255 @@
+name: ci
+
+# Two things this pipeline has to prove:
+#
+# 1. A build with no ODBC at all still compiles and passes. That is the whole
+#    point of UNIORM_BACKEND_ODBC=OFF -- the moment a driver type reaches a
+#    public header above the statement layer, this job stops building.
+# 2. The suite actually runs against a live server through both drivers the
+#    MySQL wire protocol has. Development only ever exercises the MariaDB one,
+#    and the source already carves out the places where drivers on this wire
+#    differ (src/orm.cpp:577, src/odbc/backend.cpp:559); the MySQL leg is what
+#    keeps those carve-outs honest.
+#
+# Neither driver comes from the Ubuntu archive -- mariadb-connector-odbc is not
+# packaged for any release, mysql-connector-odbc lives only in MySQL's own apt
+# component -- so one leg installs and the other builds. Both were replayed on
+# the runner's own image before being written down, and the version each leg
+# ends up with is a measurement rather than a preference: apt delivers
+# Connector/ODBC 26.7.1, which needs no DSN keys at all, while the MariaDB
+# driver's 3.2 line fails an array-bound INSERT and the leg stays on 3.1.
+# docs/design.md keeps the whole account.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The three variables the database tests read. Without all three they return
+  # 77, which ctest records as a Skip and reports as a pass -- see the guard in
+  # the Test step, the only thing standing between a broken driver install and a
+  # green check.
+  UNIORM_IT_DSN: uniorm_ci
+  UNIORM_IT_USER: uniorm
+  UNIORM_IT_PWD: uniorm-ci-pwd
+  DB_NAME: uniorm_ci
+  ROOT_PWD: uniorm-ci-root
+  # Warnings are part of the contract here: the tree is warning-clean under
+  # -Wall -Wextra today. -Werror is deliberately absent, because a dependency
+  # header upgrading would turn an unrelated red into a blocked branch.
+  CXXWARN: -Wall -Wextra
+
+jobs:
+  core:
+    name: core (no ODBC)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: >
+          cmake -S . -B build
+          -DUNIORM_BACKEND_ODBC=OFF
+          -DUNIORM_BUILD_TOOLS=OFF
+          -DCMAKE_CXX_FLAGS="$CXXWARN"
+
+      - name: Build
+        run: cmake --build build -j "$(nproc)"
+
+      - name: Test
+        run: ctest --test-dir build -R '^unit_tests$' --output-on-failure
+
+  driver:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    needs: core
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: mysql-odbc
+            stanza: CI-MySQL
+            # Empty: Connector/ODBC 26.7.1 takes every parameter shape under
+            # server-side prepares against a MariaDB server. The key stays here
+            # as the escape hatch it already was -- 8.4.0 needed NO_SSPS = 1
+            # against the same server, on either banner MariaDB has used.
+            dsn_extra: ''
+            # Set, so the extraction runs but its output is not byte-compared:
+            # the golden records the MariaDB connector's metadata rendering, and
+            # this one gives bigint(19) plus a DEFAULT NULL the server never
+            # stored.
+            skip_golden: 1
+          - name: mariadb-odbc
+            stanza: CI-MariaDB
+            dsn_extra: ''
+            # Empty, and the test reads that as unset.
+            skip_golden: ''
+
+    services:
+      server:
+        image: mariadb:11
+        env:
+          MARIADB_ROOT_PASSWORD: ${{ env.ROOT_PWD }}
+          MARIADB_DATABASE: ${{ env.DB_NAME }}
+          MARIADB_USER: ${{ env.UNIORM_IT_USER }}
+          MARIADB_PASSWORD: ${{ env.UNIORM_IT_PWD }}
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mariadb-admin ping -h 127.0.0.1 -uroot
+          -p${{ env.ROOT_PWD }} --silent"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the driver manager
+        run: >
+          sudo apt-get update &&
+          sudo apt-get install -y --no-install-recommends
+          unixodbc unixodbc-dev libssl-dev
+
+      - name: Install MySQL Connector/ODBC
+        if: matrix.name == 'mysql-odbc'
+        id: mysql-driver
+        run: |
+          codename=$(. /etc/os-release && echo "$VERSION_CODENAME")
+          # The 2023 file carries the same key with an expiry that lapsed in
+          # October 2025; apt then refuses the archive as unsigned. Ask for the
+          # refreshed copy.
+          curl -fsSL https://repo.mysql.com/RPM-GPG-KEY-mysql-2025 |
+            sudo gpg --dearmor -o /usr/share/keyrings/mysql.gpg
+          keyring=/usr/share/keyrings/mysql.gpg
+          archive=http://repo.mysql.com/apt/ubuntu/
+          echo "deb [signed-by=$keyring] $archive $codename mysql-tools" |
+            sudo tee /etc/apt/sources.list.d/mysql.list
+          sudo apt-get update
+          sudo apt-get install -y mysql-connector-odbc
+          dpkg -s mysql-connector-odbc | grep '^Version'
+          # The connector lands as libmyodbc26a.so (ANSI entry points) and
+          # libmyodbc26w.so (Unicode) under an odbc/ directory, next to the
+          # authentication plugins. Ask dpkg which one exists rather than
+          # naming a version: the 26.x line does not carry the 8.4 tarball's
+          # libmyodbc8*.so names. Prefer ANSI -- the Unicode build renders a
+          # plain varchar column as SQL_WVARCHAR.
+          so="$(dpkg -L mysql-connector-odbc |
+            grep -E '/odbc/libmyodbc[^/]*a\.so$' | head -1 || true)"
+          echo "path=$so" >> "$GITHUB_OUTPUT"
+
+      - name: Build MariaDB Connector/ODBC
+        if: matrix.name == 'mariadb-odbc'
+        id: mariadb-driver
+        run: |
+          # No Ubuntu release packages this driver and the upstream releases
+          # carry no binaries, so the only honest route is the tagged source.
+          # 3.1, not the 3.2 line: 3.2.9 answers the array-bound INSERT the
+          # entity tests issue with (2008) "Client run out of memory" against
+          # both servers, and 3.1.23 runs the same suite green.
+          git clone --depth 1 --branch 3.1.23 \
+            https://github.com/mariadb-corporation/mariadb-connector-odbc.git \
+            /tmp/maodbc
+          cmake -S /tmp/maodbc -B /tmp/maodbc-build -DCMAKE_BUILD_TYPE=Release
+          cmake --build /tmp/maodbc-build -j "$(nproc)"
+          sudo cmake --install /tmp/maodbc-build
+          # The install puts the driver beside the libmariadb it links and
+          # clears the RPATH, so the loader has to be told where that is.
+          echo /usr/local/lib/mariadb |
+            sudo tee /etc/ld.so.conf.d/maodbc.conf
+          sudo ldconfig
+          so=/usr/local/lib/mariadb/libmaodbc.so
+          test -f "$so"
+          echo "path=$so" >> "$GITHUB_OUTPUT"
+
+      - name: Register the driver and the DSN
+        env:
+          DRIVER_SO: ${{ steps.mysql-driver.outputs.path }}${{ steps.mariadb-driver.outputs.path }}
+          DRIVER_STANZA: ${{ matrix.stanza }}
+          DSN_EXTRA: ${{ matrix.dsn_extra }}
+        run: |
+          if [ -z "$DRIVER_SO" ] || [ ! -f "$DRIVER_SO" ]; then
+            echo "::error::no driver library landed; the install step found \
+          nothing to register"
+            exit 1
+          fi
+          {
+            printf '[%s]\n' "$DRIVER_STANZA"
+            printf 'Description = uniorm CI\n'
+            printf 'Driver      = %s\n' "$DRIVER_SO"
+            printf 'FileUsage   = 1\n'
+          } | sudo tee -a /etc/odbcinst.ini
+          # The tests assemble "DSN=<name>;UID=..;PWD=.." themselves, so the
+          # target has to be a named data source; no DSN-less string can be
+          # passed through UNIORM_IT_DSN.
+          {
+            printf '[%s]\n' "$UNIORM_IT_DSN"
+            printf 'Driver    = %s\n' "$DRIVER_STANZA"
+            printf 'Server    = 127.0.0.1\n'
+            printf 'Port      = 3306\n'
+            printf 'User      = %s\n' "$UNIORM_IT_USER"
+            printf 'Password  = %s\n' "$UNIORM_IT_PWD"
+            printf 'Database  = %s\n' "$DB_NAME"
+            if [ -n "$DSN_EXTRA" ]; then
+              printf '%s\n' "$DSN_EXTRA"
+            fi
+          } >> "$HOME/.odbc.ini"
+
+      - name: Check the data source answers before building
+        run: |
+          if ! echo 'select 1' |
+            isql -v "$UNIORM_IT_DSN" "$UNIORM_IT_USER" "$UNIORM_IT_PWD"; then
+            echo '::error::the driver cannot reach the server. The test suite'
+            echo '  would return 77 for this and ctest would call it a pass.'
+            exit 1
+          fi
+
+      - name: Configure
+        run: >
+          cmake -S . -B build
+          -DUNIORM_BACKEND_ODBC=ON
+          -DUNIORM_BUILD_TOOLS=ON
+          -DCMAKE_CXX_FLAGS="$CXXWARN"
+
+      - name: Build
+        run: cmake --build build -j "$(nproc)"
+
+      - name: Test
+        env:
+          UNIORM_GEN_SKIP_GOLDEN: ${{ matrix.skip_golden }}
+        run: |
+          set -o pipefail
+          ctest --test-dir build -LE perf --output-on-failure | tee ctest.log
+          # A skip is this job failing: the database tests return 77 when they
+          # cannot connect, and ctest counts that as a pass. pipefail covers
+          # the failures; nothing but this covers a suite that never ran.
+          if grep -q 'Skipped' ctest.log; then
+            echo '::error::a database test skipped instead of running.'
+            grep -A5 'did not run' ctest.log || true
+            exit 1
+          fi
+
+      - name: Show what the driver manager saw
+        if: failure()
+        run: |
+          # No odbcinst here: Ubuntu ships it as its own package, separate
+          # from the unixodbc tools this job installs.
+          cat /etc/odbcinst.ini
+          cat "$HOME/.odbc.ini"
+          echo 'select 1' |
+            isql -v "$UNIORM_IT_DSN" "$UNIORM_IT_USER" "$UNIORM_IT_PWD" || true

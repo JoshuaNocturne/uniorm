@@ -575,6 +575,9 @@ void test_transaction(orm& db) {
 // auto_commit is the connection's commit mode, so it governs every write here:
 // off, nothing is durable until commit(); on, each statement is.
 void test_auto_commit_scope(orm& db, std::string const& conn_string) {
+  // A run that died inside this section leaves 700 and up behind, and every
+  // count below is over that range.
+  db.execute_update("DELETE FROM uniorm_it_user WHERE id >= 700");
   CHECK(db.auto_commit());
   auto mine = [&db] {
     return db.query()

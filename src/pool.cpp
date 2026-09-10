@@ -25,7 +25,6 @@ struct pool_detail::shared_state {
   std::size_t under_maintenance = 0;
   std::size_t created = 0;
   std::atomic<unsigned long long> heartbeats{ 0 };
-  bool maintained = false;  // registered with the global scheduler
   std::chrono::steady_clock::time_point next_tick;
 
   bool expired(idle_entry const& e) const {
@@ -85,8 +84,9 @@ namespace {
 // One background thread servicing every connection_pool that opted into
 // heartbeats. Pools are tracked as weak_ptr so a destroyed pool is simply
 // skipped; locking the weak_ptr keeps the impl alive during a maintenance
-// pass. The scheduler is constructed on first use and outlives every pool
-// (function-local static, created during the first pool's constructor).
+// pass. Nothing here may be reached from a pool destructor: the registry's own
+// pools outlive this function-local static, so only the worker drops a dead
+// pool from `pools`.
 struct scheduler {
   std::mutex mutex;
   std::condition_variable cv;
@@ -119,18 +119,6 @@ struct scheduler {
       }
       worker = std::thread([this] { run(); });
     }
-  }
-
-  void remove(std::shared_ptr<pool_detail::shared_state> const& p) {
-    {
-      std::lock_guard lock(mutex);
-      pools.erase(std::remove_if(pools.begin(), pools.end(),
-                    [&](std::weak_ptr<pool_detail::shared_state> const& wp) {
-                      return !wp.owner_before(p) && !p.owner_before(wp);
-                    }),
-        pools.end());
-    }
-    cv.notify_all();  // let the worker notice an emptied registry sooner
   }
 
   void run() {
@@ -200,17 +188,13 @@ connection_pool::connection_pool(pool_options options)
   : impl_(std::make_shared<pool_detail::shared_state>()) {
   impl_->options = std::move(options);
   if (impl_->options.heartbeat_interval > std::chrono::milliseconds::zero()) {
-    impl_->maintained = true;
     scheduler::instance().add(impl_);
   }
 }
 
 connection_pool::~connection_pool() {
-  if (impl_->maintained) {
-    scheduler::instance().remove(impl_);
-  }
-  // checked-out connections still alive will disconnect on their own; the
-  // pool must outlive them per the documented contract
+  // The registry's pools outlive the scheduler static, so this destructor must
+  // not reach it; run() drops the dead weak_ptr on its next pass.
 }
 
 pooled_connection connection_pool::acquire() {

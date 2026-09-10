@@ -1017,6 +1017,15 @@ v1 不支持嵌套事务/savepoint。`transaction` 只在自身析构时回滚�
 `auto_commit()`，而池只会复位到默认的自动提交。清理发生在归还这一刻，所以调用方对
 自己手里的连接 `auto_commit(true)` 仍然是提交挂起的工作，不是丢弃。
 
+这里有一条对驱动的假设，两族驱动的实测不同：ODBC 规定新连接的 `SQL_ATTR_AUTOCOMMIT`
+默认即 ON，MariaDB Connector/ODBC 照做（连 `@@global.autocommit=0` 的服务端也会被它
+覆写成 ON），MySQL Connector/ODBC 则让会话继承服务端的 `@@global.autocommit`，且因为
+它内部本就记着 ON，`adopt_connection()` 那次 `set_autocommit(true)` 是个空操作——服务
+端以 `--autocommit=0` 起时，uniorm 以为的每一条自提交，实际都堆进一笔永不结束的事务：
+别的连接永远看不到提交，DDL 还会被它钉住的元数据锁一直卡住。库不为此偷发
+`SET autocommit=1`（那是服务端专有 SQL），把它当作调用方须满足的前提：连接串的目的地
+若是一台自动提交关掉的服务端，请自行保持两侧一致。
+
 ### 4.10 连接池（最小版）
 
 最终 API：

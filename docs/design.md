@@ -1456,8 +1456,8 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
   跑过——`core` 与两条驱动腿在 ubuntu:24.04 容器里执行，服务端用的是一只照抄作业
   `services` 块起出的 `mariadb:11`（实测 11.8.9），连 `MARIADB_DATABASE`/`MARIADB_USER`
   生成的授权与 `mariadb-admin ping` 健康门（约 20 s 转 healthy）也一并验了；GitHub 上已提交过
-  两趟，头一趟卡在 YAML 校验，第二趟作业真跑起来了，`core` 当场抓出一处真漏——两样的账都在
-  下面）：
+  三趟，头一趟卡在 YAML 校验，第二趟作业真跑起来了、`core` 当场抓出一处真漏，第三趟三支作业
+  全绿——前两样的账都在下面）：
   一支 `UNIORM_BACKEND_ODBC=OFF`
   的构建只跑 `unit_tests`，替 §3 那条"驱动类型不漏进 statement 层之上的公开头"把关——
   这条承诺此前只在注释里，没有任何东西在守它。另一支按**驱动**成矩阵，对 `mariadb:11`
@@ -1505,7 +1505,8 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
   由 `schema_reader` 在它的 ODBC 边界上归一，公开头不再声明 `sql_type_from_native`；`core`
   作业另加一道 shadow：往 include 路径最前放一对读下去即报错的 `sql.h`/`sqlext.h`，再用一次
   反面编译确认它们确实抢在了系统头之前——且要求那次编译非报我们那句 `#error` 不可，编不动
-  的编译器同样会"失败"，而那不算守卫生效。
+  的编译器同样会"失败"，而那不算守卫生效。两处都改完后再提交一趟，三支作业在 runner 上全绿：
+  `core` 带着 shadow 编过，mariadb 腿的 golden 仍逐字节相符。
   至于先前那笔 SSPS 与 `NO_SSPS` 的代价对照，量的是 `8.4.0` 对 `8.4.0`（服务端
   `mysqld-8.4.11`，只切那一把）：缓存命中的形状上 SSPS 略优（每语句 0.212 ms 对 0.228 ms，
   数组绑定批量 0.193 对 0.218——驱动得在本地把值格式化进语句文本），每个只出现一次的语句
@@ -1517,9 +1518,8 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
 
 ## 9. v2 路线图
 
-**v1 欠账**（`decimal_t` 随 0.2.0 落地、CI 的三条作业也都在它们所要用的镜像里按作业原样
-重放过一遍、GitHub 上也真跑过两趟之后，本清单只剩"让流水线在 GitHub 上绿一次"这件只能在
-push 之后了结的事，见打包条目末尾）：
+**v1 欠账**（`decimal_t` 随 0.2.0 落地、CI 的三条作业既在它们所要用的镜像里按作业原样重放过
+一遍、也在 GitHub 上跑绿之后，本清单已空，见打包条目末尾）：
 
 - ~~ODBC 宽字符路径（§4.2）~~ **已按该条目自己给出的第二条路了结**：确认不做，
   删掉零调用者的 `utf8_to_utf16` / `utf16_to_utf8` 与只有它们会抛出的公开类型
@@ -1539,16 +1539,16 @@ push 之后了结的事，见打包条目末尾）：
 - ~~打包~~ **已完成（§3.1）**：`install(TARGETS/EXPORT)` + config/version 文件 +
   `VERSION`/`SOVERSION`，`$<INSTALL_INTERFACE:include>` 与 `project(VERSION)` 已
   生效，外部工程可用 `find_package(uniorm CONFIG)` 接入，`uniorm-gen` 也随
-  `UNIORM_BUILD_TOOLS` 装进 `<bindir>`。**待做**：让这套验证在流水线上跑一次——
-  `.github/workflows/ci.yml`（§8）的三条形状都已按作业原样在它所要用的镜像里跑过，这一趟
+  `UNIORM_BUILD_TOOLS` 装进 `<bindir>`。~~**待做**：让这套验证在流水线上跑一次~~
+  **已完成**：`.github/workflows/ci.yml`（§8）的三条形状都已按作业原样在它所要用的镜像里跑过，这一趟
   把该条目原先留给 runner 的四个未知都收掉了：apt 组件里的 MySQL 连接器确实落地，是
   `26.7.1`，文件名为 `libmyodbc26a.so` / `libmyodbc26w.so`；从 tag 源码构建的 MariaDB
   连接器编得过（`3.1.23` 与 `3.2.9` 都编得过，但后者跑不过套件，见 §8）；golden 的逐字节
   比对在 mariadb 腿上成立、在 mysql 腿上只差一处连接器渲染，故矩阵按腿开关；驱动与 DSN 的
   注册、`isql` 预检、`-LE perf` 过滤后的五条，连同作业那段 `services`（授权与健康门）也
   都在镜像里绿过。GitHub 也已经真跑过它了：头一趟只有 YAML 校验拦下的一件事（`services`
-  块读不到 `env` 上下文），改完的第二趟作业起了、`core` 抓出一处真漏并已修，剩下一件是
-  攒一次全绿的运行（两处细节都在 §8）。
+  块读不到 `env` 上下文），改完的第二趟作业起了、`core` 抓出一处真漏并已修，第三趟三支作业
+  全绿（两处细节都在 §8）。
 
 原有路线图：
 

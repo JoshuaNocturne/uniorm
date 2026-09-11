@@ -312,8 +312,9 @@ run without ODBC), and v1's last type-level debt is closed
 compile contract and a live-server run under each driver. All three jobs have
 been replayed inside the image the runner uses, against the same MariaDB the
 job itself serves, and that replay is what settled which connector each leg
-installs and which version of it. GitHub has run the file too: that execution
+installs and which version of it. GitHub has run the file too: one execution
 is what caught a driver header reaching the ODBC-free build, which no local
 replay could have — the local image had the ODBC development headers installed
-to build the connectors with. A green run is what is left. Native libpq /
-Oracle OCI backends follow — see design doc §5 and §9.
+to build the connectors with — and the run after that came back green across
+all three jobs. Native libpq / Oracle OCI backends follow — see design doc
+§5 and §9.

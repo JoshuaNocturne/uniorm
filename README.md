@@ -268,9 +268,9 @@ ctest --test-dir build --output-on-failure
   that mirrors uniorm's exact call patterns as an abstraction-overhead
   reference; row count via `UNIORM_PERF_ROWS` (default 10000); skip with
   `ctest -LE perf`
-- **gen_e2e_tests**: `uniorm-gen` end-to-end — the generated output is
-  byte-compared against a checked-in golden header, which is itself
-  compiled, registered, and `validate(strict)`ed; needs a reachable DSN
+- **gen_e2e_tests**: `uniorm-gen` end-to-end — the tool's generated code is
+  compared with a checked-in golden header, comments excluded, and that header
+  is itself compiled, registered and `validate(strict)`ed; needs a reachable DSN
 - **install_smoke**: packaging check — `cmake --install` into a throwaway prefix
   under the build dir, then an outside project (`tests/install/`) configures,
   builds and runs against it through `find_package(uniorm CONFIG)` without setting
@@ -309,12 +309,23 @@ backend abstraction is in place (neutral interface + scheme-based registry,
 ODBC migrated behind it, ODBC linked privately, core unit tests compile and
 run without ODBC), and v1's last type-level debt is closed
 (`uniorm::decimal_t`). A CI workflow now guards both shapes — the ODBC-free
-compile contract and a live-server run under each driver. All three jobs have
-been replayed inside the image the runner uses, against the same MariaDB the
-job itself serves, and that replay is what settled which connector each leg
-installs and which version of it. GitHub has run the file too: one execution
-is what caught a driver header reaching the ODBC-free build, which no local
-replay could have — the local image had the ODBC development headers installed
-to build the connectors with — and the run after that came back green across
-all three jobs. Native libpq / Oracle OCI backends follow — see design doc
-§5 and §9.
+compile contract, and the suite against a live server for each combination of
+the two connectors with the two servers on that wire. The second axis is
+there because the generator reads metadata the *server* answers, not SQL the
+dialect writes: against MySQL 8.4, MariaDB connector 3.1.12 asks
+`information_schema` for `COLUMN_KEY = 'pri'`, matches nothing once that
+server declares those columns `utf8mb3_bin`, and generates a header whose
+primary key is gone — one that still compiles, registers and validates. That
+class of silence is now caught by the comparison itself: every leg matches
+the generated code against the golden's with the comments cut from both
+sides, since those comments differ per connector-and-server pair and
+comparing them would nail the golden to one cell. The lost key is `.column`
+where the golden has `.primary_key`; markers are left for the foreign key and
+the secondary index, the two facts no line of generated code carries. GitHub
+has run the two-leg shape green, after one execution caught a driver header
+reaching the ODBC-free build — which no local replay could have, since the
+local image had the ODBC development headers installed to build the
+connectors with. The four-leg shape is still ahead of it, though a real MySQL
+8.4 server has already seen a local preflight: four of the five green, the
+fifth red only through the older connector this machine has. Native libpq /
+Oracle OCI backends follow — see design doc §5 and §9.

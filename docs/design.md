@@ -1439,8 +1439,17 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
   夹具表（含 PK/FK/索引/DECIMAL/DATETIME）→ 工具带检入的覆写文件
   （`golden/gen_it.toml`，其 `converter` 键让 `note` 生成为域类型，`cpp_type` 键把
   `amount` 生成为 `uniorm::decimal_t`）生成 →
-  与 golden 头文件逐字节比对（`UNIORM_GEN_SKIP_GOLDEN` 非空则只生成不比字节，见 §8 的
-  矩阵条目）；golden 本身被编译进测试，执行注册 +
+  与 golden 比对，但只比代码：两边每行 `//` 之后的注释先截掉再比，不分哪一格。
+  注释记的是连接器怎么拼 `BIGINT`、服务端怎么存默认值，没有消费者会编译它，而它
+  按"连接器 × 服务端"每格都不同——留着它就等于把 golden 钉死在一格上，升级一支
+  连接器能同时红四条腿。截注释不动行结构（成员行是固定两个空格的分隔符），所以
+  两边仍要对齐每一行的起点。另留一组**语义标记**（FK 与二级索引的注释）：这两件
+  事在生成的代码里不留任何痕迹，只有注释能证明抽取到了。主键映射调用、可空列与
+  `decimal_t`/`timestamp` 生成的 C++ 类型都是代码，归代码比对看着。之所以代码
+  这一层要每条腿都跑，是因为服务端答空一处元数据时生成的头文件照样编译、注册、
+  过 `validate(strict)`，MySQL 8.4 上就真发生过主键整列读丢（见 §8）——它在代码
+  比对里就是 `.column` 撞上 golden 的 `.primary_key`。
+  golden 本身被编译进测试，执行注册 +
   `validate(strict)` + 构建器 `count()` + 实体写入与物化读回（读回同时核对
   `decimal_t` 的值相等与按列 scale 还原出的字面量），覆盖"生成 → 编译 →
   注册 → 校验 → 读写"全链路。
@@ -1452,18 +1461,34 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
   抛 `unknown_scheme`，ODBC 构建下另核对 `"odbc"` 已随载入自注册 → 再以 `99.0.0` 配置
   一次，要求被 `SameMinorVersion` 拒掉 → 最后运行装出来的 `uniorm-gen --help`，它只可能
   经 `$ORIGIN/../<libdir>` 载到库，故 RPATH 改写一并验了。
-- **CI**（已写入 `.github/workflows/ci.yml`；三支作业都已按作业原样在它所要用的镜像里
-  跑过——`core` 与两条驱动腿在 ubuntu:24.04 容器里执行，服务端用的是一只照抄作业
+- **CI**（已写入 `.github/workflows/ci.yml`；GitHub 上跑绿过的那副形状是三支作业——
+  `core` 与两条驱动腿，三支都按作业原样在 ubuntu:24.04 容器里重放过，服务端用的是一只照抄作业
   `services` 块起出的 `mariadb:11`（实测 11.8.9），连 `MARIADB_DATABASE`/`MARIADB_USER`
-  生成的授权与 `mariadb-admin ping` 健康门（约 20 s 转 healthy）也一并验了；GitHub 上已提交过
+  生成的授权与 `mariadb-admin ping` 健康门（约 20 s 转 healthy）也一并验了；提交过
   三趟，头一趟卡在 YAML 校验，第二趟作业真跑起来了、`core` 当场抓出一处真漏，第三趟三支作业
-  全绿——前两样的账都在下面）：
+  全绿——前两样的账都在下面。此后驱动那一支沿服务端铺成 2×2，新形状还没被 runner 看过）：
   一支 `UNIORM_BACKEND_ODBC=OFF`
   的构建只跑 `unit_tests`，替 §3 那条"驱动类型不漏进 statement 层之上的公开头"把关——
-  这条承诺此前只在注释里，没有任何东西在守它。另一支按**驱动**成矩阵，对 `mariadb:11`
-  服务容器跑除 `perf` 外的全部五条：MySQL Connector/ODBC 取自 MySQL 自己的 apt 组件
-  （Ubuntu 归档里没有它），MariaDB Connector/ODBC 只能从 tag 拉源码构建（Ubuntu 任何
-  发行版都不打包它，上游 release 也不带二进制）。两支都带 `-Wall -Wextra`——今天零告警，
+  这条承诺此前只在注释里，没有任何东西在守它。另一支按**连接器 × 服务端**成 2×2 矩阵，
+  每格对自家的服务容器跑除 `perf` 外的全部五条：MySQL Connector/ODBC 取自 MySQL 自己的
+  apt 组件（Ubuntu 归档里没有它），MariaDB Connector/ODBC 只能从 tag 拉源码构建（Ubuntu
+  任何发行版都不打包它，上游 release 也不带二进制）；服务端两格是 `mysql:8.4`（实测
+  8.4.11）与 `mariadb:11`（实测 11.8.9）。服务端这一轴不是因为 SQL 会长得不一样——
+  `dialect::detect` 对两个 banner 给同一套引号与分页——而是因为 `uniorm-gen` 读的是
+  **服务端答的元数据**：本地拿真 MySQL 服务端跑这套测试，第一趟就撞出 MariaDB 连接器
+  `3.1.12` 用 `COLUMN_KEY = 'pri'` 问 `information_schema`，而 8.4 把那些列声明成
+  `utf8mb3_bin`（区分大小写，实际值是 `PRI`），于是 `SQLPrimaryKeys` 空返回、生成的
+  头文件把两张表的主键整列读丢且不报错。当时把它暴露出来的只有 golden 的字节差，
+  而跳过 golden 的腿看不见它。同一夹具换 `3.1.23` 无恙，因为它问的是
+  `KEY_COLUMN_USAGE` 的 `CONSTRAINT_NAME = 'PRIMARY'`。CI 钉的是源码构建的
+  `3.1.23`，复现不了旧连接器，所以这类沉默改由比对本身兜：`gen_e2e` 四条腿都比
+  截掉注释之后的代码（见 §5），那一格的读丢就是 `.column` 撞上 golden 的
+  `.primary_key`。注释从此一处不比，因为它们在四格里本就没有一样的时候：两条
+  MySQL 服务端腿连 `DEFAULT NULL` 都拿不到，两条 Connector/ODBC 腿把类型名拼成
+  小写。两只镜像各带自家的健康检查客户端，`mysql:8.4` 只有
+  `mysqladmin`、`mariadb:11` 只有 `mariadb-admin`，故健康命令按 matrix 给；
+  `services` 的 env 两套前缀都写，两个镜像各读自己那半、取值相同。四支都带
+  `-Wall -Wextra`——今天零告警，
   但不 `-Werror`，免得依赖头升级把与回归无关的红压进分支。数据库那一支另有一道报警：
   测试连不上就返回 77，而 ctest 把 77 记成 Skip 并照样打印"100% tests passed"，所以作业
   见到输出里的 `Skipped` 即判失败（真正的失败交给 `set -o pipefail`，测试条数不写死），
@@ -1475,14 +1500,16 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
   一段写给 8.4.0 的注释，`dsn_extra` 留作逃生口。它同时回答了这个条目原先留给 runner 的
   未知项：apt 装出的文件叫 `libmyodbc26a.so` / `libmyodbc26w.so`（不沿用 8.4 tarball 的
   `libmyodbc8*.so`，故驱动经 `dpkg -L` 找，不按名字 glob），而 `w` 那一支会把普通 `varchar`
-  列渲染成 `SQL_WVARCHAR(-9)`，所以注册的是 `a` 那一支；golden 的字节差照旧（`bigint(19)`
-  外加一句服务端从未存过的 `DEFAULT NULL`），逐字节比对仍只属于拥有 golden 的那条腿。
+  列渲染成 `SQL_WVARCHAR(-9)`，所以注册的是 `a` 那一支。它与 golden 的注释差照旧
+  （`bigint(19)` 外加一句服务端从未存过的 `DEFAULT NULL`），只是这些如今本来就在
+  比对之外。
   MariaDB 那条腿的账在版本与装载上：从 tag 构建出的 `3.2.9` 对**数组绑定的六参数 INSERT**
   （实体批量插入那条）回 `(2008) Client run out of memory`，两台服务端一样，而把同一绑定
   形状用裸 ODBC 原样写出来——含混合 NULL、`SQL_C_TYPE_TIMESTAMP`、65 字节步长的 varchar
   数组、显式长度而非 `SQL_NTS` 的 prepare、`SQL_ATTR_ROWS_FETCHED_PTR`、execute 前
   `SQLFreeStmt(SQL_CLOSE)`——在 3.2.9 上全部通过，所以这笔账在驱动侧，不在 `uniorm` 的用法
-  上；`3.1.23` 同一趟五条全绿且 golden 逐字节相符，这条腿因此钉在 3.1 线上。构建出的驱动与
+  上；`3.1.23` 同一趟五条全绿，golden 也逐字节对上了——按那时还要比注释的判据
+  （§5 现在不比），这条腿因此钉在 3.1 线上。构建出的驱动与
   它自己链接的那份 `libmariadb.so.3` 并排装进 `/usr/local/lib/mariadb`，安装时 RPATH 又被
   清空，不把该目录写进 `/etc/ld.so.conf.d` 再 `ldconfig`，驱动管理器只回一句
   `Can't open lib ... file not found`——那是 dlopen 的失败，与被点名的路径存不存在无关。
@@ -1506,7 +1533,16 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
   作业另加一道 shadow：往 include 路径最前放一对读下去即报错的 `sql.h`/`sqlext.h`，再用一次
   反面编译确认它们确实抢在了系统头之前——且要求那次编译非报我们那句 `#error` 不可，编不动
   的编译器同样会"失败"，而那不算守卫生效。两处都改完后再提交一趟，三支作业在 runner 上全绿：
-  `core` 带着 shadow 编过，mariadb 腿的 golden 仍逐字节相符。
+  `core` 带着 shadow 编过，mariadb 腿的 golden 仍逐字节相符——也是按当时的比法。
+  全绿之后这支沿服务端又铺开一格，从两条腿变成 2×2 四条腿。本地量到的：两支连接器都能连上
+  `8.4.11`，用户是 `caching_sha2_password`、走 TCP、DSN 不需要任何额外键；四格各跑一遍
+  抽取、固定同一份 `uniorm-gen`（那份构建早于 `decimal_t`），截掉注释后的输出四格 md5
+  相同——格与格的差别全在注释里，代码一处没有。这条规则套今天的工具与今天的 golden
+  复算过：MariaDB 那一格五条全绿；`3.1.12` × `8.4` 那一格四条绿（含 `integration_tests`，
+  那台服务端开着 `ONLY_FULL_GROUP_BY`），红的一条正是 `.primary_key` 变成 `.column`
+  的那处读丢，不必任何开关。所以四条腿这副形状欠 runner 的只剩两样：矩阵选镜像、
+  `health_cmd` 按镜像给、`services` 里两套 env 前缀这些新形状，以及 CI 钉的那两支连接器
+  在 `8.4` 上做的抽取（本地那支是更老的 `3.1.12`，红因它而在）。
   至于先前那笔 SSPS 与 `NO_SSPS` 的代价对照，量的是 `8.4.0` 对 `8.4.0`（服务端
   `mysqld-8.4.11`，只切那一把）：缓存命中的形状上 SSPS 略优（每语句 0.212 ms 对 0.228 ms，
   数组绑定批量 0.193 对 0.218——驱动得在本地把值格式化进语句文本），每个只出现一次的语句
@@ -1519,7 +1555,8 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
 ## 9. v2 路线图
 
 **v1 欠账**（`decimal_t` 随 0.2.0 落地、CI 的三条作业既在它们所要用的镜像里按作业原样重放过
-一遍、也在 GitHub 上跑绿之后，本清单已空，见打包条目末尾）：
+一遍、也在 GitHub 上跑绿之后，本清单一度清空；驱动矩阵沿服务端铺成 2×2 之后，又剩下一件事，
+见打包条目末尾）：
 
 - ~~ODBC 宽字符路径（§4.2）~~ **已按该条目自己给出的第二条路了结**：确认不做，
   删掉零调用者的 `utf8_to_utf16` / `utf16_to_utf8` 与只有它们会抛出的公开类型
@@ -1543,12 +1580,16 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
   **已完成**：`.github/workflows/ci.yml`（§8）的三条形状都已按作业原样在它所要用的镜像里跑过，这一趟
   把该条目原先留给 runner 的四个未知都收掉了：apt 组件里的 MySQL 连接器确实落地，是
   `26.7.1`，文件名为 `libmyodbc26a.so` / `libmyodbc26w.so`；从 tag 源码构建的 MariaDB
-  连接器编得过（`3.1.23` 与 `3.2.9` 都编得过，但后者跑不过套件，见 §8）；golden 的逐字节
-  比对在 mariadb 腿上成立、在 mysql 腿上只差一处连接器渲染，故矩阵按腿开关；驱动与 DSN 的
+  连接器编得过（`3.1.23` 与 `3.2.9` 都编得过，但后者跑不过套件，见 §8）；golden 在
+  mariadb 腿上逐字节成立、在 mysql 腿上只差一处连接器渲染，那笔渲染后来整体退出了
+  比对（见 §5）；驱动与 DSN 的
   注册、`isql` 预检、`-LE perf` 过滤后的五条，连同作业那段 `services`（授权与健康门）也
   都在镜像里绿过。GitHub 也已经真跑过它了：头一趟只有 YAML 校验拦下的一件事（`services`
   块读不到 `env` 上下文），改完的第二趟作业起了、`core` 抓出一处真漏并已修，第三趟三支作业
-  全绿（两处细节都在 §8）。
+  全绿（两处细节都在 §8）。**待做**：那一趟绿的形状是两条腿；矩阵已沿服务端铺成 2×2，
+  四条腿这副还没被 runner 看过——要它确认的是配对本身（矩阵选镜像、按镜像给的健康门、
+  `services` 里两套 env 前缀），以及 CI 钉的那两支连接器在真 MySQL 服务端上的那次抽取
+  （§8 里四格截注释等值的那趟量的是早于 `decimal_t` 的构建）。
 
 原有路线图：
 

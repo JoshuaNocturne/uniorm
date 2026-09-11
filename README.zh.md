@@ -239,8 +239,8 @@ ctest --test-dir build --output-on-failure
   （实体直绑 / 聚合投影 / 动态行）的对比，并附调用形式与 uniorm
   一一对应的纯 ODBC 基线作为抽象开销参照；行数由 `UNIORM_PERF_ROWS` 指定
   （默认 10000），可用 `ctest -LE perf` 跳过
-- **gen_e2e_tests**：`uniorm-gen` 端到端——生成物与检入的 golden 头文件
-  逐字节比对，golden 本身经编译、注册并 `validate(strict)`；需可达 DSN
+- **gen_e2e_tests**：`uniorm-gen` 端到端——生成物的代码与检入的 golden 头文件
+  比对（注释不比），golden 本身经编译、注册并 `validate(strict)`；需可达 DSN
 - **install_smoke**：安装面检查——`cmake --install` 装进构建树下的临时
   prefix，再用一个外部工程（`tests/install/`）经 `find_package(uniorm CONFIG)`
   配置、编译并运行，且它自己不设 C++ 标准；同时断言包版本门会拒掉另一个次版本、
@@ -275,9 +275,17 @@ Connector/ODBC 走服务端预处理，对一个真 MySQL 服务端也全绿。v
 backend 抽象已落地（中立接口 + scheme 注册表，ODBC 迁移至接口之后、
 改为 PRIVATE 链接，核心单测在不链接 ODBC 的情况下编译运行），v1 最后一笔
 类型层面的欠账已清（`uniorm::decimal_t`）；CI 工作流已入仓库，两条形状
-都有人守（不链接 ODBC 的编译契约 + 对活库跑两支驱动的矩阵），三支作业都已在
-runner 所用的那款镜像里、对着作业自带的同一款 MariaDB 重跑过一趟（每支腿装哪个
-连接器、装哪一版就是这么定下来的）。GitHub 上也真跑过：其中一趟把一处驱动头漏进
-无 ODBC 构建的地方抓了出来，而本地重放抓不到它——仿 runner 的那只容器为了编驱动
-早就装好了 ODBC 开发头；再往后一趟，三支作业全绿。后续为 libpq / Oracle OCI 原生
-backend 等，见设计文档 §5 与 §9。
+都有人守（不链接 ODBC 的编译契约 + 对活库跑**连接器 × 服务端**的 2×2 矩阵）。
+加服务端这一轴，不是因为两边写的 SQL 不同（`dialect::detect` 给两个 banner 同一套
+引号与分页），而是因为生成器读的是服务端答的元数据：本地第一次拿真 MySQL 8.4 跑，
+就撞出 MariaDB 连接器 `3.1.12` 用 `COLUMN_KEY = 'pri'` 去问 `information_schema`，
+撞上那台服务端把该列声明成 `utf8mb3_bin` 而什么都问不到，生成的头文件主键整列消失，
+却照样编译、注册、过 `validate(strict)`。这类沉默如今由比对本身兜：抽取测试拿生成的
+代码与 golden 的比，两边每行 `//` 之后的注释先截掉，四条腿都这么比——注释按"连接器
+× 服务端"每格都不同，留着它就等于把 golden 钉死在一格上。那次主键读丢在代码里就是
+`.column` 撞上 golden 的 `.primary_key`；只有 FK 与二级索引还要靠标记点名，因为
+它们在代码里不留任何痕迹。GitHub 上跑绿的是两条腿那副形状
+（其中一趟还把一处驱动头漏进无 ODBC 构建的地方抓了出来，本地重放抓不到它——仿
+runner 的那只容器为了编驱动早就装好了 ODBC 开发头）；四条腿这副还欠一趟，不过本地
+已经拿真 8.4 服务端预跑过一遍：除抽取那条外四条全绿，而那一条红在本地这支更老的
+连接器上。后续为 libpq / Oracle OCI 原生 backend 等，见设计文档 §5 与 §9。

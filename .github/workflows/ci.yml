@@ -57,14 +57,37 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+
+      - name: Put the ODBC headers out of reach
+        run: |
+          # Whether the image ships unixodbc-dev is a fact about the image, not a
+          # guard, so shadow sql.h and sqlext.h with headers that refuse to be
+          # read. The control compile then has to report *our* error: a compiler
+          # that cannot run fails for some reason too, and that reason is not
+          # the guard working.
+          poison="$RUNNER_TEMP/poison"
+          ctrl="$RUNNER_TEMP/control.cpp"
+          mkdir -p "$poison"
+          printf '#error "ODBC header reached the ODBC-free build"\n' |
+            tee "$poison/sql.h" "$poison/sqlext.h" >/dev/null
+          printf '#include <sql.h>\nint main() { return 0; }\n' > "$ctrl"
+          if out="$(c++ -I"$poison" -fsyntax-only "$ctrl" 2>&1)"; then
+            echo '::error::the shadowed sql.h lost the include-path race'
+            exit 1
+          fi
+          if [[ "$out" != *"ODBC header reached the ODBC-free build"* ]]; then
+            echo '::error::the control compile never reached the shadow'
+            printf '%s\n' "$out"
+            exit 1
+          fi
 
       - name: Configure
         run: >
           cmake -S . -B build
           -DUNIORM_BACKEND_ODBC=OFF
           -DUNIORM_BUILD_TOOLS=OFF
-          -DCMAKE_CXX_FLAGS="$CXXWARN"
+          -DCMAKE_CXX_FLAGS="$CXXWARN -I$RUNNER_TEMP/poison"
 
       - name: Build
         run: cmake --build build -j "$(nproc)"
@@ -120,7 +143,7 @@ jobs:
           --health-retries 20
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install the driver manager
         run: >

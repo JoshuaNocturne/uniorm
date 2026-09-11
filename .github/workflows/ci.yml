@@ -46,7 +46,6 @@ env:
   UNIORM_IT_USER: uniorm
   UNIORM_IT_PWD: uniorm-ci-pwd
   DB_NAME: uniorm_ci
-  ROOT_PWD: uniorm-ci-root
   # Warnings are part of the contract here: the tree is warning-clean under
   # -Wall -Wextra today. -Werror is deliberately absent, because a dependency
   # header upgrading would turn an unrelated red into a blocked branch.
@@ -103,16 +102,19 @@ jobs:
     services:
       server:
         image: mariadb:11
+        # A services block cannot read the env context, so these four repeat the
+        # job map above; the preflight below is what catches a drift, and a
+        # wrong root password shows up as the health gate never opening.
         env:
-          MARIADB_ROOT_PASSWORD: ${{ env.ROOT_PWD }}
-          MARIADB_DATABASE: ${{ env.DB_NAME }}
-          MARIADB_USER: ${{ env.UNIORM_IT_USER }}
-          MARIADB_PASSWORD: ${{ env.UNIORM_IT_PWD }}
+          MARIADB_ROOT_PASSWORD: uniorm-ci-root
+          MARIADB_DATABASE: uniorm_ci
+          MARIADB_USER: uniorm
+          MARIADB_PASSWORD: uniorm-ci-pwd
         ports:
           - 3306:3306
         options: >-
           --health-cmd "mariadb-admin ping -h 127.0.0.1 -uroot
-          -p${{ env.ROOT_PWD }} --silent"
+          -puniorm-ci-root --silent"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 20

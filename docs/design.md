@@ -90,7 +90,7 @@ uniorm/
 │   ├── export.hpp               # UNIORM_API 符号导出宏
 │   ├── error.hpp                # 异常体系（backend/odbc 层错误在各自头文件）
 │   ├── value.hpp                # sql_value variant / timestamp
-│   ├── types.hpp                # backend 中立 sql_type 枚举 + sql_type_from_native / sql_type_name + column_info
+│   ├── types.hpp                # backend 中立 sql_type 枚举 + sql_type_name + column_info
 │   ├── converter.hpp            # 自定义类型转换器（concept has_converter，§4.4）
 │   ├── decimal.hpp              # decimal_t 精确固定点小数值 + 其 converter 特化（§4.3）
 │   ├── row.hpp                  # 动态行 + value_cast
@@ -123,14 +123,15 @@ uniorm/
 │       ├── backend.hpp          # backend 契约的 ODBC 实现（含 odbc_batch_writer）
 │       ├── environment.hpp / connection.hpp / statement.hpp   # 句柄 RAII
 │       ├── handles.hpp          # 句柄 RAII 模板、traits
+│       ├── native_types.hpp     # SQL_* → sql_type 映射表（驱动编码只活在这里）
 │       └── error.hpp            # odbc_error / diagnostics
 ├── tools/uniorm-gen/            # 代码生成：uniorm_gen_core(STATIC) + uniorm-gen(CLI)
 │   ├── main.cpp                 # 参数解析与编排（唯一进 CLI 的源文件）
-│   ├── schema_reader.cpp/.hpp   # ODBC 元数据提取（直连私有句柄层）
+│   ├── schema_reader.cpp/.hpp   # ODBC 元数据提取（直连私有句柄层，顺手归一 DATA_TYPE）
 │   ├── generator.cpp/.hpp       # model + 配置 → 头文件文本
 │   ├── config.cpp/.hpp          # TOML 子集解析
 │   ├── naming.cpp/.hpp          # PascalCase/camelCase 标识符转换
-│   └── schema_model.hpp         # 中间 schema 模型（生成器输入）
+│   └── schema_model.hpp         # 中间 schema 模型（生成器输入；列类型已是中立 sql_type）
 ├── tests/
 │   ├── unit/                    # 无库依赖：check.hpp（CHECK/CHECK_THROWS）+
 │   │                            # uniorm_unit_tests（不链 ODBC，含 fake backend 的
@@ -154,8 +155,9 @@ uniorm/
 不在 `uniorm` 目标的任何 include 路径上（同目录引用无需路径），只有确实需要跨目录取用
 私有头的四个目标显式 `-I src`（PRIVATE）：`uniorm_gen_core` 与 `uniorm-gen`
 （直调 `SQLTables` / `SQLColumns` 等目录函数）以及两个白盒单测。公开头一旦
-`#include` 私有头便无法解析，边界由编译器强制；`<sql.h>` 现仅出现在 `src/odbc/`
-之下，对外头文件既不带驱动类型，也不带 ODBC 链接依赖（`ODBC::ODBC` 是 PRIVATE）。
+`#include` 私有头便无法解析，边界由编译器强制；库内的 `<sql.h>` 只出现在
+`src/odbc/` 之下，对外头文件既不带驱动类型，也不带 ODBC 链接依赖
+（`ODBC::ODBC` 是 PRIVATE）。
 
 公开头只留声明：非模板成员的定义一律进同名 `.cpp`（`orm.cpp`、`decimal.cpp` 都按
 这条走）。定义搬出类外时导出标记不会跟着走——类外的 `operator` 友元要在声明上
@@ -337,7 +339,8 @@ using sql_value = std::variant<
 `params.hpp`。
 
 映射不靠单一 traits，而是三条独立通道（下表是它们的合成结果）：
-`sql_type_from_native()`（`types.hpp`）把驱动的 native code 归一为中立 `sql_type`；
+native code 归一为中立 `sql_type` 发生在 backend 之内（ODBC 是
+`src/odbc/native_types.hpp`，核心库的任何一处都不再出现驱动编码）；
 动态行按 `sql_type` 选槽位种类（`src/result_set.cpp` 的 `kind_for`）；实体/投影侧由
 成员类型决定绑哪种 `backend::buffer_type`（`readable_member` / `plain_sql_member`
 concept 约束可声明的成员类型，`column_meta::buffer_type` 记录之），buffer_type 再在
@@ -1126,6 +1129,10 @@ backend 接口已在里程碑 1 落地（§5.2），下列纪律从约定变成�
   上层公共头，这个目标就编译不过。它覆盖类型系统、pfr、`row`/`params`、
   表达式生成、映射注册、backend 注册表；高层 API（execute / result_set / 实体查询 /
   事务 / 批量）由集成测试通过真实数据库验证。
+- 上一条只守得住"公共头不带驱动类型"：核心库自己的 `.cpp` 里 `#include <sql.h>`，
+  在装了 `unixodbc-dev` 的机器上照样编过。真正把它逼出来的是没有那些头文件的构建，
+  所以 CI 的 `core` 作业不赌镜像装没装，先拿一对读下去只会报错的 `sql.h`/`sqlext.h`
+  压住 include 路径，再编（见 §8）。
 
 **这条保证只到链接行为止**：ODBC 是 `PRIVATE` 链接，驱动符号不进消费者的链接行，
 但默认构建下 `ldd libuniorm.so` 仍列出 `libodbc.so.2`——进程载入本库时驱动管理器
@@ -1449,7 +1456,8 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
   跑过——`core` 与两条驱动腿在 ubuntu:24.04 容器里执行，服务端用的是一只照抄作业
   `services` 块起出的 `mariadb:11`（实测 11.8.9），连 `MARIADB_DATABASE`/`MARIADB_USER`
   生成的授权与 `mariadb-admin ping` 健康门（约 20 s 转 healthy）也一并验了；GitHub 上已提交过
-  一趟，卡在 YAML 校验，作业一条都没跑起来）：
+  两趟，头一趟卡在 YAML 校验，第二趟作业真跑起来了，`core` 当场抓出一处真漏——两样的账都在
+  下面）：
   一支 `UNIORM_BACKEND_ODBC=OFF`
   的构建只跑 `unit_tests`，替 §3 那条"驱动类型不漏进 statement 层之上的公开头"把关——
   这条承诺此前只在注释里，没有任何东西在守它。另一支按**驱动**成矩阵，对 `mariadb:11`
@@ -1485,10 +1493,19 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
   月过去，apt 于是报 `EXPKEYSIG` 把归档当成未签名而拒掉，要取 `RPM-GPG-KEY-mysql-2025`
   那份续过期的副本（取到后 `apt-get install --reinstall` 确实从 `noble/mysql-tools` 拉回
   `26.7.1`）。
-  首跑真正撞到的只有一处，且不在镜像里而在 YAML 的校验上：`services` 块拿不到 `env` 上下文（那
-  里可用的一列只有 `github`、`needs`、`strategy`、`matrix`、`job`、`runner`），于是整个文件在
-  排队前就被判 invalid。服务容器的那四个口令与健康门用的 root 口令因此只能写成字面量，与作业
-  `env` 映射的一致性归下面那道 `isql` 预检管。
+  真跑起来后它头一趟就抓到东西，两样都不是本地能撞到的。其一是 YAML 校验：`services` 块
+  拿不到 `env` 上下文（那里可用的一列只有 `github`、`needs`、`strategy`、`matrix`、`job`、
+  `runner`），整个文件在排队前就被判 invalid，服务容器那四个口令与健康门用的 root 口令只
+  能写成字面量，与作业 `env` 映射的一致性归 `isql` 预检管。其二是 `core` 作业编到
+  `src/types.cpp` 就停在 `fatal error: sql.h: No such file or directory`——正是这条契约要
+  抓的泄漏：那张 `SQL_*` → `sql_type` 的映射表以 `UNIORM_API` 的资格住在公开头和核心库里，
+  而 runner 的镜像不装 `unixodbc-dev`。本地那趟重放是绿的，只因为仿 runner 的容器为了编驱动
+  早已把那些头装上了：一条断言的成败取决于某个包在不在，它不配叫守卫。映射表因此搬去
+  `src/odbc/native_types.hpp`（`inline` 头，不进 ABI），`column_model` 改存中立 `sql_type`、
+  由 `schema_reader` 在它的 ODBC 边界上归一，公开头不再声明 `sql_type_from_native`；`core`
+  作业另加一道 shadow：往 include 路径最前放一对读下去即报错的 `sql.h`/`sqlext.h`，再用一次
+  反面编译确认它们确实抢在了系统头之前——且要求那次编译非报我们那句 `#error` 不可，编不动
+  的编译器同样会"失败"，而那不算守卫生效。
   至于先前那笔 SSPS 与 `NO_SSPS` 的代价对照，量的是 `8.4.0` 对 `8.4.0`（服务端
   `mysqld-8.4.11`，只切那一把）：缓存命中的形状上 SSPS 略优（每语句 0.212 ms 对 0.228 ms，
   数组绑定批量 0.193 对 0.218——驱动得在本地把值格式化进语句文本），每个只出现一次的语句
@@ -1501,8 +1518,8 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
 ## 9. v2 路线图
 
 **v1 欠账**（`decimal_t` 随 0.2.0 落地、CI 的三条作业也都在它们所要用的镜像里按作业原样
-重放过一遍后，本清单只剩"让流水线在 GitHub 上真跑一次"这件只能在 push 之后了结的事，见
-打包条目末尾）：
+重放过一遍、GitHub 上也真跑过两趟之后，本清单只剩"让流水线在 GitHub 上绿一次"这件只能在
+push 之后了结的事，见打包条目末尾）：
 
 - ~~ODBC 宽字符路径（§4.2）~~ **已按该条目自己给出的第二条路了结**：确认不做，
   删掉零调用者的 `utf8_to_utf16` / `utf16_to_utf8` 与只有它们会抛出的公开类型
@@ -1529,7 +1546,9 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
   连接器编得过（`3.1.23` 与 `3.2.9` 都编得过，但后者跑不过套件，见 §8）；golden 的逐字节
   比对在 mariadb 腿上成立、在 mysql 腿上只差一处连接器渲染，故矩阵按腿开关；驱动与 DSN 的
   注册、`isql` 预检、`-LE perf` 过滤后的五条，连同作业那段 `services`（授权与健康门）也
-  都在镜像里绿过。剩下的只有 GitHub 会不会把这份 YAML 跑起来——文件从未被它执行过。
+  都在镜像里绿过。GitHub 也已经真跑过它了：头一趟只有 YAML 校验拦下的一件事（`services`
+  块读不到 `env` 上下文），改完的第二趟作业起了、`core` 抓出一处真漏并已修，剩下一件是
+  攒一次全绿的运行（两处细节都在 §8）。
 
 原有路线图：
 

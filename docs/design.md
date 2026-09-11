@@ -1448,8 +1448,8 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
 - **CI**（已写入 `.github/workflows/ci.yml`；三支作业都已按作业原样在它所要用的镜像里
   跑过——`core` 与两条驱动腿在 ubuntu:24.04 容器里执行，服务端用的是一只照抄作业
   `services` 块起出的 `mariadb:11`（实测 11.8.9），连 `MARIADB_DATABASE`/`MARIADB_USER`
-  生成的授权与 `mariadb-admin ping` 健康门（约 20 s 转 healthy）也一并验了；runner 上
-  还没有）：
+  生成的授权与 `mariadb-admin ping` 健康门（约 20 s 转 healthy）也一并验了；GitHub 上已提交过
+  一趟，卡在 YAML 校验，作业一条都没跑起来）：
   一支 `UNIORM_BACKEND_ODBC=OFF`
   的构建只跑 `unit_tests`，替 §3 那条"驱动类型不漏进 statement 层之上的公开头"把关——
   这条承诺此前只在注释里，没有任何东西在守它。另一支按**驱动**成矩阵，对 `mariadb:11`
@@ -1485,6 +1485,10 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
   月过去，apt 于是报 `EXPKEYSIG` 把归档当成未签名而拒掉，要取 `RPM-GPG-KEY-mysql-2025`
   那份续过期的副本（取到后 `apt-get install --reinstall` 确实从 `noble/mysql-tools` 拉回
   `26.7.1`）。
+  首跑真正撞到的只有一处，且不在镜像里而在 YAML 的校验上：`services` 块拿不到 `env` 上下文（那
+  里可用的一列只有 `github`、`needs`、`strategy`、`matrix`、`job`、`runner`），于是整个文件在
+  排队前就被判 invalid。服务容器的那四个口令与健康门用的 root 口令因此只能写成字面量，与作业
+  `env` 映射的一致性归下面那道 `isql` 预检管。
   至于先前那笔 SSPS 与 `NO_SSPS` 的代价对照，量的是 `8.4.0` 对 `8.4.0`（服务端
   `mysqld-8.4.11`，只切那一把）：缓存命中的形状上 SSPS 略优（每语句 0.212 ms 对 0.228 ms，
   数组绑定批量 0.193 对 0.218——驱动得在本地把值格式化进语句文本），每个只出现一次的语句

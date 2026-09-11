@@ -5,39 +5,42 @@ name: ci
 # 1. A build with no ODBC at all still compiles and passes. That is the whole
 #    point of UNIORM_BACKEND_ODBC=OFF -- the moment a driver type reaches a
 #    public header above the statement layer, this job stops building.
-# 2. The suite runs against a live server for every combination of the two
-#    drivers the MySQL wire protocol has and the two servers that answer it:
-#    Connector/ODBC and MariaDB's connector, against MySQL 8.4 and MariaDB 11.
-#    Development only ever exercises the MariaDB pair. The ORM half looks
-#    server-independent -- src/dialect.cpp:47 gives both banners the same
-#    quoting and pagination -- but the generator reads metadata out of the
-#    server, and there the pair matters. MariaDB's connector 3.1.12 asks
-#    information_schema for COLUMN_KEY = 'pri'; MySQL 8.4 declares those columns
-#    utf8mb3_bin, so nothing matches and the generated header loses its primary
-#    key without an error. 3.1.23 asks KEY_COLUMN_USAGE for CONSTRAINT_NAME =
-#    'PRIMARY' and is fine on both servers. One connector version is not
-#    reproducible from CI, which pins its own, so the guard against that class
-#    of silence is the extraction test comparing generated code with the
+# 2. The suite runs against a live server for each connector paired with the
+#    server it is used against: MariaDB's connector with MariaDB 11,
+#    Connector/ODBC with MySQL 8.4. The cross pairings are out on purpose --
+#    this covers the normal shape of use, not a driver pointed at a server its
+#    vendor does not target.
+#
+#    Development only ever exercises the MariaDB pair, so MySQL is here for
+#    the generator. The ORM half looks server-independent --
+#    src/dialect.cpp:47 gives both banners the same quoting and pagination --
+#    but uniorm-gen reads metadata out of the server, and that read is the
+#    same code either way. MariaDB's connector 3.1.12 asks information_schema
+#    for COLUMN_KEY = 'pri'; MySQL 8.4 declares those columns utf8mb3_bin, so
+#    nothing matched and the generated header lost its primary key without an
+#    error. 3.1.23 asks KEY_COLUMN_USAGE for CONSTRAINT_NAME = 'PRIMARY'
+#    instead. CI pins its own connector versions, so the guard against that
+#    class of silence is the extraction test comparing generated code with the
 #    golden's on every leg: a lost primary key reads as .column where the
 #    golden has .primary_key. The comments are cut from both sides before that
 #    compare, because how a connector spells BIGINT and how a server stores a
-#    default are rendering, and a connector upgrade would otherwise redden four
-#    legs at once over nothing. A marker check covers the metadata that leaves
-#    no trace in code -- the foreign key and the secondary index. Every leg
-#    also asks the server which it is before building, because reaching *a*
-#    server is not the gate: a DSN left on the wrong port answers select 1 and
-#    runs the suite against a pairing the leg's own name denies.
+#    default are rendering, and an upgrade of either would otherwise redden
+#    both legs over nothing. A marker check covers the metadata that leaves no
+#    trace in code -- the foreign key and the secondary index. Every leg also
+#    asks the server which it is before building, because reaching *a* server
+#    is not the gate: a DSN left on the wrong port answers select 1 and runs
+#    the suite against a pairing the leg's own name denies.
 #
 # Neither driver comes from the Ubuntu archive -- mariadb-connector-odbc is not
 # packaged for any release, mysql-connector-odbc lives only in MySQL's own apt
-# component -- so the driver choice splits the legs between install and build,
-# and each half of that runs on both servers. Both halves were replayed on the
-# runner's own image before being written down, and the version each one ends up
-# with is a measurement rather than a preference: apt delivers Connector/ODBC
-# 26.7.1, which needs no DSN keys at all, while the MariaDB driver's 3.2 line
-# fails an array-bound INSERT and that leg stays on 3.1. All four pairings have
-# since been replayed in that image, current build and whole suite included;
-# what the runner has yet to confirm is this shape of the job -- the matrix
+# component -- so one leg installs its driver and the other builds it. Both
+# were replayed on the runner's own image before being written down, and the
+# version each leg ends up with is a measurement rather than a preference: apt
+# delivers Connector/ODBC 26.7.1, which needs no DSN keys at all, while the
+# MariaDB driver's 3.2 line fails an array-bound INSERT and that leg stays on
+# 3.1. Those two ran green alongside the cross pairings in a container holding
+# both pinned connectors, so the shape this job dropped is measured rather than
+# assumed. What the runner has yet to confirm is the job itself -- the matrix
 # picking the image, the health gate following it, the preflight turning away a
 # DSN that answers as some other server. docs/design.md keeps the whole account.
 
@@ -130,22 +133,15 @@ jobs:
             stanza: CI-MySQL
             server_image: mysql:8.4
             # Quoted on purpose: unquoted, YAML reads these as numbers, and the
-            # 11. one becomes 11 -- a prefix every MariaDB banner matches.
+            # other leg's 11. becomes 11 -- a prefix every MariaDB banner
+            # matches.
             server_prefix: '8.4'
             health_cmd: mysqladmin ping -h 127.0.0.1 -uroot
               -puniorm-ci-root --silent
             # Empty: Connector/ODBC 26.7.1 takes every parameter shape under
-            # server-side prepares, against a MariaDB server and against MySQL's
-            # own. The key stays as the escape hatch it already was -- 8.4.0
-            # needed NO_SSPS = 1 on either banner MariaDB has used.
-            dsn_extra: ''
-          - name: mysql-odbc on mariadb-11
-            driver: mysql
-            stanza: CI-MySQL
-            server_image: mariadb:11
-            server_prefix: '11.'
-            health_cmd: mariadb-admin ping -h 127.0.0.1 -uroot
-              -puniorm-ci-root --silent
+            # server-side prepares against this server. The key stays as the
+            # escape hatch it already was -- 8.4.0 needed NO_SSPS = 1 on either
+            # banner MariaDB has used.
             dsn_extra: ''
           - name: mariadb-odbc on mariadb-11
             driver: mariadb
@@ -153,14 +149,6 @@ jobs:
             server_image: mariadb:11
             server_prefix: '11.'
             health_cmd: mariadb-admin ping -h 127.0.0.1 -uroot
-              -puniorm-ci-root --silent
-            dsn_extra: ''
-          - name: mariadb-odbc on mysql-8.4
-            driver: mariadb
-            stanza: CI-MariaDB
-            server_image: mysql:8.4
-            server_prefix: '8.4'
-            health_cmd: mysqladmin ping -h 127.0.0.1 -uroot
               -puniorm-ci-root --silent
             dsn_extra: ''
 

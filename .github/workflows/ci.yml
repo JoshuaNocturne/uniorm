@@ -23,7 +23,10 @@ name: ci
 #    compare, because how a connector spells BIGINT and how a server stores a
 #    default are rendering, and a connector upgrade would otherwise redden four
 #    legs at once over nothing. A marker check covers the metadata that leaves
-#    no trace in code -- the foreign key and the secondary index.
+#    no trace in code -- the foreign key and the secondary index. Every leg
+#    also asks the server which it is before building, because reaching *a*
+#    server is not the gate: a DSN left on the wrong port answers select 1 and
+#    runs the suite against a pairing the leg's own name denies.
 #
 # Neither driver comes from the Ubuntu archive -- mariadb-connector-odbc is not
 # packaged for any release, mysql-connector-odbc lives only in MySQL's own apt
@@ -32,9 +35,11 @@ name: ci
 # runner's own image before being written down, and the version each one ends up
 # with is a measurement rather than a preference: apt delivers Connector/ODBC
 # 26.7.1, which needs no DSN keys at all, while the MariaDB driver's 3.2 line
-# fails an array-bound INSERT and that leg stays on 3.1. The four legs together
-# are newer than that replay, so the pairing itself is what the runner has yet
-# to confirm. docs/design.md keeps the whole account.
+# fails an array-bound INSERT and that leg stays on 3.1. All four pairings have
+# since been replayed in that image, current build and whole suite included;
+# what the runner has yet to confirm is this shape of the job -- the matrix
+# picking the image, the health gate following it, the preflight turning away a
+# DSN that answers as some other server. docs/design.md keeps the whole account.
 
 on:
   push:
@@ -124,6 +129,9 @@ jobs:
             driver: mysql
             stanza: CI-MySQL
             server_image: mysql:8.4
+            # Quoted on purpose: unquoted, YAML reads these as numbers, and the
+            # 11. one becomes 11 -- a prefix every MariaDB banner matches.
+            server_prefix: '8.4'
             health_cmd: mysqladmin ping -h 127.0.0.1 -uroot
               -puniorm-ci-root --silent
             # Empty: Connector/ODBC 26.7.1 takes every parameter shape under
@@ -135,6 +143,7 @@ jobs:
             driver: mysql
             stanza: CI-MySQL
             server_image: mariadb:11
+            server_prefix: '11.'
             health_cmd: mariadb-admin ping -h 127.0.0.1 -uroot
               -puniorm-ci-root --silent
             dsn_extra: ''
@@ -142,6 +151,7 @@ jobs:
             driver: mariadb
             stanza: CI-MariaDB
             server_image: mariadb:11
+            server_prefix: '11.'
             health_cmd: mariadb-admin ping -h 127.0.0.1 -uroot
               -puniorm-ci-root --silent
             dsn_extra: ''
@@ -149,6 +159,7 @@ jobs:
             driver: mariadb
             stanza: CI-MariaDB
             server_image: mysql:8.4
+            server_prefix: '8.4'
             health_cmd: mysqladmin ping -h 127.0.0.1 -uroot
               -puniorm-ci-root --silent
             dsn_extra: ''
@@ -272,14 +283,27 @@ jobs:
             fi
           } >> "$HOME/.odbc.ini"
 
-      - name: Check the data source answers before building
+      - name: Check the data source answers as the server this leg names
+        env:
+          SERVER_PREFIX: ${{ matrix.server_prefix }}
         run: |
-          if ! echo 'select 1' |
-            isql -v "$UNIORM_IT_DSN" "$UNIORM_IT_USER" "$UNIORM_IT_PWD"; then
-            echo '::error::the driver cannot reach the server. The test suite'
-            echo '  would return 77 for this and ctest would call it a pass.'
-            exit 1
-          fi
+          # Reaching *a* server is not the gate: a DSN on the wrong port answers
+          # select 1 and runs the whole suite against a pairing this leg
+          # does not describe. Ask which server answered instead.
+          banner="$(echo 'SELECT VERSION();' |
+            isql -v "$UNIORM_IT_DSN" "$UNIORM_IT_USER" \
+              "$UNIORM_IT_PWD" 2>/dev/null |
+            sed -n 's/^| *\([0-9][^|]*[^ |]\) *|.*/\1/p' | head -1)"
+          case "$banner" in
+            "$SERVER_PREFIX"*)
+              echo "server behind $UNIORM_IT_DSN: $banner"
+              ;;
+            *)
+              echo "::error::$UNIORM_IT_DSN is not on a $SERVER_PREFIX* server"
+              echo "  it answered '${banner:-nothing}'"
+              exit 1
+              ;;
+          esac
 
       - name: Configure
         run: >

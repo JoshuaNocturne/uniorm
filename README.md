@@ -309,25 +309,26 @@ backend abstraction is in place (neutral interface + scheme-based registry,
 ODBC migrated behind it, ODBC linked privately, core unit tests compile and
 run without ODBC), and v1's last type-level debt is closed
 (`uniorm::decimal_t`). A CI workflow now guards both shapes — the ODBC-free
-compile contract, and the suite against a live server for each combination of
-the two connectors with the two servers on that wire. The second axis is
-there because the generator reads metadata the *server* answers, not SQL the
-dialect writes: against MySQL 8.4, MariaDB connector 3.1.12 asks
+compile contract, and the suite against a live server for each connector
+paired with the server it is used against. The server axis is there because
+the generator reads metadata the *server* answers, not SQL the dialect
+writes: against MySQL 8.4, MariaDB connector 3.1.12 asks
 `information_schema` for `COLUMN_KEY = 'pri'`, matches nothing once that
 server declares those columns `utf8mb3_bin`, and generates a header whose
 primary key is gone — one that still compiles, registers and validates. That
-class of silence is now caught by the comparison itself: every leg matches
-the generated code against the golden's with the comments cut from both
-sides, since those comments differ per connector-and-server pair and
-comparing them would nail the golden to one cell. The lost key is `.column`
-where the golden has `.primary_key`; markers are left for the foreign key and
-the secondary index, the two facts no line of generated code carries. GitHub
-has run the two-leg shape green, after one execution caught a driver header
-reaching the ODBC-free build — which no local replay could have, since the
-local image had the ODBC development headers installed to build the
-connectors with. The four-leg shape is still ahead of it, but not untested:
-an `ubuntu:24.04` container carrying both pinned connectors passes all five
-tests in all four cells, against a real MySQL 8.4 as well as MariaDB 11. Each
-leg also asks which server answered before it builds, and stops if that is
-not the one its name claims. Native libpq / Oracle OCI backends follow — see
-design doc §5 and §9.
+class of silence is caught by the comparison itself, which every leg runs:
+generated code against the golden's, comments cut from both sides, since those
+comments differ per connector-and-server pair and comparing them would nail
+the golden to one cell. The lost key is `.column` where the golden has
+`.primary_key`; markers are left for the foreign key and the secondary index,
+the two facts no line of generated code carries. GitHub has run a two-leg
+shape green — both legs on a MariaDB server then — after one execution caught
+a driver header reaching the ODBC-free build, which no local replay could
+have, since the local image had the ODBC development headers installed to
+build the connectors with. Those legs then took both servers and passed all
+five tests in all four cells inside an `ubuntu:24.04` container carrying both
+pinned connectors, and came back down to the two pairings a driver is used
+with: the cross cells are out by choice, and design doc §9 keeps that as a
+named gap. Each leg still asks which server answered before it builds, and
+stops if that is not the one its name claims. Native libpq / Oracle OCI
+backends follow — see design doc §5 and §9.

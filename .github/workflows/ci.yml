@@ -5,20 +5,36 @@ name: ci
 # 1. A build with no ODBC at all still compiles and passes. That is the whole
 #    point of UNIORM_BACKEND_ODBC=OFF -- the moment a driver type reaches a
 #    public header above the statement layer, this job stops building.
-# 2. The suite actually runs against a live server through both drivers the
-#    MySQL wire protocol has. Development only ever exercises the MariaDB one,
-#    and the source already carves out the places where drivers on this wire
-#    differ (src/orm.cpp:577, src/odbc/backend.cpp:559); the MySQL leg is what
-#    keeps those carve-outs honest.
+# 2. The suite runs against a live server for every combination of the two
+#    drivers the MySQL wire protocol has and the two servers that answer it:
+#    Connector/ODBC and MariaDB's connector, against MySQL 8.4 and MariaDB 11.
+#    Development only ever exercises the MariaDB pair. The ORM half looks
+#    server-independent -- src/dialect.cpp:47 gives both banners the same
+#    quoting and pagination -- but the generator reads metadata out of the
+#    server, and there the pair matters. MariaDB's connector 3.1.12 asks
+#    information_schema for COLUMN_KEY = 'pri'; MySQL 8.4 declares those columns
+#    utf8mb3_bin, so nothing matches and the generated header loses its primary
+#    key without an error. 3.1.23 asks KEY_COLUMN_USAGE for CONSTRAINT_NAME =
+#    'PRIMARY' and is fine on both servers. One connector version is not
+#    reproducible from CI, which pins its own, so the guard against that class
+#    of silence is the extraction test comparing generated code with the
+#    golden's on every leg: a lost primary key reads as .column where the
+#    golden has .primary_key. The comments are cut from both sides before that
+#    compare, because how a connector spells BIGINT and how a server stores a
+#    default are rendering, and a connector upgrade would otherwise redden four
+#    legs at once over nothing. A marker check covers the metadata that leaves
+#    no trace in code -- the foreign key and the secondary index.
 #
 # Neither driver comes from the Ubuntu archive -- mariadb-connector-odbc is not
 # packaged for any release, mysql-connector-odbc lives only in MySQL's own apt
-# component -- so one leg installs and the other builds. Both were replayed on
-# the runner's own image before being written down, and the version each leg
-# ends up with is a measurement rather than a preference: apt delivers
-# Connector/ODBC 26.7.1, which needs no DSN keys at all, while the MariaDB
-# driver's 3.2 line fails an array-bound INSERT and the leg stays on 3.1.
-# docs/design.md keeps the whole account.
+# component -- so the driver choice splits the legs between install and build,
+# and each half of that runs on both servers. Both halves were replayed on the
+# runner's own image before being written down, and the version each one ends up
+# with is a measurement rather than a preference: apt delivers Connector/ODBC
+# 26.7.1, which needs no DSN keys at all, while the MariaDB driver's 3.2 line
+# fails an array-bound INSERT and that leg stays on 3.1. The four legs together
+# are newer than that replay, so the pairing itself is what the runner has yet
+# to confirm. docs/design.md keeps the whole account.
 
 on:
   push:
@@ -104,40 +120,61 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: mysql-odbc
+          - name: mysql-odbc on mysql-8.4
+            driver: mysql
             stanza: CI-MySQL
+            server_image: mysql:8.4
+            health_cmd: mysqladmin ping -h 127.0.0.1 -uroot
+              -puniorm-ci-root --silent
             # Empty: Connector/ODBC 26.7.1 takes every parameter shape under
-            # server-side prepares against a MariaDB server. The key stays here
-            # as the escape hatch it already was -- 8.4.0 needed NO_SSPS = 1
-            # against the same server, on either banner MariaDB has used.
+            # server-side prepares, against a MariaDB server and against MySQL's
+            # own. The key stays as the escape hatch it already was -- 8.4.0
+            # needed NO_SSPS = 1 on either banner MariaDB has used.
             dsn_extra: ''
-            # Set, so the extraction runs but its output is not byte-compared:
-            # the golden records the MariaDB connector's metadata rendering, and
-            # this one gives bigint(19) plus a DEFAULT NULL the server never
-            # stored.
-            skip_golden: 1
-          - name: mariadb-odbc
+          - name: mysql-odbc on mariadb-11
+            driver: mysql
+            stanza: CI-MySQL
+            server_image: mariadb:11
+            health_cmd: mariadb-admin ping -h 127.0.0.1 -uroot
+              -puniorm-ci-root --silent
+            dsn_extra: ''
+          - name: mariadb-odbc on mariadb-11
+            driver: mariadb
             stanza: CI-MariaDB
+            server_image: mariadb:11
+            health_cmd: mariadb-admin ping -h 127.0.0.1 -uroot
+              -puniorm-ci-root --silent
             dsn_extra: ''
-            # Empty, and the test reads that as unset.
-            skip_golden: ''
+          - name: mariadb-odbc on mysql-8.4
+            driver: mariadb
+            stanza: CI-MariaDB
+            server_image: mysql:8.4
+            health_cmd: mysqladmin ping -h 127.0.0.1 -uroot
+              -puniorm-ci-root --silent
+            dsn_extra: ''
 
     services:
       server:
-        image: mariadb:11
-        # A services block cannot read the env context, so these four repeat the
-        # job map above; the preflight below is what catches a drift, and a
-        # wrong root password shows up as the health gate never opening.
+        image: ${{ matrix.server_image }}
+        # A services block cannot read the env context, so these repeat the job
+        # map above; the preflight below is what catches a drift, and a wrong
+        # root password shows up as the health gate never opening. Both prefixes
+        # are set because the image is one of two: MariaDB's entrypoint reads
+        # MARIADB_* and MySQL's reads MYSQL_*, each ignoring the other, and the
+        # values are the same, so no entry can contradict its own image.
         env:
           MARIADB_ROOT_PASSWORD: uniorm-ci-root
           MARIADB_DATABASE: uniorm_ci
           MARIADB_USER: uniorm
           MARIADB_PASSWORD: uniorm-ci-pwd
+          MYSQL_ROOT_PASSWORD: uniorm-ci-root
+          MYSQL_DATABASE: uniorm_ci
+          MYSQL_USER: uniorm
+          MYSQL_PASSWORD: uniorm-ci-pwd
         ports:
           - 3306:3306
         options: >-
-          --health-cmd "mariadb-admin ping -h 127.0.0.1 -uroot
-          -puniorm-ci-root --silent"
+          --health-cmd "${{ matrix.health_cmd }}"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 20
@@ -152,7 +189,7 @@ jobs:
           unixodbc unixodbc-dev libssl-dev
 
       - name: Install MySQL Connector/ODBC
-        if: matrix.name == 'mysql-odbc'
+        if: matrix.driver == 'mysql'
         id: mysql-driver
         run: |
           codename=$(. /etc/os-release && echo "$VERSION_CODENAME")
@@ -179,7 +216,7 @@ jobs:
           echo "path=$so" >> "$GITHUB_OUTPUT"
 
       - name: Build MariaDB Connector/ODBC
-        if: matrix.name == 'mariadb-odbc'
+        if: matrix.driver == 'mariadb'
         id: mariadb-driver
         run: |
           # No Ubuntu release packages this driver and the upstream releases
@@ -255,8 +292,6 @@ jobs:
         run: cmake --build build -j "$(nproc)"
 
       - name: Test
-        env:
-          UNIORM_GEN_SKIP_GOLDEN: ${{ matrix.skip_golden }}
         run: |
           set -o pipefail
           ctest --test-dir build -LE perf --output-on-failure | tee ctest.log

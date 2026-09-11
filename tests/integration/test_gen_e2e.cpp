@@ -127,11 +127,39 @@ std::string read_normalized(std::string const& path) {
   return text;
 }
 
-// Live extraction: run the tool against the fixture tables and, when the
-// driver is the one the golden was recorded under, compare the result
-// byte-for-byte with it.
-void test_generate_matches_golden(
-  std::string const& conn_string, bool compare) {
+// Metadata that leaves a trace nowhere else: a foreign key and a secondary
+// index appear in no line of generated code, so only these comments show the
+// extraction found them. Everything else -- the primary key, the member types
+// -- is code, and code is compared.
+char const* const kMetadataMarkers[] = {
+  "FK: user_id -> uniorm_gen_user(id)",
+  "index: idx_gen_order_user (user_id)",
+};
+
+// The comments the tool writes carry the connector's spelling of a type name
+// and the server's way of storing a default, which makes them differ between
+// the pairs this suite runs under and mean nothing to anything that compiles.
+// Erasing them leaves the line structure alone, so the two sides still have to
+// agree on where every line begins.
+std::string without_comments(std::string const& text) {
+  std::string out;
+  std::istringstream lines(text);
+  std::string line;
+  while (std::getline(lines, line)) {
+    auto const comment = line.find("//");
+    if (comment != std::string::npos) {
+      line.erase(comment);
+    }
+    out += line;
+    out += '\n';
+  }
+  return out;
+}
+
+// Live extraction: run the tool against the fixture tables and compare the
+// code it produced with the golden's. The comments are not part of that, on
+// any driver or server.
+void test_generate_matches_golden(std::string const& conn_string) {
   std::string cmd = std::string(UNIORM_GEN_PATH) + " --connection-string=\"" +
                     conn_string + "\" --out=" + UNIORM_GEN_OUT_DIR +
                     " --tables=uniorm_gen_user,uniorm_gen_order"
@@ -139,30 +167,31 @@ void test_generate_matches_golden(
   int rc = std::system(cmd.c_str());
   CHECK(rc == 0);
 
-  std::string generated =
+  std::string text =
     read_normalized(std::string(UNIORM_GEN_OUT_DIR) + "/gen_it_schema.hpp");
-  std::string golden = read_normalized(UNIORM_GEN_GOLDEN);
-  CHECK(!generated.empty());
-  if (!compare) {
-    // The golden spells column types the way one driver's metadata reports
-    // them: Connector/ODBC gives bigint(19) where MariaDB's connector gives
-    // BIGINT(19), and adds a DEFAULT NULL the server never stored.
-    std::printf("note: golden compare skipped, driver metadata differs\n");
+  CHECK(!text.empty());
+  for (char const* marker : kMetadataMarkers) {
+    if (text.find(marker) == std::string::npos) {
+      std::printf("FAIL extraction lost metadata: %s\n", marker);
+      ++uniorm::test::failure_count();
+    }
+  }
+  std::string generated = without_comments(text);
+  std::string golden = without_comments(read_normalized(UNIORM_GEN_GOLDEN));
+  if (generated == golden) {
     return;
   }
-  if (generated != golden) {
-    std::size_t pos = 0;
-    while (pos < generated.size() && pos < golden.size() &&
-           generated[pos] == golden[pos]) {
-      ++pos;
-    }
-    std::printf("FAIL generated output differs from golden at byte %zu\n", pos);
-    std::printf("  generated: %s\n",
-      generated.substr(pos > 40 ? pos - 40 : 0, 80).c_str());
-    std::printf(
-      "  golden:    %s\n", golden.substr(pos > 40 ? pos - 40 : 0, 80).c_str());
-    ++uniorm::test::failure_count();
+  std::size_t pos = 0;
+  while (pos < generated.size() && pos < golden.size() &&
+         generated[pos] == golden[pos]) {
+    ++pos;
   }
+  std::printf("FAIL generated code differs from golden at byte %zu\n", pos);
+  std::printf("  generated: %s\n",
+    generated.substr(pos > 40 ? pos - 40 : 0, 80).c_str());
+  std::printf("  golden:    %s\n",
+    golden.substr(pos > 40 ? pos - 40 : 0, 80).c_str());
+  ++uniorm::test::failure_count();
 }
 
 }  // namespace
@@ -195,9 +224,7 @@ int main() {
     connection conn(conn_string);
     prepare_schema(conn);
     test_golden(conn_string);
-    char const* skip_golden = std::getenv("UNIORM_GEN_SKIP_GOLDEN");
-    test_generate_matches_golden(conn_string,
-      skip_golden == nullptr || *skip_golden == '\0');
+    test_generate_matches_golden(conn_string);
     drop_schema(conn);
   } catch (std::exception const& e) {
     std::printf("FATAL: unexpected exception: %s\n", e.what());

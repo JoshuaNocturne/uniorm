@@ -325,7 +325,9 @@ the secondary index, the two facts no line of generated code carries. GitHub
 has run the two-leg shape green, after one execution caught a driver header
 reaching the ODBC-free build — which no local replay could have, since the
 local image had the ODBC development headers installed to build the
-connectors with. The four-leg shape is still ahead of it, though a real MySQL
-8.4 server has already seen a local preflight: four of the five green, the
-fifth red only through the older connector this machine has. Native libpq /
-Oracle OCI backends follow — see design doc §5 and §9.
+connectors with. The four-leg shape is still ahead of it, but not untested:
+an `ubuntu:24.04` container carrying both pinned connectors passes all five
+tests in all four cells, against a real MySQL 8.4 as well as MariaDB 11. Each
+leg also asks which server answered before it builds, and stops if that is
+not the one its name claims. Native libpq / Oracle OCI backends follow — see
+design doc §5 and §9.

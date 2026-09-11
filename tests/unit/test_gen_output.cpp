@@ -2,14 +2,13 @@
 
 #include <string>
 
-#include <sqlext.h>
-
 #include "config.hpp"
 #include "generator.hpp"
 #include "naming.hpp"
 #include "schema_model.hpp"
 
 using namespace uniorm::gen;
+using uniorm::sql_type;
 
 namespace {
 
@@ -29,12 +28,12 @@ void test_naming() {
   CHECK(to_unit_name("") == "_");
 }
 
-column_model make_column(std::string name, int native_type,
+column_model make_column(std::string name, sql_type type,
   std::string type_name, bool nullable, bool pk, std::int32_t size = 0,
   std::int16_t decimals = 0) {
   column_model c;
   c.name = std::move(name);
-  c.data_type = native_type;
+  c.type = type;
   c.type_name = std::move(type_name);
   c.nullable = nullable;
   c.primary_key = pk;
@@ -49,15 +48,16 @@ schema_model make_fixture() {
 
   table_model order;
   order.name = "t_order";
-  order.columns.push_back(make_column("id", SQL_BIGINT, "BIGINT", false, true));
   order.columns.push_back(
-    make_column("amount", SQL_NUMERIC, "NUMERIC", true, false, 10, 2));
+    make_column("id", sql_type::bigint, "BIGINT", false, true));
   order.columns.push_back(
-    make_column("status", SQL_VARCHAR, "VARCHAR", true, false, 32));
+    make_column("amount", sql_type::decimal, "NUMERIC", true, false, 10, 2));
   order.columns.push_back(
-    make_column("created", SQL_TYPE_TIMESTAMP, "TIMESTAMP", false, false));
+    make_column("status", sql_type::varchar, "VARCHAR", true, false, 32));
   order.columns.push_back(
-    make_column("payload", SQL_VARBINARY, "VARBINARY", true, false, 256));
+    make_column("created", sql_type::timestamp, "TIMESTAMP", false, false));
+  order.columns.push_back(make_column(
+    "payload", sql_type::varbinary, "VARBINARY", true, false, 256));
   fk_model fk;
   fk.pk_table = "t_user";
   fk.columns.emplace_back("user_id", "id");
@@ -70,7 +70,8 @@ schema_model make_fixture() {
 
   table_model audit;
   audit.name = "t_audit";
-  audit.columns.push_back(make_column("id", SQL_BIGINT, "BIGINT", false, true));
+  audit.columns.push_back(
+    make_column("id", sql_type::bigint, "BIGINT", false, true));
   model.tables.push_back(std::move(audit));
   return model;
 }
@@ -156,7 +157,8 @@ void test_generate_real_warning() {
   model.name = "db";
   table_model t;
   t.name = "t";
-  t.columns.push_back(make_column("ratio", SQL_REAL, "FLOAT", false, false));
+  t.columns.push_back(
+    make_column("ratio", sql_type::real, "FLOAT", false, false));
   model.tables.push_back(std::move(t));
   generated_output out = generate_header(model, gen_config{});
   CHECK(contains(out.text, "double ratio;"));

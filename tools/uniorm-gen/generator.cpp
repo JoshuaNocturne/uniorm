@@ -57,7 +57,7 @@ std::string check_bindable(std::string const& t, std::string const& where) {
 
 std::string default_cpp_type(
   column_model const& col, std::string const& where, generated_output& out) {
-  switch (sql_type_from_native(col.data_type)) {
+  switch (col.type) {
   case sql_type::boolean:
     return "bool";
   case sql_type::smallint:

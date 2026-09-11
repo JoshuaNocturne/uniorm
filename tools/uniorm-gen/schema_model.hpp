@@ -6,6 +6,8 @@
 #include <utility>
 #include <vector>
 
+#include <uniorm/types.hpp>
+
 namespace uniorm::gen {
 
 // Database-neutral schema snapshot extracted from ODBC metadata.
@@ -13,7 +15,7 @@ namespace uniorm::gen {
 struct column_model {
   std::string name;
   std::string type_name;  // as reported by the driver (TYPE_NAME)
-  int data_type = 0;  // native SQL_* type code (DATA_TYPE)
+  sql_type type = sql_type::other;  // DATA_TYPE, already translated
   std::int32_t size = 0;
   std::int16_t decimals = 0;
   bool nullable = false;

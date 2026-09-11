@@ -10,6 +10,7 @@
 #include "uniorm/error.hpp"
 #include "odbc/connection.hpp"
 #include "odbc/error.hpp"
+#include "odbc/native_types.hpp"
 #include "odbc/statement.hpp"
 
 namespace uniorm::gen {
@@ -154,7 +155,9 @@ void read_columns(odbc::connection& dbc, table_model& table) {
   while (stmt.fetch()) {
     column_model col;
     col.name = name.str();
-    col.data_type = data_type_ind == SQL_NULL_DATA ? 0 : data_type;
+    col.type = data_type_ind == SQL_NULL_DATA
+                 ? sql_type::other
+                 : odbc::sql_type_from_native(data_type);
     col.type_name = type_name.str();
     col.size = size_ind == SQL_NULL_DATA ? 0 : column_size;
     col.decimals = decimals_ind == SQL_NULL_DATA ? 0 : decimals;

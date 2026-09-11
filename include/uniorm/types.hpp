@@ -8,9 +8,9 @@
 
 namespace uniorm {
 
-// Backend-neutral SQL type classification. Mapping from driver-native type
-// codes is done by sql_type_from_native (implemented in src to keep driver
-// headers out of this header).
+// Backend-neutral SQL type classification. Every backend translates its own
+// native type codes to these values behind the interface; the ODBC one keeps
+// that table in src/odbc/native_types.hpp.
 enum class sql_type {
   boolean,
   smallint,
@@ -44,8 +44,6 @@ constexpr sql_type_set sql_type_bit(sql_type t) noexcept {
 static_assert(
   static_cast<std::uint64_t>(sql_type::other) < sizeof(sql_type_set) * 8,
   "sql_type_set carries one bit per sql_type value");
-
-UNIORM_API sql_type sql_type_from_native(int native_type);
 
 // Printable name of a neutral SQL type, for diagnostics.
 UNIORM_API char const* sql_type_name(sql_type t) noexcept;

@@ -15,6 +15,7 @@
 #include "uniorm/detail/time.hpp"
 #include "environment.hpp"
 #include "error.hpp"
+#include "native_types.hpp"
 
 namespace uniorm::odbc {
 

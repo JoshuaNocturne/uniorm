@@ -7,16 +7,17 @@ name: ci
 #    public header above the statement layer, this job stops building.
 # 2. The suite runs against a live server for each connector paired with the
 #    server it is used against: MariaDB's connector with MariaDB 11,
-#    Connector/ODBC with MySQL 8.4. The cross pairings are out on purpose --
-#    this covers the normal shape of use, not a driver pointed at a server its
-#    vendor does not target.
+#    Connector/ODBC with MySQL 8.4, psqlODBC with PostgreSQL 17. The cross
+#    pairings are out on purpose -- this covers the normal shape of use, not a
+#    driver pointed at a server its vendor does not target.
 #
-#    Development only ever exercises the MariaDB pair, so MySQL is here for
-#    the generator. The ORM half looks server-independent --
-#    src/dialect.cpp:47 gives both banners the same quoting and pagination --
-#    but uniorm-gen reads metadata out of the server, and that read is the
-#    same code either way. MariaDB's connector 3.1.12 asks information_schema
-#    for COLUMN_KEY = 'pri'; MySQL 8.4 declares those columns utf8mb3_bin, so
+#    Development only ever exercises the MariaDB pair, so the other two are
+#    here for the generator. The ORM half looks server-independent --
+#    src/dialect.cpp:47 gives the MySQL-wire banners the same quoting and
+#    pagination, and a PostgreSQL banner the ANSI default -- but uniorm-gen
+#    reads metadata out of the server, and that read is the same code either
+#    way. MariaDB's connector 3.1.12 asks information_schema for
+#    COLUMN_KEY = 'pri'; MySQL 8.4 declares those columns utf8mb3_bin, so
 #    nothing matched and the generated header lost its primary key without an
 #    error. 3.1.23 asks KEY_COLUMN_USAGE for CONSTRAINT_NAME = 'PRIMARY'
 #    instead. CI pins its own connector versions, so the guard against that
@@ -25,24 +26,37 @@ name: ci
 #    golden has .primary_key. The comments are cut from both sides before that
 #    compare, because how a connector spells BIGINT and how a server stores a
 #    default are rendering, and an upgrade of either would otherwise redden
-#    both legs over nothing. A marker check covers the metadata that leaves no
-#    trace in code -- the foreign key and the secondary index. Every leg also
-#    asks the server which it is before building, because reaching *a* server
-#    is not the gate: a DSN left on the wrong port answers select 1 and runs
-#    the suite against a pairing the leg's own name denies.
+#    three legs at once over nothing. A marker check covers the metadata that
+#    leaves no trace in code -- the foreign key and the secondary index. One
+#    golden serves all three families because the fixture tables are spelled
+#    the way all of them parse. Every leg also asks the server which it is
+#    before building, because reaching *a* server is not the gate: a DSN left
+#    on the wrong port answers select 1 and runs the suite against a pairing
+#    the leg's own name denies.
 #
-# Neither driver comes from the Ubuntu archive -- mariadb-connector-odbc is not
-# packaged for any release, mysql-connector-odbc lives only in MySQL's own apt
-# component -- so one leg installs its driver and the other builds it. Both
-# were replayed on the runner's own image before being written down, and the
-# version each leg ends up with is a measurement rather than a preference: apt
-# delivers Connector/ODBC 26.7.1, which needs no DSN keys at all, while the
-# MariaDB driver's 3.2 line fails an array-bound INSERT and that leg stays on
-# 3.1. Those two ran green alongside the cross pairings in a container holding
-# both pinned connectors, so the shape this job dropped is measured rather than
-# assumed. What the runner has yet to confirm is the job itself -- the matrix
-# picking the image, the health gate following it, the preflight turning away a
-# DSN that answers as some other server. docs/design.md keeps the whole account.
+#    That third leg is what found the one place where a driver's answer, not
+#    the server's, used to decide a return value: psqlODBC applies every
+#    parameter set of an array-bound UPDATE or DELETE but leaves SQLRowCount at
+#    the count of a single one, where both MySQL-wire connectors report the
+#    total for the array. Those totals agree with what one execute per set sums
+#    to, and they are the number update() and remove() return, so the core asks
+#    for array_rowcount_totals and sweeps one set per execute without it.
+#
+# Two of the three drivers do not come from the Ubuntu archive --
+# mariadb-connector-odbc is not packaged for any release, and
+# mysql-connector-odbc lives only in MySQL's own apt component -- so the driver
+# choice splits the legs between install and build. All three were replayed on
+# the runner's own image before being written down, and the version each leg
+# ends up with is a measurement rather than a preference: apt delivers
+# Connector/ODBC 26.7.1, which needs no DSN keys at all, the MariaDB driver's
+# 3.2 line fails an array-bound INSERT and that leg stays on 3.1, and apt's
+# psqlODBC 16.00 is the one that answered the questions above. The two wire legs
+# ran green alongside the cross pairings in a container holding both pinned
+# connectors, so the shape this job dropped is measured rather than assumed.
+# What the runner has yet to confirm is this shape of the job itself -- the
+# matrix picking the image, the port and the probe statement, one service
+# carrying three families' env prefixes, and the preflight turning away a DSN
+# that answers as some other server. docs/design.md keeps the whole account.
 
 on:
   push:
@@ -132,10 +146,14 @@ jobs:
             driver: mysql
             stanza: CI-MySQL
             server_image: mysql:8.4
+            server_port: 3306
             # Quoted on purpose: unquoted, YAML reads these as numbers, and the
             # other leg's 11. becomes 11 -- a prefix every MariaDB banner
             # matches.
             server_prefix: '8.4'
+            # The probe has to answer with a number first, because the prefix
+            # match below is what proves the DSN reached this server.
+            version_sql: SELECT VERSION();
             health_cmd: mysqladmin ping -h 127.0.0.1 -uroot
               -puniorm-ci-root --silent
             # Empty: Connector/ODBC 26.7.1 takes every parameter shape under
@@ -147,9 +165,22 @@ jobs:
             driver: mariadb
             stanza: CI-MariaDB
             server_image: mariadb:11
+            server_port: 3306
             server_prefix: '11.'
+            version_sql: SELECT VERSION();
             health_cmd: mariadb-admin ping -h 127.0.0.1 -uroot
               -puniorm-ci-root --silent
+            dsn_extra: ''
+          - name: postgresql-odbc on postgresql-17
+            driver: postgresql
+            stanza: CI-PostgreSQL
+            server_image: postgres:17
+            server_port: 5432
+            server_prefix: '17.'
+            version_sql: SHOW SERVER_VERSION;
+            # Readiness only; unlike mysqladmin this gate sends no password, so
+            # the credentials are the preflight's business.
+            health_cmd: pg_isready -h 127.0.0.1 -U uniorm -d uniorm_ci
             dsn_extra: ''
 
     services:
@@ -157,10 +188,11 @@ jobs:
         image: ${{ matrix.server_image }}
         # A services block cannot read the env context, so these repeat the job
         # map above; the preflight below is what catches a drift, and a wrong
-        # root password shows up as the health gate never opening. Both prefixes
-        # are set because the image is one of two: MariaDB's entrypoint reads
-        # MARIADB_* and MySQL's reads MYSQL_*, each ignoring the other, and the
-        # values are the same, so no entry can contradict its own image.
+        # root password shows up as the health gate never opening. All three
+        # prefixes are set because the image is one of three: MariaDB's
+        # entrypoint reads MARIADB_*, MySQL's reads MYSQL_*, and PostgreSQL's
+        # reads POSTGRES_*, each ignoring the others, and the values are the
+        # same, so no entry can contradict its own image.
         env:
           MARIADB_ROOT_PASSWORD: uniorm-ci-root
           MARIADB_DATABASE: uniorm_ci
@@ -170,8 +202,11 @@ jobs:
           MYSQL_DATABASE: uniorm_ci
           MYSQL_USER: uniorm
           MYSQL_PASSWORD: uniorm-ci-pwd
+          POSTGRES_PASSWORD: uniorm-ci-pwd
+          POSTGRES_DB: uniorm_ci
+          POSTGRES_USER: uniorm
         ports:
-          - 3306:3306
+          - ${{ matrix.server_port }}:${{ matrix.server_port }}
         options: >-
           --health-cmd "${{ matrix.health_cmd }}"
           --health-interval 5s
@@ -238,11 +273,30 @@ jobs:
           test -f "$so"
           echo "path=$so" >> "$GITHUB_OUTPUT"
 
+      - name: Install PostgreSQL's ODBC driver
+        if: matrix.driver == 'postgresql'
+        id: postgresql-driver
+        run: |
+          # The one driver of the three that Ubuntu packages: psqlODBC lives in
+          # universe, under odbc-postgresql.
+          sudo apt-get install -y --no-install-recommends odbc-postgresql
+          dpkg -s odbc-postgresql | grep '^Version'
+          # psqlodbca.so is the ANSI entry point and psqlodbcw.so the Unicode
+          # one, and the same narrow-char boundary the MySQL step names decides
+          # between them.
+          so="$(dpkg -L odbc-postgresql |
+            grep -E '/odbc/psqlodbc[^/]*a\.so$' | head -1 || true)"
+          echo "path=$so" >> "$GITHUB_OUTPUT"
+
       - name: Register the driver and the DSN
         env:
-          DRIVER_SO: ${{ steps.mysql-driver.outputs.path }}${{ steps.mariadb-driver.outputs.path }}
+          DRIVER_SO: >-
+            ${{ steps.mysql-driver.outputs.path ||
+            steps.mariadb-driver.outputs.path ||
+            steps.postgresql-driver.outputs.path }}
           DRIVER_STANZA: ${{ matrix.stanza }}
           DSN_EXTRA: ${{ matrix.dsn_extra }}
+          DSN_PORT: ${{ matrix.server_port }}
         run: |
           if [ -z "$DRIVER_SO" ] || [ ! -f "$DRIVER_SO" ]; then
             echo "::error::no driver library landed; the install step found \
@@ -257,15 +311,17 @@ jobs:
           } | sudo tee -a /etc/odbcinst.ini
           # The tests assemble "DSN=<name>;UID=..;PWD=.." themselves, so the
           # target has to be a named data source; no DSN-less string can be
-          # passed through UNIORM_IT_DSN.
+          # passed through UNIORM_IT_DSN. Servername is the spelling all three
+          # drivers read: psqlODBC ignores Server outright and reaches for a
+          # local unix socket instead.
           {
             printf '[%s]\n' "$UNIORM_IT_DSN"
-            printf 'Driver    = %s\n' "$DRIVER_STANZA"
-            printf 'Server    = 127.0.0.1\n'
-            printf 'Port      = 3306\n'
-            printf 'User      = %s\n' "$UNIORM_IT_USER"
-            printf 'Password  = %s\n' "$UNIORM_IT_PWD"
-            printf 'Database  = %s\n' "$DB_NAME"
+            printf 'Driver      = %s\n' "$DRIVER_STANZA"
+            printf 'Servername  = 127.0.0.1\n'
+            printf 'Port        = %s\n' "$DSN_PORT"
+            printf 'User        = %s\n' "$UNIORM_IT_USER"
+            printf 'Password    = %s\n' "$UNIORM_IT_PWD"
+            printf 'Database    = %s\n' "$DB_NAME"
             if [ -n "$DSN_EXTRA" ]; then
               printf '%s\n' "$DSN_EXTRA"
             fi
@@ -274,11 +330,15 @@ jobs:
       - name: Check the data source answers as the server this leg names
         env:
           SERVER_PREFIX: ${{ matrix.server_prefix }}
+          VERSION_SQL: ${{ matrix.version_sql }}
         run: |
           # Reaching *a* server is not the gate: a DSN on the wrong port answers
           # select 1 and runs the whole suite against a pairing this leg
-          # does not describe. Ask which server answered instead.
-          banner="$(echo 'SELECT VERSION();' |
+          # does not describe. Ask which server answered instead. Which
+          # question names it is the server's own choice, so the probe is
+          # per-leg: PostgreSQL answers a banner that starts with its name
+          # rather than a number.
+          banner="$(echo "$VERSION_SQL" |
             isql -v "$UNIORM_IT_DSN" "$UNIORM_IT_USER" \
               "$UNIORM_IT_PWD" 2>/dev/null |
             sed -n 's/^| *\([0-9][^|]*[^ |]\) *|.*/\1/p' | head -1)"

@@ -68,7 +68,7 @@ void prepare_schema(connection& conn) {
                       " (id BIGINT NOT NULL PRIMARY KEY,"
                       " name VARCHAR(64) NOT NULL,"
                       " age INT NULL,"
-                      " created DATETIME NULL)");
+                      " created TIMESTAMP NULL)");
   conn.execute_update(std::string("CREATE TABLE ") + k_order_table +
                       " (id BIGINT NOT NULL PRIMARY KEY,"
                       " user_id BIGINT NOT NULL,"
@@ -77,8 +77,11 @@ void prepare_schema(connection& conn) {
                       " CONSTRAINT fk_gen_order_user FOREIGN KEY (user_id)"
                       " REFERENCES " +
                       k_user_table +
-                      " (id),"
-                      " KEY idx_gen_order_user (user_id))");
+                      " (id))");
+  // The generator reads this index back out of the driver's catalog, and the
+  // line that creates it is the only one the MySQL table syntax owns.
+  conn.execute_update(std::string("CREATE INDEX idx_gen_order_user ON ") +
+                      k_order_table + " (user_id)");
 }
 
 void drop_schema(connection& conn) {

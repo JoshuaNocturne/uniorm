@@ -17,6 +17,7 @@
 #include <uniorm/converter.hpp>
 #include <uniorm/decimal.hpp>
 #include <uniorm/detail/time.hpp>
+#include <uniorm/dialect.hpp>
 #include <uniorm/mapping/registry.hpp>
 #include <uniorm/orm.hpp>
 #include <uniorm/pool.hpp>
@@ -99,9 +100,9 @@ void prepare_schema(orm& db) {
                       " (id BIGINT NOT NULL PRIMARY KEY,"
                       " name VARCHAR(64) NOT NULL,"
                       " age INT NULL,"
-                      " balance DOUBLE NOT NULL,"
+                      " balance DOUBLE PRECISION NOT NULL,"
                       " note VARCHAR(2000) NULL,"
-                      " created DATETIME NULL)");
+                      " created TIMESTAMP NULL)");
   db.execute_update(std::string("DROP TABLE IF EXISTS ") + k_pair_table);
   db.execute_update(std::string("CREATE TABLE ") + k_pair_table +
                       " (grp BIGINT NOT NULL,"
@@ -534,8 +535,11 @@ void test_query_builder(orm& db) {
                       .of<User>()
                       .where(eq(&User::id, std::int64_t{ 1 }))
                       .build_select();
-  CHECK(sql.find("`uniorm_it_user`") != std::string::npos);  // MariaDB dialect
-  CHECK(sql.find("`id` = ?") != std::string::npos);
+  // Which quote character lands here is the server's own doing: the dialect is
+  // detected from the banner this connection read, not from the driver.
+  dialect const d = dialect::detect(db.native_connection().dbms_name());
+  CHECK(sql.find(d.quote_identifier("uniorm_it_user")) != std::string::npos);
+  CHECK(sql.find(d.quote_identifier("id") + " = ?") != std::string::npos);
 }
 
 void test_transaction(orm& db) {

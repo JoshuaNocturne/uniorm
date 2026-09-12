@@ -40,7 +40,8 @@ ODBC 接口访问任意提供 ODBC 驱动的数据库，在通用层之上提供
   struct + 注册函数（TOML 覆写类型/类名/跳过表）
 - **可插拔 backend**：核心 API 构建在驱动中立的 backend 接口之上，连接串
   scheme 选择后端（`odbc://...`；裸 ODBC 连接串保持向后兼容）；能力按后端
-  声明，但目前写路径只读 `columnar_batch` 一个标志
+  声明，但目前被读的只有两个：`columnar_batch` 选批量写的那条通道，
+  `array_rowcount_totals` 决定数受累行数的扫描怎么分批
 
 ## 要求
 
@@ -271,24 +272,33 @@ docs/design.md        设计文档（权威 API 参考）
 ## 状态
 
 v1 已完成并通过 MariaDB 集成验证（含 `uniorm-gen` 端到端）；同一套测试经
-Connector/ODBC 走服务端预处理，对一个真 MySQL 服务端也全绿。v2 进行中：
+Connector/ODBC 走服务端预处理，对一个真 MySQL 服务端也全绿，经 psqlODBC 对一个
+真 PostgreSQL 17 服务端同样全绿。v2 进行中：
 backend 抽象已落地（中立接口 + scheme 注册表，ODBC 迁移至接口之后、
 改为 PRIVATE 链接，核心单测在不链接 ODBC 的情况下编译运行），v1 最后一笔
 类型层面的欠账已清（`uniorm::decimal_t`）；CI 工作流已入仓库，两条形状
 都有人守（不链接 ODBC 的编译契约 + 每条腿拿自家连接器连自家服务端、对活库跑）。
-加服务端这一轴，不是因为两边写的 SQL 不同（`dialect::detect` 给两个 banner 同一套
-引号与分页），而是因为生成器读的是服务端答的元数据：本地第一次拿真 MySQL 8.4 跑，
+加服务端这一轴，不是因为几家写的 SQL 都不同（`dialect::detect` 给两个 MySQL 线的
+banner 同一套引号与分页，给 PostgreSQL 的 banner ANSI 那套默认），而是因为生成器读的是
+服务端答的元数据：本地第一次拿真 MySQL 8.4 跑，
 就撞出 MariaDB 连接器 `3.1.12` 用 `COLUMN_KEY = 'pri'` 去问 `information_schema`，
 撞上那台服务端把该列声明成 `utf8mb3_bin` 而什么都问不到，生成的头文件主键整列消失，
 却照样编译、注册、过 `validate(strict)`。这类沉默如今由比对本身兜：抽取测试拿生成的
-代码与 golden 的比，两边每行 `//` 之后的注释先截掉，两条腿都这么比——注释按"连接器
+代码与 golden 的比，两边每行 `//` 之后的注释先截掉，三条腿都这么比——注释按"连接器
 × 服务端"每格都不同，留着它就等于把 golden 钉死在一格上。那次主键读丢在代码里就是
 `.column` 撞上 golden 的 `.primary_key`；只有 FK 与二级索引还要靠标记点名，因为
 它们在代码里不留任何痕迹。GitHub 上跑绿过一副两条腿的形状
 （两条腿当时都连 MariaDB 服务端；其中一趟还把一处驱动头漏进无 ODBC 构建的地方抓了
 出来，本地重放抓不到它——仿 runner 的那只容器为了编驱动早就装好了 ODBC 开发头）。
 那两条腿后来沿服务端铺开成四条，在装着 CI 钉的两支连接器的 `ubuntu:24.04` 容器里
-对 `8.4.11` 与 `11.8.9` 各连一次跑满四格、五条测试条条全绿，随后又收回成现在这副
-只留同名配对的形状：CI 守的是正常用法，跨格那两种配法是有意识地拿掉的，§9 里留着
-这笔账。每条腿在构建之前还要问一句 DSN 背后答的是哪台服务端，与自家名字不符即红。
-后续为 libpq / Oracle OCI 原生 backend 等，见设计文档 §5 与 §9。
+对 `8.4.11` 与 `11.8.9` 各连一次跑满四格、五条测试条条全绿，随后又收回成两条同名配对的
+形状：CI 守的是正常用法，跨格那两种配法是有意识地拿掉的，§9 里留着这笔账。
+如今这副上长出第三条腿——psqlODBC 对 PostgreSQL 17，三支里唯一 Ubuntu 自己打包的那支——
+而它撞出来的那处只有真连 PG 才撞得到：数组绑定的 UPDATE/DELETE，psqlODBC 每组参数都
+执行了，`SQLRowCount` 却停在其中一组的行数，两支 MySQL 线连接器报的是整组的总数。
+`update()` 与 `remove()` 返回的正是这个数，于是核心改问 `array_rowcount_totals`，
+没有它就一组一次 execute 地扫。夹具表改成三家都认的写法，一份 golden 便供三家。
+每条腿在构建之前还要问一句 DSN 背后答的是哪台服务端，与自家名字不符即红——问哪句也是
+按腿给的，PostgreSQL 的 `SELECT VERSION()` 开头是名字不是数字，那条腿问
+`SHOW SERVER_VERSION`。这副四支作业的形状都在 runner 的同族镜像里按作业原样重放过，
+还欠 runner 一趟。后续为 libpq / Oracle OCI 原生 backend 等，见设计文档 §5 与 §9。

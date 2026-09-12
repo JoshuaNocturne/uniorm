@@ -652,6 +652,15 @@ std::size_t r = db.remove(people);   // 同上；无键列可推断且未给 whe
   `backend::null_indicator`（行式通道把整段 indicator 预置为 NULL，只覆写非空行）
 - 行数语义两条通道不同：列式 insert 统计**提交**的行数，行式路径累加
   `affected_rows()`
+- `update()` / `remove()` 返回的正是那个累加值，而数组绑定时它是**驱动**给的：
+  psqlODBC `16.00` 把每组参数都执行了，`SQLRowCount` 却停在其中一组的行数，两支
+  MySQL 线连接器报的是整组的总数（5 组全命中：`1` 对 `5`；一组不命中：`1` 对 `4`），
+  逐组 execute 再累加在三者上都得到同一个数。于是 `caps()` 多一项
+  `array_rowcount_totals`，ODBC 实现按 `SQL_DRIVER_NAME` 认出 psqlODBC 并清零它，
+  核心随即把这两处累加受累行数的批量写——`update()` 与 `remove()`——的分批粒度
+  收成 1，两条写通道都受这个粒度管。多付的只是客户端的 execute 次数——服务端那边
+  MariaDB 的连接器本来就把 5 组压成一条命令、Connector/ODBC 本来就发 5 条，逐组与
+  整组在两者上收到的命令数一样。列式 insert 数的是绑定的行数，不受此影响
 - 因此 `column_meta` 除 `write`（populate）/`read`（行式值提取）/`make_binding`
   （查询直绑）外，还带列式通道要用的 `write_to_param_buffer` 与 `get_string_size`
 
@@ -1150,8 +1159,8 @@ perf、`uniorm-gen` 都不生成，`UNIORM_BUILD_TOOLS` 直接被 CMake 拦下�
 
 接口位于 `include/uniorm/backend/backend.hpp`，ODBC 是唯一内置实现
 （`src/odbc/backend.cpp`）。核心 API（查询构建器、映射、池、事务）只依赖
-接口；能力缺失时应当抛清晰错误而非静默降级——这条纪律目前只在 `columnar_batch`
-一个能力上真正生效（见下方能力清单）。
+接口；能力缺失时应当抛清晰错误而非静默降级——这条纪律目前只在
+`columnar_batch` 与 `array_rowcount_totals` 两个能力上有真正的分岔（见下方能力清单）。
 
 **中立列缓冲契约**——三条物化路径（result_set / 聚合投影 / 实体直绑）
 统一为"调用方缓冲 + indicator"：
@@ -1178,7 +1187,8 @@ struct column_buffer { buffer_type type; void* data; std::size_t capacity;
 
 ```cpp
 struct capabilities { bool streaming, async_io, copy_protocol,
-                             notifications, columnar_batch; };
+                             notifications, columnar_batch,
+                             array_rowcount_totals; };
 
 struct statement_iface {
     void prepare(std::string_view sql);                    // SQL 用 '?' 占位符
@@ -1214,8 +1224,10 @@ struct schema_metadata { /* table_columns(table) → {name, type, native_type,
 ```
 
 ODBC 实现的当前能力：`{streaming=true, async_io=false, copy_protocol=false,
-notifications=false, columnar_batch=true}`。**只有 `columnar_batch` 被读**
-（`orm` 的三个批量入口据此在列式与行式通道间二选一，见 §4.5.2）。每个标志只表示
+notifications=false, columnar_batch=true, array_rowcount_totals=开连接时按驱动探测}`。
+**被读的只有 `columnar_batch` 与 `array_rowcount_totals`**：前者让 `orm` 的三个批量
+入口据此在列式与行式通道间二选一（§4.5.2），后者决定两条受累行数 sweep 的分批粒度
+（§4.5），ODBC 实现按 `SQL_DRIVER_NAME` 认出 psqlODBC 才清零它。每个标志只表示
 "有一条更快的路"：缺能力时核心走慢的那条而不抛错，所以 backend 全置 `false`
 也不失正确性。`capability_not_supported` 已定义、无抛出点，留给将来确实无路可退的
 核心特性（§9 第 9 项）。`streaming` / `async_io` / `copy_protocol` /
@@ -1436,13 +1448,14 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
   全表扫描（对应实体直绑与动态行路径）、单行 `LIMIT 1`（对应 `one()`），
   用于衡量 uniorm 抽象层的额外开销
 - **`uniorm-gen` 端到端**（已实现，`gen_e2e_tests`，连不上库时 SKIP）：
-  夹具表（含 PK/FK/索引/DECIMAL/DATETIME）→ 工具带检入的覆写文件
+  夹具表（含 PK/FK/索引/DECIMAL，时间列是三家同名的可空
+  `TIMESTAMP`，见 §8）→ 工具带检入的覆写文件
   （`golden/gen_it.toml`，其 `converter` 键让 `note` 生成为域类型，`cpp_type` 键把
   `amount` 生成为 `uniorm::decimal_t`）生成 →
   与 golden 比对，但只比代码：两边每行 `//` 之后的注释先截掉再比，不分哪一格。
   注释记的是连接器怎么拼 `BIGINT`、服务端怎么存默认值，没有消费者会编译它，而它
   按"连接器 × 服务端"每格都不同——留着它就等于把 golden 钉死在一格上，升级一支
-  连接器能同时红两条腿。截注释不动行结构（成员行是固定两个空格的分隔符），所以
+  连接器能同时红三条腿。截注释不动行结构（成员行是固定两个空格的分隔符），所以
   两边仍要对齐每一行的起点。另留一组**语义标记**（FK 与二级索引的注释）：这两件
   事在生成的代码里不留任何痕迹，只有注释能证明抽取到了。主键映射调用、可空列与
   `decimal_t`/`timestamp` 生成的 C++ 类型都是代码，归代码比对看着。之所以代码
@@ -1466,37 +1479,46 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
   `services` 块起出的 `mariadb:11`（实测 11.8.9），连 `MARIADB_DATABASE`/`MARIADB_USER`
   生成的授权与 `mariadb-admin ping` 健康门（约 20 s 转 healthy）也一并验了；提交过
   三趟，头一趟卡在 YAML 校验，第二趟作业真跑起来了、`core` 当场抓出一处真漏，第三趟三支作业
-  全绿——前两样的账都在下面。此后驱动那一支沿服务端铺开成四条腿、量完又收回两条，收回来
-  这副还没被 runner 看过）：
+  全绿——前两样的账都在下面。此后驱动那一支沿服务端铺开成四条腿、量完又收回两条，收回之后
+  又长出第三条（psqlODBC 对 PostgreSQL 17）：这副四支作业的形状还没被 runner 看过，但三条腿
+  都各自在 runner 的同族镜像里按作业原样重放过）：
   一支 `UNIORM_BACKEND_ODBC=OFF`
   的构建只跑 `unit_tests`，替 §3 那条"驱动类型不漏进 statement 层之上的公开头"把关——
-  这条承诺此前只在注释里，没有任何东西在守它。另一支是两条腿，每条拿自家的连接器连自家的
+  这条承诺此前只在注释里，没有任何东西在守它。另一支是三条腿，每条拿自家的连接器连自家的
   服务端，各对自己的服务容器跑除 `perf` 外的全部五条：MySQL Connector/ODBC 取自 MySQL
   自己的 apt 组件（Ubuntu 归档里没有它），MariaDB Connector/ODBC 只能从 tag 拉源码构建
-  （Ubuntu 任何发行版都不打包它，上游 release 也不带二进制）；服务端两格是 `mysql:8.4`
-  （实测 8.4.11）与 `mariadb:11`（实测 11.8.9）。跨着连的那两种配法不跑：CI 守的是
-  正常用法，一支对着自家厂商都不支持的服务器不属于那种。这笔取舍的代价记在下面的量里——
-  唯一那处读丢就是从被砍掉的格子里撞出来的。留着两根服务端轴不是因为 SQL 会长得不一样——
-  `dialect::detect` 对两个 banner 给同一套引号与分页——而是因为 `uniorm-gen` 读的是
-  **服务端答的元数据**：本地拿真 MySQL 服务端跑这套测试，第一趟就撞出 MariaDB 连接器
+  （Ubuntu 任何发行版都不打包它，上游 release 也不带二进制），psqlODBC 是三支里唯一 Ubuntu
+  自己打包的那一支——`odbc-postgresql`（实测 16.00），装出 `psqlodbca.so` 与
+  `psqlodbcw.so`，按同一 narrow-char 边界注册 `a` 那一支；服务端三格是 `mysql:8.4`
+  （实测 8.4.11）、`mariadb:11`（实测 11.8.9）与 `postgres:17`（实测 17.7）。跨着连的那两种
+  配法不跑：CI 守的是正常用法，一支对着自家厂商都不支持的服务器不属于那种。这笔取舍的代价记
+  在下面的量里——唯一那处读丢就是从被砍掉的格子里撞出来的。留着三根服务端轴不是因为
+  SQL 会长得不一样——`dialect::detect` 对两个 MySQL 线的 banner 给同一套引号与分页，
+  对 PostgreSQL 的 banner 给 ANSI 那套默认，而那条 else 分支此前没有任何一条腿真走到
+  它——而是因为 `uniorm-gen` 读的是 **服务端答的元数据**：本地拿真 MySQL 服务端跑这套
+  测试，第一趟就撞出 MariaDB 连接器
   `3.1.12` 用 `COLUMN_KEY = 'pri'` 问 `information_schema`，而 8.4 把那些列声明成
   `utf8mb3_bin`（区分大小写，实际值是 `PRI`），于是 `SQLPrimaryKeys` 空返回、生成的
   头文件把两张表的主键整列读丢且不报错。当时把它暴露出来的只有 golden 的字节差，
   而跳过 golden 的腿看不见它。同一夹具换 `3.1.23` 无恙，因为它问的是
   `KEY_COLUMN_USAGE` 的 `CONSTRAINT_NAME = 'PRIMARY'`。CI 钉的是源码构建的
-  `3.1.23`，复现不了旧连接器，所以这类沉默改由比对本身兜：`gen_e2e` 两条腿都比
+  `3.1.23`，复现不了旧连接器，所以这类沉默改由比对本身兜：`gen_e2e` 三条腿都比
   截掉注释之后的代码（见 §5），那处读丢在代码里就是 `.column` 撞上 golden 的
   `.primary_key`。注释从此一处不比，因为它们本就没有跨连接器跨服务端都一样的时候：
-  `8.4` 那格连 `DEFAULT NULL` 都不答，Connector/ODBC 把类型名拼成小写。两只镜像
+  `8.4` 那格连 `DEFAULT NULL` 都不答，Connector/ODBC 把类型名拼成小写。三只镜像
   各带自家的健康检查客户端，`mysql:8.4` 只有 `mysqladmin`、`mariadb:11` 只有
-  `mariadb-admin`，故健康命令按 matrix 给；`services` 的 env 两套前缀都写，两个镜像
-  各读自己那半、取值相同。三支作业都带 `-Wall -Wextra`——今天零告警，
-  但不 `-Werror`，免得依赖头升级把与回归无关的红压进分支。两条数据库腿各有一道报警：
+  `mariadb-admin`、`postgres:17` 只有 `pg_isready`——那道门不携口令，授权仍是预检的事——
+  故健康命令按 matrix 给；`services` 的 env 三套前缀都写，三个镜像
+  各读自己那半、取值相同，端口映射也按 matrix 给，因为两支 MySQL 线听 3306、
+  PostgreSQL 听 5432。四支作业都带 `-Wall -Wextra`——今天零告警，
+  但不 `-Werror`，免得依赖头升级把与回归无关的红压进分支。三条数据库腿各有一道报警：
   测试连不上就返回 77，而 ctest 把 77 记成 Skip 并照样打印"100% tests passed"，所以作业
   见到输出里的 `Skipped` 即判失败（真正的失败交给 `set -o pipefail`，测试条数不写死），
   并在构建之前先用 `isql` 问过是哪台服务端答的：每条腿带一个 `server_prefix`（引号不能省，
-  `11.` 裸写会被 YAML 读成数字 11，那前缀任何 MariaDB banner 都对得上），拿
-  `SELECT VERSION()` 的 banner 去比前缀，对不上即红。这既把"驱动没装对"与"库有回归"分成
+  `11.` 裸写会被 YAML 读成数字 11，那前缀任何 MariaDB banner 都对得上），拿**该腿自己的**
+  那句版本查询的 banner 去比前缀，对不上即红——问哪句也是服务端自己的选择，PostgreSQL 的
+  `SELECT VERSION()` 答 `PostgreSQL 17.7 (…)`，开头是个词不是数字，那条腿因此问
+  `SHOW SERVER_VERSION`。这既把"驱动没装对"与"库有回归"分成
   两种红，也不让一条腿连着另一台服务端照样绿——本条目里那个写错的 DSN 端口，就是把一次
   "MySQL 8.4"的探测变成了 MariaDB 上的假"表不存在"。
   这趟按镜像原样的重放换到的比之前所有手工仿真都多，因为**两条腿拿到的驱动都不是先前那两
@@ -1552,8 +1574,38 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
   把当前这棵树按数据库腿的形状配置（`UNIORM_BACKEND_ODBC=ON`、`UNIORM_BUILD_TOOLS=ON`、
   `-Wall -Wextra`）跑 `ctest -LE perf`，两台服务端各连一次——四格五条全绿，一条 Skip 也没有。
   四格都绿过一次，留哪两格便成了取舍而不是没得选：留下两条同名腿，拿掉的跨格从此没有
-  CI 覆盖，那笔账记在 §9。欠 runner 的只剩作业自己这副形状：矩阵选镜像、`health_cmd`
-  按镜像给、`services` 里两套 env 前缀，而配错一条腿的 banner 预检会先红。
+  CI 覆盖，那笔账记在 §9。
+  第三条腿的账全在 runner 的同族镜像里量，四问都有答案。**包与文件**：psqlODBC 是三支里
+  唯一 Ubuntu 自己打包的（universe 的 `odbc-postgresql`，实测 `1:16.00.0000-1`），装出
+  `psqlodbca.so` 与 `psqlodbcw.so`，注册的仍是窄字符边界选中的 `a` 那一支，路径经
+  `dpkg -L` 找。**DSN 的键**：三支都读 `Servername`，而 psqlODBC 干脆不理 `Server`——
+  留着那种写法它对 `127.0.0.1` 无动于衷，转去敲本机 unix socket，回
+  `connection to server on socket "/var/run/postgresql/.s.PGSQL.5433" failed`；作业因此
+  写 `Servername`，两支 MySQL 线照旧读得懂它，`UID`/`PWD` 三边都透传。**版本**：见上面
+  那句 `SHOW SERVER_VERSION`。**`DATETIME` 换成 `TIMESTAMP` 之后驱动报回什么**：夹具原样
+  写 `DATETIME`，PG 无此名；改成三家同名的 `TIMESTAMP` 后，三支驱动报回的 `sql_type`
+  落进同一个槽，生成的 `created` 字段与 golden 逐字节对上——这是三条腿各自跑完 `gen_e2e`
+  得到的，不是推的。可空 `TIMESTAMP` 在 `mysqld-8.4.11` 与 MariaDB 11.8.9 上都因
+  `explicit_defaults_for_timestamp=1` 不带隐式默认，`created` 读回空值那条断言照旧成立。
+  列式的 `DOUBLE` 一并换成三者同名的 `DOUBLE PRECISION`，MySQL 表语法独有的行内
+  `KEY … (col)` 挪成单列一条 `CREATE INDEX … ON tbl (col)`。于是**一份 golden 供三家**：
+  生成器在 PG 上的目录调用、主键/外键/索引提取、`decimal_t` 的 scale、`validate(strict)`
+  全部对得上，不必另立 golden，也不必把比对按家族放宽。只有 `integration_tests` 里那句
+  引号断言得改口——它反引号写死了，而引号是 banner 决定的不是驱动决定的，于是它自己
+  `dialect::detect(dbms_name())` 再比；`detect` 的两条规则本就钉在单测里。
+  还有一样只有真连 PG 才撞得到，且它撞在库上不在作业上：**数组绑定 UPDATE/DELETE 的
+  行数**。psqlODBC `16.00` 把每组参数都执行了，`SQLRowCount` 却停在其中一组的行数——
+  5 组全命中它报 `1`，两支 MySQL 线连接器报 `5`（抽掉一组命中：`1` 对 `4`）；逐组
+  execute 再累加，三者得同一个数，也没有按参数组计数的诊断可捞（`SQL_DIAG_NUMBER`
+  三者都回 `0`）。`update()`/`remove()` 返回的正是这个数，所以核心不能再拿它当数组的
+  总数：`caps()` 添 `array_rowcount_totals`，ODBC 实现开连接时按 `SQL_DRIVER_NAME` 认出
+  psqlODBC 并清零它，`update()` 与 `remove()` 随即把分批收成 1（§4.5、§5.2）。
+  两条替路量过而否掉：
+  报绑定的行数会让 `remove()` 对不存在的行撒谎；不分驱动永远逐组 execute 则多付服务端
+  命令——`Questions` 的增量量出 MariaDB 的连接器本来把 5 组压成**一条**命令、
+  Connector/ODBC 本来就发 **5** 条。列式 insert 数的是绑定的行数，不受影响。
+  欠 runner 的只剩作业自己这副形状：矩阵选镜像、按镜像给端口与那句版本查询、
+  `health_cmd` 按镜像给、`services` 里三套 env 前缀，而配错一条腿的 banner 预检会先红。
   至于先前那笔 SSPS 与 `NO_SSPS` 的代价对照，量的是 `8.4.0` 对 `8.4.0`（服务端
   `mysqld-8.4.11`，只切那一把）：缓存命中的形状上 SSPS 略优（每语句 0.212 ms 对 0.228 ms，
   数组绑定批量 0.193 对 0.218——驱动得在本地把值格式化进语句文本），每个只出现一次的语句
@@ -1566,8 +1618,8 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
 ## 9. v2 路线图
 
 **v1 欠账**（`decimal_t` 随 0.2.0 落地、CI 的三条作业既在它们所要用的镜像里按作业原样重放过
-一遍、也在 GitHub 上跑绿之后，本清单一度清空；驱动那一支沿服务端铺开成四条腿又收回两条之后，
-剩下两件事，见打包条目末尾）：
+一遍、也在 GitHub 上跑绿之后，本清单一度清空；驱动那一支沿服务端铺开成四条腿、收回两条、
+又长出第三条之后，剩下两件事，见打包条目末尾）：
 
 - ~~ODBC 宽字符路径（§4.2）~~ **已按该条目自己给出的第二条路了结**：确认不做，
   删掉零调用者的 `utf8_to_utf16` / `utf16_to_utf8` 与只有它们会抛出的公开类型
@@ -1597,11 +1649,13 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
   注册、`isql` 预检、`-LE perf` 过滤后的五条，连同作业那段 `services`（授权与健康门）也
   都在镜像里绿过。GitHub 也已经真跑过它了：头一趟只有 YAML 校验拦下的一件事（`services`
   块读不到 `env` 上下文），改完的第二趟作业起了、`core` 抓出一处真漏并已修，第三趟三支作业
-  全绿（两处细节都在 §8）。**待做**两样。其一，这副收回后的形状还没被 runner 看过：驱动腿
+  全绿（两处细节都在 §8）。**待做**两样。其一，这副长出第三条腿后的形状还没被 runner
+  看过：驱动腿
   一度沿服务端铺开成四条腿，在装着 CI 那两支连接器的 `ubuntu:24.04` 容器里按当前构建跑满
-  四格全绿，随后收回两条同名腿（CI 守的是正常用法，§8）——要 runner 确认的是作业自己
-  （矩阵选镜像、按镜像给的健康门、`services` 里两套 env 前缀；配错了会撞上那条腿自己的
-  banner 预检）。其二是一笔认下的欠账：跨格（MariaDB 连接器对 MySQL 服务端、
+  四格全绿，随后收回两条同名腿（CI 守的是正常用法，§8），第三条腿是在这副两腿上长出来的，
+  它和另两条都在 runner 的同族镜像里按作业原样各自跑满五条（§8）——要 runner 确认的是作业自己
+  （矩阵选镜像、按镜像给的端口、健康门与那句版本查询、`services` 里三套 env 前缀；配错了
+  会撞上那条腿自己的 banner 预检）。其二是一笔认下的欠账：跨格（MariaDB 连接器对 MySQL 服务端、
   Connector/ODBC 对 MariaDB 服务端）从此没有 CI 覆盖，而唯一那次真读丢正是从跨格撞出来的。
   将来把 `uniorm-gen` 的元数据读取挪到 `backend::schema_metadata` 之后（§6.2），要不要
   按那时的用法再给那格一道门，届时再定。
@@ -1621,7 +1675,8 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
 7. 迁移脚本生成
 8. backend 拆成独立链接目标（如 `uniorm_odbc` / `uniorm_pq`）：多 backend 共存时
    让"只用一家"的部署不必在运行时载入其余驱动（见 §5.1）
-9. 能力清单落地：`capabilities` 的四个未读标志各自找到真实消费点，
+9. 能力清单落地：`capabilities` 的四个未读标志各自找到真实消费点（§5.2 今天被读的是
+   `columnar_batch` 与 `array_rowcount_totals`，后者随 §8 那条 PostgreSQL 腿落地），
    并把 `capability_not_supported` 的抛出接上（见 §5.2）
 10. ~~池归还时的状态清理~~ **已完成**：`release` 见 `autocommit()` 为假即
     rollback 后复位 autocommit，复位抛异常则淘汰该连接并扣回名额（见 §4.9）；

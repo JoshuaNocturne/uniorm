@@ -54,8 +54,9 @@ See [docs/design.md](docs/design.md) for the full design.
 - **Pluggable backends** — the core API sits on a driver-neutral backend
   interface; the connection-string scheme selects the backend
   (`odbc://...`, or a bare ODBC connection string for backward
-  compatibility); capabilities are declared per backend, but only
-  `columnar_batch` is consulted today
+  compatibility); capabilities are declared per backend, and two are consulted
+  today: `columnar_batch` selects the bulk write path, `array_rowcount_totals`
+  the batching of a row-counting sweep
 
 ## Requirements
 
@@ -304,7 +305,8 @@ docs/design.md        design document (authoritative API reference)
 
 v1 is complete and verified against MariaDB, including the `uniorm-gen`
 end-to-end flow; the same suite also passes against a real MySQL server
-through Connector/ODBC with server-side prepares. v2 is underway: the
+through Connector/ODBC with server-side prepares, and against PostgreSQL 17
+through psqlODBC. v2 is underway: the
 backend abstraction is in place (neutral interface + scheme-based registry,
 ODBC migrated behind it, ODBC linked privately, core unit tests compile and
 run without ODBC), and v1's last type-level debt is closed
@@ -329,6 +331,18 @@ build the connectors with. Those legs then took both servers and passed all
 five tests in all four cells inside an `ubuntu:24.04` container carrying both
 pinned connectors, and came back down to the two pairings a driver is used
 with: the cross cells are out by choice, and design doc §9 keeps that as a
-named gap. Each leg still asks which server answered before it builds, and
-stops if that is not the one its name claims. Native libpq / Oracle OCI
-backends follow — see design doc §5 and §9.
+named gap. A third leg has since grown on — psqlODBC against PostgreSQL 17, the
+only one of the three drivers Ubuntu packages — and it is what found the single
+place where a *driver's* answer, not the server's, used to decide a return
+value: psqlODBC applies every parameter set of an array-bound UPDATE or DELETE
+but leaves `SQLRowCount` at one set's count, where both MySQL-wire connectors
+report the array's total. `update()` and `remove()` return that number, so the
+core asks for `array_rowcount_totals` and sweeps one set per execute without
+it. One golden now serves all three families, because the fixture tables are
+spelled the way all of them parse. Each leg still asks which server answered
+before it builds, and stops if that is not the one its name claims — on
+PostgreSQL the question is `SHOW SERVER_VERSION`, since `SELECT VERSION()`
+there starts with the server's name rather than a number. That four-job shape
+is rehearsed step for step in the runner's own image family and still owed a
+runner pass. Native libpq / Oracle OCI backends follow — see design doc §5 and
+§9.

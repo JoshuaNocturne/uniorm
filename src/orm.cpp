@@ -632,6 +632,12 @@ std::optional<transaction> begin_batch(connection& conn) {
   return txn;
 }
 
+// A driver that reports a single parameter set's count for an array execute
+// gives no total to tally a sweep with, so each set has to go on its own.
+std::size_t write_chunk(connection const& conn, std::size_t chunk) {
+  return conn.caps().array_rowcount_totals ? chunk : 1;
+}
+
 }  // namespace
 
 // --- Entity write entry points ---
@@ -693,7 +699,8 @@ std::size_t orm::update_batch_impl(connection& conn, entity_meta const& m,
     throw uniorm_error(
       "update: no columns to set (all mapped columns are in WHERE)");
   }
-  std::size_t const chunk = batch_size > 0 ? batch_size : default_paramset_size;
+  std::size_t const chunk =
+    write_chunk(conn, batch_size > 0 ? batch_size : default_paramset_size);
 
   std::optional<transaction> txn = begin_batch(conn);
 
@@ -732,7 +739,8 @@ std::size_t orm::delete_batch_impl(connection& conn, entity_meta const& m,
   }
   std::vector<std::size_t> const where_cols =
     detail::resolve_where(m, where_fields, "remove");
-  std::size_t const chunk = batch_size > 0 ? batch_size : default_paramset_size;
+  std::size_t const chunk =
+    write_chunk(conn, batch_size > 0 ? batch_size : default_paramset_size);
 
   std::optional<transaction> txn = begin_batch(conn);
 

@@ -659,6 +659,16 @@ backend_connection::backend_connection()
 
 void backend_connection::open(std::string_view connection_string) {
   conn_.open(connection_string);
+  // psqlODBC applies every parameter set but leaves SQLRowCount at the count
+  // of one of them; both MySQL-wire connectors report the array's total.
+  char name[64] = {};
+  SQLSMALLINT length = 0;
+  if (SQL_SUCCEEDED(SQLGetInfo(conn_.native(), SQL_DRIVER_NAME, name,
+        sizeof(name), &length)) &&
+    std::string_view(name, static_cast<std::size_t>(length)).find("psqlodbc") !=
+      std::string_view::npos) {
+    array_rowcount_totals_ = false;
+  }
 }
 
 void backend_connection::close() {
@@ -683,7 +693,8 @@ void backend_connection::rollback() {
 
 backend::capabilities backend_connection::caps() const noexcept {
   return {/*streaming=*/true, /*async_io=*/false, /*copy_protocol=*/false,
-    /*notifications=*/false, /*columnar_batch=*/true};
+    /*notifications=*/false, /*columnar_batch=*/true,
+    /*array_rowcount_totals=*/array_rowcount_totals_};
 }
 
 std::string backend_connection::dbms_name() const {

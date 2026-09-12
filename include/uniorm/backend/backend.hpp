@@ -90,6 +90,10 @@ struct capabilities {
   bool copy_protocol;
   bool notifications;
   bool columnar_batch;
+  // One execute of an array of parameter sets reports the row count of the
+  // whole array. Without it, a write that has to tally affected rows executes
+  // one parameter set at a time.
+  bool array_rowcount_totals;
 };
 
 // Direct-write batch interface. The backend allocates column buffers;

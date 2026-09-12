@@ -85,6 +85,7 @@ private:
   odbc::connection conn_;
   struct schema_metadata_impl;
   std::unique_ptr<schema_metadata_impl> metadata_;
+  bool array_rowcount_totals_ = true;
 };
 
 }  // namespace uniorm::odbc

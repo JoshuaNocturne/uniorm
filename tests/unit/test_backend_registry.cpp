@@ -7,6 +7,7 @@
 #include <uniorm/backend/backend.hpp>
 #include <uniorm/backend/error.hpp>
 #include <uniorm/backend/registry.hpp>
+#include <uniorm/connection.hpp>
 
 namespace {
 
@@ -98,6 +99,11 @@ void test_registry() {
 
   auto schemes = reg.schemes();
   CHECK(std::find(schemes.begin(), schemes.end(), "dummy") != schemes.end());
+
+  // dummy_connection answers no introspection, so the connection layer is
+  // the one that says so.
+  uniorm::connection bare("dummy://abc=1");
+  CHECK_THROWS(bare.schema(), uniorm::backend::capability_not_supported);
 }
 
 }  // namespace

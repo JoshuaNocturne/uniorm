@@ -18,6 +18,7 @@
 #include <uniorm/detail/projection.hpp>
 #include <uniorm/mapping/registry.hpp>
 #include <uniorm/pool.hpp>
+#include <uniorm/schema.hpp>
 #include <uniorm/transaction.hpp>
 
 namespace uniorm {
@@ -264,10 +265,14 @@ public:
   std::size_t statement_cache_size() const;
   void clear_statement_cache();
 
+  // --- Table introspection ---
+  // The live catalog behind this connection. Throws
+  // backend::capability_not_supported when the backend offers no reads.
+  schema_meta& schema();
+
   // --- Escape hatch ---
-  // Access the underlying connection for low-level operations.
-  // Use this when you need backend-specific features like native handles
-  // or extensions that are not exposed through the high-level orm API.
+  // The underlying connection: for the native handle, and for the
+  // dbms_name() / caps() the orm API does not forward.
   connection& native_connection();
 
 private:

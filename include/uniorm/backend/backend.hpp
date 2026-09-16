@@ -13,10 +13,10 @@
 #include <memory>
 #include <string>
 #include <string_view>
-#include <typeindex>
 #include <vector>
 
 #include <uniorm/params.hpp>
+#include <uniorm/schema.hpp>
 #include <uniorm/types.hpp>
 #include <uniorm/value.hpp>
 
@@ -203,28 +203,17 @@ struct connection_iface {
 
   virtual std::unique_ptr<statement_iface> create_statement() = 0;
 
-  // Escape hatches (design doc 5.3): native handle of the backend
-  // connection (SQLHDBC, PGconn*, OCIEnv*, ...), and typed extension
-  // objects looked up by type. Both remain owned by uniorm; callers
-  // must leave them self-consistent before returning control.
+  // Table introspection, owned by the connection and valid for as long as
+  // the connection is open. Relational catalogs all answer these reads, so
+  // a backend that cannot offer them is the exception: nullptr lets the
+  // caller say so instead of failing inside a read.
+  virtual schema_meta* schema() noexcept { return nullptr; }
+
+  // Escape hatch (design doc 5.3): the native handle of the backend
+  // connection (SQLHDBC, PGconn*, OCIEnv*, ...). It remains owned by
+  // uniorm; the caller must leave it self-consistent before returning
+  // control.
   virtual void* native_handle() noexcept = 0;
-  virtual void* extension(std::type_index) noexcept { return nullptr; }
-};
-
-// Minimal schema-metadata extension. Backends that can introspect a
-// live schema expose this via connection_iface::extension(); orm
-// validation depends on it.
-struct schema_metadata {
-  struct column_row {
-    std::string name;
-    sql_type type;
-    int native_type;
-    bool nullable;
-  };
-
-  virtual ~schema_metadata() = default;
-  virtual std::vector<column_row> table_columns(
-    std::string_view table) = 0;
 };
 
 }  // namespace uniorm::backend

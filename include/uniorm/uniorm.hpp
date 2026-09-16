@@ -15,5 +15,6 @@
 #include <uniorm/builder/expression.hpp>
 #include <uniorm/result_set.hpp>
 #include <uniorm/row.hpp>
+#include <uniorm/schema.hpp>
 #include <uniorm/transaction.hpp>
 #include <uniorm/value.hpp>

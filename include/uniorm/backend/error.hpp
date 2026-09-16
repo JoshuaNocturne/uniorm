@@ -36,8 +36,9 @@ private:
   std::vector<diagnostic> diags_;
 };
 
-// Reserved until a core feature lacks a fallback: every capability with a
-// consumer today degrades instead of throwing, so nothing raises this yet.
+// A read asked of a backend that cannot serve it and that has no slower
+// route to fall back on: table introspection today. The capability flags
+// are the opposite case; those let the core take a slower path instead.
 class UNIORM_API capability_not_supported : public uniorm_error {
 public:
   using uniorm_error::uniorm_error;

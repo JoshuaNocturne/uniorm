@@ -61,6 +61,7 @@ if(UNIORM_BACKEND_ODBC)
         src/odbc/environment.cpp
         src/odbc/connection.cpp
         src/odbc/statement.cpp
+        src/odbc/schema_catalog.cpp
         src/odbc/backend.cpp
     )
     target_link_libraries(uniorm PRIVATE ODBC::ODBC)
@@ -69,8 +70,9 @@ target_compile_definitions(uniorm PRIVATE UNIORM_BUILDING_DLL)
 
 if(UNIORM_BUILD_TOOLS AND NOT UNIORM_BACKEND_ODBC)
     message(FATAL_ERROR
-        "UNIORM_BUILD_TOOLS requires UNIORM_BACKEND_ODBC: "
-        "uniorm-gen reads live schema metadata through ODBC")
+        "UNIORM_BUILD_TOOLS requires UNIORM_BACKEND_ODBC: uniorm-gen reads "
+        "live schema through backend introspection, and ODBC is the only "
+        "backend that offers it")
 endif()
 
 if(UNIORM_BUILD_TOOLS)

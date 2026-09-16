@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <cstring>
-#include <typeindex>
 #include <unordered_map>
 #include <utility>
 
@@ -607,55 +606,8 @@ void backend_statement::reset() {
   stmt_.reset();
 }
 
-struct backend_connection::schema_metadata_impl
-  : backend::schema_metadata {
-  explicit schema_metadata_impl(odbc::connection& conn) : conn_(conn) {}
-
-  std::vector<column_row> table_columns(std::string_view table) override {
-    std::string table_str(table);
-    odbc::statement stmt(conn_);
-    SQLRETURN rc = SQLColumns(stmt.native(), nullptr, 0, nullptr, 0,
-      reinterpret_cast<SQLCHAR*>(table_str.data()), SQL_NTS, nullptr, 0);
-    odbc::throw_if_error(
-      rc, SQL_HANDLE_STMT, stmt.native(), "SQLColumns(" + table_str + ")");
-
-    struct buffers {
-      char name[256] = {};
-      SQLLEN name_ind = SQL_NULL_DATA;
-      SQLINTEGER data_type = 0;
-      SQLLEN type_ind = SQL_NULL_DATA;
-      SQLSMALLINT nullable = SQL_NO_NULLS;
-      SQLLEN null_ind = SQL_NULL_DATA;
-    } buf;
-
-    stmt.bind_column(4, SQL_C_CHAR, buf.name, sizeof(buf.name),
-      &buf.name_ind);
-    stmt.bind_column(
-      5, SQL_C_SLONG, &buf.data_type, sizeof(buf.data_type), &buf.type_ind);
-    stmt.bind_column(
-      11, SQL_C_SSHORT, &buf.nullable, sizeof(buf.nullable), &buf.null_ind);
-
-    std::vector<column_row> rows;
-    while (stmt.fetch()) {
-      if (buf.name_ind == SQL_NULL_DATA) {
-        continue;
-      }
-      column_row row;
-      row.name.assign(buf.name, static_cast<std::size_t>(buf.name_ind));
-      row.type = sql_type_from_native(buf.data_type);
-      row.native_type = buf.data_type;
-      row.nullable = buf.nullable != SQL_NO_NULLS;
-      rows.push_back(std::move(row));
-    }
-    return rows;
-  }
-
-  odbc::connection& conn_;
-};
-
 backend_connection::backend_connection()
-  : conn_(shared_environment()),
-    metadata_(std::make_unique<schema_metadata_impl>(conn_)) {}
+  : conn_(shared_environment()), metadata_(conn_) {}
 
 void backend_connection::open(std::string_view connection_string) {
   conn_.open(connection_string);
@@ -717,11 +669,8 @@ void* backend_connection::native_handle() noexcept {
   return conn_.native();
 }
 
-void* backend_connection::extension(std::type_index id) noexcept {
-  if (id == std::type_index(typeid(backend::schema_metadata))) {
-    return static_cast<backend::schema_metadata*>(metadata_.get());
-  }
-  return nullptr;
+schema_meta* backend_connection::schema() noexcept {
+  return &metadata_;
 }
 
 namespace {

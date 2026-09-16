@@ -10,6 +10,7 @@
 
 #include <uniorm/backend/backend.hpp>
 #include "connection.hpp"
+#include "schema_catalog.hpp"
 #include "statement.hpp"
 
 namespace uniorm::odbc {
@@ -78,13 +79,13 @@ public:
   backend::capabilities caps() const noexcept override;
   std::string dbms_name() const override;
   std::unique_ptr<backend::statement_iface> create_statement() override;
+  schema_meta* schema() noexcept override;
   void* native_handle() noexcept override;
-  void* extension(std::type_index id) noexcept override;
 
 private:
   odbc::connection conn_;
-  struct schema_metadata_impl;
-  std::unique_ptr<schema_metadata_impl> metadata_;
+  // Declared after conn_, which it refers to.
+  odbc_schema_meta metadata_;
   bool array_rowcount_totals_ = true;
 };
 

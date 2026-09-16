@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <cctype>
 #include <cstddef>
-#include <unordered_map>
 #include <utility>
 
 #include "orm_mapping.hpp"
@@ -17,20 +16,6 @@
 namespace uniorm {
 
 namespace {
-
-struct schema_column {
-  bool nullable = false;
-  sql_type type = sql_type::other;
-};
-
-std::unordered_map<std::string, schema_column> load_table_schema(
-  backend::schema_metadata& md, std::string const& table) {
-  std::unordered_map<std::string, schema_column> schema;
-  for (auto const& c : md.table_columns(table)) {
-    schema[c.name] = schema_column{ c.nullable, c.type };
-  }
-  return schema;
-}
 
 // Begin a lease in the mode its new owner asked for, discarding any pending
 // work a previous lease left behind: enabling autocommit would commit it.
@@ -83,6 +68,10 @@ connection& orm::native_connection() {
   return pooled_conn_->get();
 }
 
+schema_meta& orm::schema() {
+  return native_connection().schema();
+}
+
 // --- Entity mapping registry ---
 
 entity_meta const* orm::find(std::type_index type) const {
@@ -97,20 +86,15 @@ std::size_t orm::size() const noexcept {
 // --- Validation ---
 
 void orm::validate(validation_mode mode) {
-  ensure_connected();
-  auto* md = pooled_conn_->get().extension<backend::schema_metadata>();
-  if (md == nullptr) {
-    throw mapping_error(
-      "schema validation requires a backend that exposes schema metadata");
-  }
+  auto& md = schema();
   for (auto const& [type, meta] : entities_) {
-    auto schema = load_table_schema(*md, meta.table);
-    if (schema.empty()) {
+    auto live = md.shape({ {}, {}, meta.table });
+    if (live.empty()) {
       throw mapping_error("table not found: " + meta.table);
     }
     for (auto const& c : meta.columns) {
-      auto it = schema.find(c.column);
-      if (it == schema.end()) {
+      auto* column = find_column(live, c.column);
+      if (column == nullptr) {
         throw mapping_error(
           "column not found in table " + meta.table + ": " + c.column);
       }
@@ -119,13 +103,13 @@ void orm::validate(validation_mode mode) {
       }
       // sql_type::other is a type no backend could be blamed for misreading:
       // with no family to compare, there is nothing to check.
-      if (it->second.type != sql_type::other &&
-          (c.accepted_types & sql_type_bit(it->second.type)) == 0) {
+      if (column->type != sql_type::other &&
+          (c.accepted_types & sql_type_bit(column->type)) == 0) {
         throw mapping_error("column " + meta.table + "." + c.column + " is " +
-                            sql_type_name(it->second.type) +
+                            sql_type_name(column->type) +
                             ", which the mapped member does not bind");
       }
-      if (it->second.nullable && !c.nullable) {
+      if (column->nullable && !c.nullable) {
         throw mapping_error("column " + meta.table + "." + c.column +
                             " is nullable but the mapped member is not "
                             "std::optional");

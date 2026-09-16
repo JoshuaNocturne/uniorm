@@ -5,7 +5,6 @@
 #include <memory>
 #include <string>
 #include <string_view>
-#include <typeindex>
 #include <utility>
 #include <vector>
 
@@ -15,6 +14,7 @@
 #include <uniorm/export.hpp>
 #include <uniorm/params.hpp>
 #include <uniorm/result_set.hpp>
+#include <uniorm/schema.hpp>
 
 namespace uniorm {
 
@@ -78,21 +78,17 @@ public:
   std::size_t statement_cache_size() const;
   void clear_statement_cache();
 
-  // Escape hatches: the caller names the expected native handle type
+  // Table introspection. Throws backend::capability_not_supported when the
+  // backend offers none; the reference stays valid while this connection
+  // does.
+  schema_meta& schema() const;
+
+  // Escape hatch: the caller names the expected native handle type
   // (void* for ODBC's SQLHDBC, PGconn for libpq, ...) knowing which
   // backend it connected to.
   template <class T>
   T* native_handle() noexcept {
     return backend_ ? static_cast<T*>(backend_->native_handle()) : nullptr;
-  }
-
-  // Typed backend extension (e.g. backend::schema_metadata); nullptr
-  // when the backend does not offer it.
-  template <class T>
-  T* extension() noexcept {
-    return backend_
-             ? static_cast<T*>(backend_->extension(std::type_index(typeid(T))))
-             : nullptr;
   }
 
 private:

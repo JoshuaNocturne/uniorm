@@ -6,6 +6,7 @@
 #include <string>
 
 #include <uniorm/backend/backend.hpp>
+#include <uniorm/backend/error.hpp>
 #include <uniorm/backend/registry.hpp>
 #include <uniorm/orm.hpp>
 #include <uniorm/pool.hpp>
@@ -114,10 +115,19 @@ void test_release_retires_an_unusable_connection() {
   fail_next_rollback = false;
 }
 
+// The facade's introspection is the connection's, so a backend answering none
+// is reported as that rather than as a missing lease.
+void test_schema_reports_a_backend_without_introspection() {
+  uniorm::connection_pool pool(pool_options_for());
+  uniorm::orm db(pool);
+  CHECK_THROWS(db.schema(), uniorm::backend::capability_not_supported);
+}
+
 }  // namespace
 
 void test_pool() {
   register_fake_backend();
   test_release_drops_the_previous_lease();
   test_release_retires_an_unusable_connection();
+  test_schema_reports_a_backend_without_introspection();
 }

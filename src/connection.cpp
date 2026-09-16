@@ -4,6 +4,7 @@
 #include <cctype>
 #include <memory>
 
+#include "uniorm/backend/error.hpp"
 #include "uniorm/backend/registry.hpp"
 #include "uniorm/dialect.hpp"
 #include "uniorm/builder/builder.hpp"
@@ -110,6 +111,15 @@ std::string connection::dbms_name() const {
 
 backend::capabilities connection::caps() const noexcept {
   return backend_->caps();
+}
+
+schema_meta& connection::schema() const {
+  schema_meta* md = backend_->schema();
+  if (md == nullptr) {
+    throw backend::capability_not_supported(
+      "this backend offers no schema introspection");
+  }
+  return *md;
 }
 
 void connection::set_autocommit(bool enabled) {

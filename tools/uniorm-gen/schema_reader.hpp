@@ -1,32 +1,26 @@
 #pragma once
 
-#include <optional>
 #include <string>
 #include <vector>
 
+#include <uniorm/schema.hpp>
 #include "schema_model.hpp"
-
-namespace uniorm::odbc {
-class connection;
-}
 
 namespace uniorm::gen {
 
 struct read_options {
-  std::optional<std::string> catalog;
-  std::optional<std::string> schema;
-  std::vector<std::string> tables;  // empty = every base table
+  // Empty leaves the catalog or schema up to what the connection sees.
+  std::string catalog;
+  std::string schema;
+  std::vector<std::string> tables;  // empty = every table the backend lists
 };
 
-// Extracts the schema of base tables (SQLTables/SQLColumns/SQLPrimaryKeys/
-// SQLForeignKeys/SQLStatistics) through the ODBC metadata API. Warnings
-// (e.g. case-insensitive table filter fallback) are appended to *warnings
-// when it is non-null. Throws odbc::odbc_error on driver failures.
-schema_model read_schema(odbc::connection& dbc, read_options const& opts,
-  std::vector<std::string>* warnings = nullptr);
-
-// SQLGetInfo(SQL_DATABASE_NAME), sanitized for use as a unit name; empty
-// when the driver does not report one.
-std::string database_name(odbc::connection& dbc);
+// Builds the generator's schema snapshot out of a backend's introspection.
+// Which reads a backend performs is the backend's business; what to keep of
+// them is decided here. Catalog oddities (a table that came back without
+// columns) are appended to *warnings when it is non-null. Throws
+// uniorm_error when a named table is missing.
+schema_model read_schema(schema_meta& md,
+  read_options const& opts, std::vector<std::string>* warnings = nullptr);
 
 }  // namespace uniorm::gen

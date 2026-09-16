@@ -6,19 +6,18 @@
 #include <utility>
 #include <vector>
 
-#include <uniorm/types.hpp>
+#include <uniorm/schema.hpp>
 
 namespace uniorm::gen {
 
-// Database-neutral schema snapshot extracted from ODBC metadata.
-
+// The catalog's shape of a column, plus what only a live read carries: the
+// server's own spelling of the type, its width, the default text, and the
+// flag the key read sets.
 struct column_model {
-  std::string name;
+  uniorm::column_shape shape;
   std::string type_name;  // as reported by the driver (TYPE_NAME)
-  sql_type type = sql_type::other;  // DATA_TYPE, already translated
   std::int32_t size = 0;
   std::int16_t decimals = 0;
-  bool nullable = false;
   bool primary_key = false;
   std::optional<std::string> default_value;
 };

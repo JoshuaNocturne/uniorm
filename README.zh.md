@@ -36,7 +36,7 @@ ODBC 接口访问任意提供 ODBC 驱动的数据库，在通用层之上提供
   空闲超时回收
 - **方言自适应**：标识符引号与分页语法按 `SQL_DBMS_NAME` 推断
   （MySQL/MariaDB 用反引号 + LIMIT/OFFSET，其余 ANSI）
-- **代码生成**：`uniorm-gen` 连活库经 ODBC 元数据提取 schema，生成实体
+- **代码生成**：`uniorm-gen` 连活库，经 backend 自省读取 schema，生成实体
   struct + 注册函数（TOML 覆写类型/类名/跳过表）
 - **可插拔 backend**：核心 API 构建在驱动中立的 backend 接口之上，连接串
   scheme 选择后端（`odbc://...`；裸 ODBC 连接串保持向后兼容）；能力按后端

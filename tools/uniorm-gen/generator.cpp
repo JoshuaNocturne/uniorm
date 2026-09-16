@@ -57,7 +57,7 @@ std::string check_bindable(std::string const& t, std::string const& where) {
 
 std::string default_cpp_type(
   column_model const& col, std::string const& where, generated_output& out) {
-  switch (col.type) {
+  switch (col.shape.type) {
   case sql_type::boolean:
     return "bool";
   case sql_type::smallint:
@@ -123,7 +123,7 @@ std::string column_comment(column_model const& col) {
   if (col.primary_key) {
     comment += " PK";
   }
-  if (!col.nullable) {
+  if (!col.shape.nullable) {
     comment += " NOT NULL";
   }
   if (col.default_value) {
@@ -151,11 +151,11 @@ std::vector<member_info> build_members(
   std::unordered_set<std::string> used;
   for (std::size_t i = 0; i < table.columns.size(); ++i) {
     column_model const& col = table.columns[i];
-    std::string where = table.name + "." + col.name;
+    std::string where = table.name + "." + col.shape.name;
 
     column_override const* ovr = nullptr;
     if (tcfg != nullptr) {
-      auto c_it = tcfg->columns.find(col.name);
+      auto c_it = tcfg->columns.find(col.shape.name);
       if (c_it != tcfg->columns.end()) {
         ovr = &c_it->second;
       }
@@ -177,7 +177,7 @@ std::vector<member_info> build_members(
       cpp_type = default_cpp_type(col, where, out);
     }
 
-    std::string member = to_camel_case(col.name);
+    std::string member = to_camel_case(col.shape.name);
     if (used.count(member) != 0) {
       member += std::to_string(i);
       out.warnings.push_back(
@@ -227,7 +227,7 @@ void emit_table(std::string& text, table_model const& table,
   text += "struct " + class_name + " {\n";
   for (member_info const& m : members) {
     std::string decl = m.cpp_type;
-    if (m.col->nullable) {
+    if (m.col->shape.nullable) {
       decl = "std::optional<" + decl + ">";
     }
     text +=
@@ -252,7 +252,8 @@ void emit_table(std::string& text, table_model const& table,
     member_info const& m = members[i];
     std::string call =
       m.col->primary_key ? "    .primary_key(" : "    .column(";
-    call += "\"" + m.col->name + "\", &" + class_name + "::" + m.member + ")";
+    call += "\"" + m.col->shape.name + "\", &" + class_name + "::" +
+            m.member + ")";
     text += call + "\n";
   }
   // Replace the trailing newline with a semicolon.

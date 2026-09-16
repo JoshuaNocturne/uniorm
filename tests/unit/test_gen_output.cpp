@@ -32,10 +32,10 @@ column_model make_column(std::string name, sql_type type,
   std::string type_name, bool nullable, bool pk, std::int32_t size = 0,
   std::int16_t decimals = 0) {
   column_model c;
-  c.name = std::move(name);
-  c.type = type;
+  c.shape.name = std::move(name);
+  c.shape.type = type;
   c.type_name = std::move(type_name);
-  c.nullable = nullable;
+  c.shape.nullable = nullable;
   c.primary_key = pk;
   c.size = size;
   c.decimals = decimals;

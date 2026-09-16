@@ -21,8 +21,8 @@ uniorm 是一个基于 **ODBC**（而非各数据库专有 C 客户端）的现�
   - 实体映射（成员指针路线，显式注册）
   - 动态行对象（按列名取 variant 值）
 - 基于成员指针的类型安全查询构建器
-- Schema 校验（利用 ODBC 元数据 API）
-- `uniorm-gen` 代码生成工具（活连接、ODBC 元数据提取、TOML 配置）
+- Schema 校验（经 `orm::schema()` 读表元数据）
+- `uniorm-gen` 代码生成工具（活连接、schema 自省、TOML 配置）
 
 ### v1 明确不做（Out of Scope）
 
@@ -96,6 +96,8 @@ uniorm/
 │   ├── row.hpp                  # 动态行 + value_cast
 │   ├── params.hpp               # 参数容器 + make_sql_value 转换
 │   ├── result_set.hpp           # 结果集游标（pimpl，块取行 + 逐行物化 row）
+│   ├── schema.hpp               # column_shape / schema_meta：活库表结构
+│   │                            # 的读取契约（见 §5.2）
 │   ├── connection.hpp           # connection：连接前置的 low-level 入口（含语句缓存原语）
 │   ├── transaction.hpp
 │   ├── pool.hpp                 # connection_pool / pooled_connection / connection_pool_registry
@@ -124,10 +126,11 @@ uniorm/
 │       ├── environment.hpp / connection.hpp / statement.hpp   # 句柄 RAII
 │       ├── handles.hpp          # 句柄 RAII 模板、traits
 │       ├── native_types.hpp     # SQL_* → sql_type 映射表（驱动编码只活在这里）
+│       ├── schema_catalog.hpp/.cpp   # uniorm::schema_meta 的 ODBC 实现
 │       └── error.hpp            # odbc_error / diagnostics
 ├── tools/uniorm-gen/            # 代码生成：uniorm_gen_core(STATIC) + uniorm-gen(CLI)
 │   ├── main.cpp                 # 参数解析与编排（唯一进 CLI 的源文件）
-│   ├── schema_reader.cpp/.hpp   # ODBC 元数据提取（直连私有句柄层，顺手归一 DATA_TYPE）
+│   ├── schema_reader.cpp/.hpp   # backend 自省 → schema 模型（筛选/分组在这层）
 │   ├── generator.cpp/.hpp       # model + 配置 → 头文件文本
 │   ├── config.cpp/.hpp          # TOML 子集解析
 │   ├── naming.cpp/.hpp          # PascalCase/camelCase 标识符转换
@@ -152,11 +155,12 @@ uniorm/
 公开/私有边界按"外部消费者是否需要"判定：凡出现在 `uniorm/uniorm.hpp` 或
 `uniorm/mapping/registry.hpp`（生成代码的唯一依赖）传递闭包内的头文件留在 `include/`，
 其余下沉到 `src/`，与自己的实现 `.cpp` 贴邻，用引号相对名互相引用。于是 `src/`
-不在 `uniorm` 目标的任何 include 路径上（同目录引用无需路径），只有确实需要跨目录取用
-私有头的四个目标显式 `-I src`（PRIVATE）：`uniorm_gen_core` 与 `uniorm-gen`
-（直调 `SQLTables` / `SQLColumns` 等目录函数）以及两个白盒单测。公开头一旦
-`#include` 私有头便无法解析，边界由编译器强制；库内的 `<sql.h>` 只出现在
-`src/odbc/` 之下，对外头文件既不带驱动类型，也不带 ODBC 链接依赖
+不在 `uniorm` 目标的任何 include 路径上（同目录引用无需路径），只有两个白盒单测
+目标显式 `-I src`（PRIVATE），为的是够到 `src/odbc/` 的句柄层。`uniorm-gen`
+曾在其列——它自己调 `SQLTables` / `SQLColumns` 这些目录函数，就得请出它们的声明；
+那些读取挪进 ODBC backend 后，工具只剩公开头可用，也就回到了公开边界这一侧。
+公开头一旦 `#include` 私有头便无法解析，边界由编译器强制；库内的 `<sql.h>`
+只出现在 `src/odbc/` 之下，对外头文件既不带驱动类型，也不带 ODBC 链接依赖
 （`ODBC::ODBC` 是 PRIVATE）。
 
 公开头只留声明：非模板成员的定义一律进同名 `.cpp`（`orm.cpp`、`decimal.cpp` 都按
@@ -549,11 +553,10 @@ class connection {
     // 元数据
     std::string dbms_name() const;             // SQL_DBMS_NAME，方言推断输入
     backend::capabilities caps() const noexcept;
+    schema_meta& schema() const;               // 表自省，见 5.2
 
-    // 逃生舱：调用方点名期望类型（ODBC 下 T = void 的 SQLHDBC；backend 扩展
-    // 如 backend::schema_metadata），不支持时返回 nullptr
+    // 逃生舱：调用方点名期望的原生句柄类型（ODBC 下 T = void 的 SQLHDBC）
     template <class T> T* native_handle() noexcept;
-    template <class T> T* extension() noexcept;
 
     // 预编译语句缓存观测（见 4.5.1）
     unsigned long long statement_cache_hits() const;
@@ -765,9 +768,9 @@ class orm {                             // 非线程安全，按线程/会话持
     std::size_t size() const noexcept;
 
     void validate(validation_mode mode = validation_mode::strict);
-    // 不接 connection 参数：经 native_connection().extension<backend::schema_metadata>()
-    // 取表元数据，backend 不提供该扩展则抛 mapping_error。逐实体核对：
-    //  - 表不存在（元数据为空）      → mapping_error
+    // 不接 connection 参数：经 schema() 取表元数据（每表一次 shape()，
+    // backend 不提供自省即抛 capability_not_supported）。逐实体核对：
+    //  - 表不存在（形状为空）         → mapping_error
     //  - 列缺失                       → mapping_error
     //  - 列可空但成员非 optional      → strict 抛 mapping_error / lenient 放行
     //  - 列类型族与成员的 accepted_types 不符 → strict 抛 mapping_error（§4.3）；
@@ -795,6 +798,7 @@ class orm {                             // 非线程安全，按线程/会话持
     unsigned long long statement_cache_misses() const;
     std::size_t statement_cache_size() const;
     void clear_statement_cache();
+    schema_meta& schema();                          // 表自省，见 5.2
     connection& native_connection();                     // 逃生舱（未连接即抛）
 };
 
@@ -1216,12 +1220,28 @@ struct batch_writer_iface { std::size_t add_column(buffer_type, count, element_s
 
 struct connection_iface { /* open / close / is_open / set_autocommit /
                             commit / rollback / caps / dbms_name /
-                            create_statement / native_handle /
-                            extension(std::type_index) */ };
+                            create_statement / schema() / native_handle */ };
 
-struct schema_metadata { /* table_columns(table) → {name, type, native_type,
-                            nullable}；供 orm::validate；经 extension() 查找 */ };
+struct column_shape { /* name / type / nullable；table_shape = 它的 vector，
+                        find_column(shape, name) 按目录顺序找 */ };
+
+struct schema_meta { /* 住在 public 的 <uniorm/schema.hpp>，命名空间 uniorm
+                      （和 sql_value / params 一样是跨边界的 uniorm 类型）：
+                      database_name() / tables(catalog, schema) /
+                      table_columns(ref) → {shape, type_name, size, decimals,
+                      default_value} / primary_key(ref) / foreign_keys(ref) /
+                      indexes(ref)；ref = {catalog, schema, name}，空
+                      catalog/schema 表示不限定；非虚的 shape(ref) 把
+                      table_columns 的结果收成 table_shape；经
+                      connection_iface::schema() 取得（默认 nullptr = 不提供），
+                      门面侧是 orm::schema() */ };
 ```
+
+列的形状单独成类型：目录读的 `column_row` 还带着服务端自己的类型拼法、宽度和
+默认值文本，这些只有生成器留存；比对用的三项（名字、类型、可空）抽出来之后，
+`orm::validate` 读 `shape()`，`uniorm-gen` 的列模型直接嵌一个 `column_shape`，
+同一份字段只拼一次。声明侧的对应物是 `column_meta`，它带的是成员能绑定的类型
+**集合**而非单个类型，所以比对有方向：形状是事实，映射是断言。
 
 ODBC 实现的当前能力：`{streaming=true, async_io=false, copy_protocol=false,
 notifications=false, columnar_batch=true, array_rowcount_totals=开连接时按驱动探测}`。
@@ -1229,9 +1249,11 @@ notifications=false, columnar_batch=true, array_rowcount_totals=开连接时按�
 入口据此在列式与行式通道间二选一（§4.5.2），后者决定两条受累行数 sweep 的分批粒度
 （§4.5），ODBC 实现按 `SQL_DRIVER_NAME` 认出 psqlODBC 才清零它。每个标志只表示
 "有一条更快的路"：缺能力时核心走慢的那条而不抛错，所以 backend 全置 `false`
-也不失正确性。`capability_not_supported` 已定义、无抛出点，留给将来确实无路可退的
-核心特性（§9 第 9 项）。`streaming` / `async_io` / `copy_protocol` /
-`notifications` 四个标志位是为 libpq/OCI 预留的占位。
+也不失正确性。表结构自省不在这批标志里：它没有更慢的那条路可退，答不出即由
+`connection::schema()` 抛 `capability_not_supported`（门面侧的
+`orm::schema()` 只转发，§4.7）。
+`streaming` / `async_io` / `copy_protocol` / `notifications` 四个标志位是为
+libpq/OCI 预留的占位。
 
 事务的 autocommit 开关逻辑留在核心（`transaction` 不变），backend 只暴露
 原语。`reset()` 的契约是缓存复用：某条 SQL 文本再次从缓存交出时、重新绑定之前调用，
@@ -1259,8 +1281,8 @@ backend，要在自己的 `reset()` 重写里清干净。
 `capability_not_supported` 与 `unknown_scheme`。
 
 **构建门禁**：`option(UNIORM_BACKEND_ODBC ON)`；ODBC 由 PUBLIC 收紧为
-PRIVATE 链接；`uniorm-gen` 直接读 ODBC 元数据，故 `UNIORM_BUILD_TOOLS`
-依赖该选项。
+PRIVATE 链接；`uniorm-gen` 向 `orm::schema()` 要活库元数据，而目前
+只有 ODBC backend 提供它，故 `UNIORM_BUILD_TOOLS` 依赖该选项。
 
 ### 5.3 原生特性通道
 
@@ -1273,33 +1295,31 @@ PQputCopyData(pg, ...);                     // 用户自行驱动原生操作
 
 连接与事务生命周期仍由 uniorm 管理；原生操作发生在借出的连接上，归还前状态必须自洽。
 
-**类型化扩展接口**——对高频原生特性提供半官方封装，不可移植性由用户在调用点显式选择：
-
-```cpp
-if (auto* ext = conn.extension<postgres_ext>()) {
-    ext->listen("order_events", callback);
-    ext->copy_in("orders", row_source);
-}
-if (auto* ext = conn.extension<oracle_ext>()) {
-    ext->bulk_insert("orders", rows);              // OCI 数组绑定
-}
-```
+**表结构自省不属于逃生舱**：它走中心入口上的具名访问器 `orm::schema()`（§4.7），
+后者转给底层连接的 `connection::schema()`，返回 `schema_meta`（§5.2，public
+头 `<uniorm/schema.hpp>`，命名空间 `uniorm`）。每个关系库的 catalog 都答得上
+这六条读取，它是可移植的必备能力，不是某家 backend 的私有特性。接口里原先有个
+按 `std::type_index` 找 backend 私有对象的 `extension()` 钩子，它把 `void*`
+静态转回来且不核对类型；这份读取契约一度挂在它上面（当时叫
+`backend::schema_metadata`），现已挪出、钩子已删。COPY / LISTEN-NOTIFY / OCI
+数组绑定这类真不可移植的特性因此暂无封装，走上面的原生句柄；要不要类型化的
+门面，等 §5.4 那两家 backend 落地再定。
 
 ### 5.4 已确认的 backend 优先级
 
 1. **libpq**（PostgreSQL）——COPY、LISTEN/NOTIFY、异步 I/O
 2. **Oracle OCI**——数组绑定及 OCI 专有特性
 
-两者均来自既有项目中必须绕开 ODBC 的实际经验。扩展接口与能力清单按上述特性集设计。
+两者均来自既有项目中必须绕开 ODBC 的实际经验。能力清单按上述特性集设计。
 
 ## 6. uniorm-gen 代码生成工具
 
 ### 6.1 形态
 
 独立 CLI，活连接目标数据库。本仓库只提供可执行文件（`UNIORM_BUILD_TOOLS=ON`
-时构建，因它直读 ODBC 元数据而依赖 `UNIORM_BACKEND_ODBC`；顶层构建时也按 §3.1
-装进 `<bindir>`）；仓库内没有任何 `add_custom_command`，"构建期生成"要调用方自己
-在 CMake 里接。
+时构建，因它要的 schema 自省目前只有 ODBC backend 提供，故依赖
+`UNIORM_BACKEND_ODBC`；顶层构建时也按 §3.1 装进 `<bindir>`）；仓库内没有任何
+`add_custom_command`，"构建期生成"要调用方自己在 CMake 里接。
 
 ```
 uniorm-gen (--dsn=<dsn> [--user=<u> --password=<p>]
@@ -1308,26 +1328,40 @@ uniorm-gen (--dsn=<dsn> [--user=<u> --password=<p>]
            [--config=<file>]          # TOML，见 §6.4
            [--tables=a,b,c]           # 逗号分隔的表名过滤
            [--catalog=<c>] [--schema=<s>]
-           [--name=<n>]               # 产物/命名空间名，缺省取 SQL_DATABASE_NAME
+           [--name=<n>]               # 产物/命名空间名，缺省取 backend 报的库名
 ```
 
 `--dsn` 与 `--connection-string` 必须二选一，`--out` 必填，否则打印 usage 并
 返回失败。
 
-### 6.2 Schema 提取（纯 ODBC 元数据）
+### 6.2 Schema 提取（走 `orm::schema()`）
 
-- `SQLTables` → 表清单（只按 `--catalog` / `--schema` 过滤，表名传 `NULL`；
-  结果里只留 `TABLE` / `BASE TABLE`）
+CLI 开一个公开 `uniorm::orm`，向它取 `schema()`（§4.7；它转给底层连接的
+`connection::schema()`）；backend 不提供自省即抛
+`capability_not_supported`，CLI 原样报错退出（今天的 ODBC backend 一直给）。
+`--dsn` 与 `--connection-string` 于是汇成同一条路：前者拼成
+`DSN=<dsn>[;UID=…][;PWD=…]` 交给同一个连接串，不再另走 `SQLConnect`。
+
+分工：backend 只回答"目录里有什么"，留下什么、怎么摆由 `uniorm-gen` 决定。
+
+- `tables(catalog, schema)` → 表清单，按 `--catalog` / `--schema` 限定，表名不限定。
+  ODBC 实现读 `SQLTables`，只留驱动用来表示"普通表"的那个词（`TABLE` 或
+  `BASE TABLE`），视图与系统对象就此挡在生成物之外
 - `--tables` 是**客户端筛选**：先精确名匹配，全库无同名时再退一次大小写不敏感
-  匹配（`lower_case_table_names` 的服务器），两边都对不上就告警并跳过该项
-- `SQLColumns` → 列名、ODBC `data_type`、驱动类型名、`column_size`、
-  `decimals`、可空、默认值
-- `SQLPrimaryKeys` → 主键（生成物里标 `.primary_key()`）
-- `SQLForeignKeys` → 外键（v1 仅记录，不生成关联导航）
-- `SQLStatistics` → 索引
+  匹配（`lower_case_table_names` 的服务器），两边都对不上就抛 `uniorm_error`
+- `table_columns(ref)` → 一个 `column_shape`（列名、归一后的 `sql_type`、可空），
+  外加只有活读才有的：服务端自己的类型拼法、`column_size`、`decimals`、默认值
+  （ODBC 侧为 `SQLColumns`，`DATA_TYPE` 的归一发生在它那一侧）。生成器的列模型
+  就嵌着这个形状，不再重拼那三项
+- `primary_key(ref)` → 主键列名，生成物里标 `.primary_key()`
+- `foreign_keys(ref)` → 一个列对一行（ODBC 侧为 `SQLForeignKeys`，按被引用表的
+  键序），gen 按被引用表首次出现的顺序分组还原成约束
+- `indexes(ref)` → 一个索引一行（列序 + 唯一性，ODBC 侧为 `SQLStatistics`），
+  gen 按索引名排序
+- `database_name()` → 缺省单元名（ODBC 侧即 `SQLGetInfo(SQL_DATABASE_NAME)`）
 
-外键与索引都只以注释形式进生成物（`// FK: col -> pk(col)`、`// index: name (cols)`），
-无开关；`uniorm-gen` 唯一读的 `SQLGetInfo` 是 `SQL_DATABASE_NAME`（用作缺省单元名）。
+每表四次读取。外键与索引都只以注释形式进生成物
+（`// FK: col -> pk(col)`、`// index: name (cols)`），无开关。
 
 ### 6.3 生成物
 
@@ -1384,8 +1418,8 @@ backend::backend_error : uniorm_error    // backend 层（backend/error.hpp）�
 └── odbc::odbc_error                     // ODBC 句柄层（src/odbc/error.hpp，私有头），
                                          // backend 名固定 "odbc"
 
-backend::capability_not_supported : uniorm_error   // 能力缺失；备用类型，无抛出点，
-                                                   // 见 §5.2
+backend::capability_not_supported : uniorm_error   // 无路可退的读取遇上做不到
+                                                   // 的 backend：表自省（§5.2）
 backend::unknown_scheme : uniorm_error             // 连接串 scheme 未注册
 
 gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型配置错误
@@ -1557,7 +1591,8 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
   而 runner 的镜像不装 `unixodbc-dev`。本地那趟重放是绿的，只因为仿 runner 的容器为了编驱动
   早已把那些头装上了：一条断言的成败取决于某个包在不在，它不配叫守卫。映射表因此搬去
   `src/odbc/native_types.hpp`（`inline` 头，不进 ABI），`column_model` 改存中立 `sql_type`、
-  由 `schema_reader` 在它的 ODBC 边界上归一，公开头不再声明 `sql_type_from_native`；`core`
+  由 `schema_reader` 当时那条 ODBC 边界归一（那些读取现已挪进
+  `src/odbc/schema_catalog.cpp`），公开头不再声明 `sql_type_from_native`；`core`
   作业另加一道 shadow：往 include 路径最前放一对读下去即报错的 `sql.h`/`sqlext.h`，再用一次
   反面编译确认它们确实抢在了系统头之前——且要求那次编译非报我们那句 `#error` 不可，编不动
   的编译器同样会"失败"，而那不算守卫生效。两处都改完后再提交一趟，三支作业在 runner 上全绿：
@@ -1657,8 +1692,8 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
   （矩阵选镜像、按镜像给的端口、健康门与那句版本查询、`services` 里三套 env 前缀；配错了
   会撞上那条腿自己的 banner 预检）。其二是一笔认下的欠账：跨格（MariaDB 连接器对 MySQL 服务端、
   Connector/ODBC 对 MariaDB 服务端）从此没有 CI 覆盖，而唯一那次真读丢正是从跨格撞出来的。
-  将来把 `uniorm-gen` 的元数据读取挪到 `backend::schema_metadata` 之后（§6.2），要不要
-  按那时的用法再给那格一道门，届时再定。
+  `uniorm-gen` 的元数据读取已挪到 `orm::schema()` 之后（§6.2）；挪动前后对
+  同一份夹具逐字节相同：那格要不要补一道门，看它那时暴露出什么，届时再定。
 
 原有路线图：
 
@@ -1676,8 +1711,9 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
 8. backend 拆成独立链接目标（如 `uniorm_odbc` / `uniorm_pq`）：多 backend 共存时
    让"只用一家"的部署不必在运行时载入其余驱动（见 §5.1）
 9. 能力清单落地：`capabilities` 的四个未读标志各自找到真实消费点（§5.2 今天被读的是
-   `columnar_batch` 与 `array_rowcount_totals`，后者随 §8 那条 PostgreSQL 腿落地），
-   并把 `capability_not_supported` 的抛出接上（见 §5.2）
+   `columnar_batch` 与 `array_rowcount_totals`，后者随 §8 那条 PostgreSQL 腿落地）。
+   ~~并把 `capability_not_supported` 的抛出接上~~ **已完成**：表结构自省没有
+   更慢的退路，backend 答不出时由 `connection::schema()` 抛它（§5.2）
 10. ~~池归还时的状态清理~~ **已完成**：`release` 见 `autocommit()` 为假即
     rollback 后复位 autocommit，复位抛异常则淘汰该连接并扣回名额（见 §4.9）；
     兜底不再只挂在 `orm` 借出侧，直接用 `connection_pool::acquire()` 的借用者

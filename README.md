@@ -47,10 +47,10 @@ See [docs/design.md](docs/design.md) for the full design.
 - **Dialect adaptation** — identifier quoting and paging syntax inferred from
   `SQL_DBMS_NAME` (backticks + LIMIT/OFFSET for MySQL/MariaDB, ANSI
   otherwise)
-- **Code generation** — `uniorm-gen` connects to a live database, extracts
-  the schema through ODBC metadata, and generates entity structs plus
-  registration functions (TOML overrides for types/class names/skipped
-  tables)
+- **Code generation** — `uniorm-gen` connects to a live database, reads
+  its schema through the backend's introspection, and generates entity
+  structs plus registration functions (TOML overrides for types/class
+  names/skipped tables)
 - **Pluggable backends** — the core API sits on a driver-neutral backend
   interface; the connection-string scheme selects the backend
   (`odbc://...`, or a bare ODBC connection string for backward

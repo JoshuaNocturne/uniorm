@@ -13,8 +13,7 @@
 #include "naming.hpp"
 #include "schema_reader.hpp"
 #include "uniorm/error.hpp"
-#include "odbc/connection.hpp"
-#include "odbc/environment.hpp"
+#include <uniorm/orm.hpp>
 
 namespace {
 
@@ -24,9 +23,9 @@ char const* k_usage =
   "                  --out=<dir> [--config=<file>] [--tables=a,b,c]\n"
   "                  [--catalog=<c>] [--schema=<s>] [--name=<n>] [--help]\n"
   "\n"
-  "Extracts the schema of a live database through ODBC metadata and\n"
-  "writes <out>/<name>_schema.hpp with entity structs and a\n"
-  "register_<name>_schema(uniorm::orm&) function.\n";
+  "Extracts the schema of a live database through uniorm's backend\n"
+  "introspection and writes <out>/<name>_schema.hpp with entity structs\n"
+  "and a register_<name>_schema(uniorm::orm&) function.\n";
 
 bool read_flag(std::vector<std::string> const& args, std::string_view prefix,
   std::string& out) {
@@ -77,10 +76,10 @@ int main(int argc, char** argv) {
     }
   }
 
-  std::string dsn, conn_string, user, password, out_dir, config_path, tables,
-    catalog, schema, name;
+  std::string dsn, connection_string, user, password, out_dir, config_path,
+    tables, catalog, schema, name;
   read_flag(args, "--dsn=", dsn);
-  read_flag(args, "--connection-string=", conn_string);
+  read_flag(args, "--connection-string=", connection_string);
   read_flag(args, "--user=", user);
   read_flag(args, "--password=", password);
   bool has_out = read_flag(args, "--out=", out_dir);
@@ -90,7 +89,7 @@ int main(int argc, char** argv) {
   read_flag(args, "--schema=", schema);
   read_flag(args, "--name=", name);
 
-  if (dsn.empty() == conn_string.empty()) {
+  if (dsn.empty() == connection_string.empty()) {
     std::cerr << "exactly one of --dsn / --connection-string is required\n"
               << k_usage;
     return 2;
@@ -99,6 +98,15 @@ int main(int argc, char** argv) {
     std::cerr << "--out=<dir> is required\n" << k_usage;
     return 2;
   }
+  if (!dsn.empty()) {
+    connection_string = "DSN=" + dsn;
+    if (!user.empty()) {
+      connection_string += ";UID=" + user;
+    }
+    if (!password.empty()) {
+      connection_string += ";PWD=" + password;
+    }
+  }
 
   try {
     uniorm::gen::gen_config cfg;
@@ -106,31 +114,23 @@ int main(int argc, char** argv) {
       cfg = uniorm::gen::parse_config(read_file(config_path));
     }
 
-    uniorm::odbc::connection conn(uniorm::odbc::shared_environment());
-    if (!dsn.empty()) {
-      conn.open_dsn(dsn, user, password);
-    } else {
-      conn.open(conn_string);
-    }
+    uniorm::orm db(connection_string);
+    auto& md = db.schema();
 
-    std::string unit = !name.empty() ? name : uniorm::gen::database_name(conn);
+    std::string unit = !name.empty() ? name : md.database_name();
     unit = uniorm::gen::to_unit_name(unit);
     if (unit == "_") {
       unit = "db";
     }
 
     uniorm::gen::read_options opts;
-    if (!catalog.empty()) {
-      opts.catalog = catalog;
-    }
-    if (!schema.empty()) {
-      opts.schema = schema;
-    }
+    opts.catalog = catalog;
+    opts.schema = schema;
     opts.tables = split_csv(tables);
 
     std::vector<std::string> warnings;
     uniorm::gen::schema_model model =
-      uniorm::gen::read_schema(conn, opts, &warnings);
+      uniorm::gen::read_schema(md, opts, &warnings);
     model.name = unit;
 
     uniorm::gen::generated_output out =

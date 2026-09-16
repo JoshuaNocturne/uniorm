@@ -10,6 +10,10 @@ void test_registry();
 void test_orm_crud_helpers();
 void test_backend_registry();
 void test_pool();
+#ifdef UNIORM_TEST_GEN
+void test_gen_config();
+void test_gen_output();
+#endif
 
 int main() {
   test_pfr();
@@ -22,6 +26,10 @@ int main() {
   test_orm_crud_helpers();
   test_backend_registry();
   test_pool();
+#ifdef UNIORM_TEST_GEN
+  test_gen_config();
+  test_gen_output();
+#endif
 
   int failures = uniorm::test::failure_count();
   if (failures == 0) {

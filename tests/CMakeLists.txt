@@ -20,6 +20,16 @@ target_include_directories(uniorm_unit_tests PRIVATE ${PROJECT_SOURCE_DIR}/src)
 if(UNIORM_BACKEND_ODBC)
     target_compile_definitions(uniorm_unit_tests PRIVATE UNIORM_TEST_BACKEND_ODBC)
 endif()
+if(UNIORM_BUILD_TOOLS)
+    # The generator's own logic names no driver any more, so it is tested in
+    # the target that links none.
+    target_sources(uniorm_unit_tests PRIVATE
+        unit/test_gen_config.cpp
+        unit/test_gen_output.cpp
+    )
+    target_link_libraries(uniorm_unit_tests PRIVATE uniorm_gen_core)
+    target_compile_definitions(uniorm_unit_tests PRIVATE UNIORM_TEST_GEN)
+endif()
 add_test(NAME unit_tests COMMAND uniorm_unit_tests)
 
 if(UNIORM_BACKEND_ODBC)
@@ -30,14 +40,6 @@ if(UNIORM_BACKEND_ODBC)
     target_link_libraries(uniorm_odbc_unit_tests PRIVATE uniorm::uniorm ODBC::ODBC)
     # White-box test of the private ODBC handle layer (src/odbc/).
     target_include_directories(uniorm_odbc_unit_tests PRIVATE ${PROJECT_SOURCE_DIR}/src)
-    if(UNIORM_BUILD_TOOLS)
-        target_sources(uniorm_odbc_unit_tests PRIVATE
-            unit/test_gen_config.cpp
-            unit/test_gen_output.cpp
-        )
-        target_link_libraries(uniorm_odbc_unit_tests PRIVATE uniorm_gen_core)
-        target_compile_definitions(uniorm_odbc_unit_tests PRIVATE UNIORM_TEST_GEN)
-    endif()
     add_test(NAME odbc_unit_tests COMMAND uniorm_odbc_unit_tests)
 
     add_executable(uniorm_integration_tests

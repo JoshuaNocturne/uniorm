@@ -56,19 +56,6 @@ void connection::open(std::string_view connection_string) {
   open_ = true;
 }
 
-void connection::open_dsn(
-  std::string_view dsn, std::string_view user, std::string_view password) {
-  if (open_) {
-    throw odbc_error("connection is already open", {});
-  }
-  SQLRETURN rc = SQLConnect(native(), as_sql_chars(dsn),
-    static_cast<SQLSMALLINT>(dsn.size()), as_sql_chars(user),
-    static_cast<SQLSMALLINT>(user.size()), as_sql_chars(password),
-    static_cast<SQLSMALLINT>(password.size()));
-  throw_if_error(rc, SQL_HANDLE_DBC, native(), "open connection via DSN");
-  open_ = true;
-}
-
 void connection::close() {
   if (!open_) {
     return;

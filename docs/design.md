@@ -138,8 +138,8 @@ uniorm/
 ├── tests/
 │   ├── unit/                    # 无库依赖：check.hpp（CHECK/CHECK_THROWS）+
 │   │                            # uniorm_unit_tests（不链 ODBC，含 fake backend 的
-│   │                            # test_pool.cpp）与
-│   │                            # uniorm_odbc_unit_tests（句柄 RAII、错误派生、uniorm-gen）
+│   │                            # test_pool.cpp 与 uniorm-gen 的纯逻辑用例）与
+│   │                            # uniorm_odbc_unit_tests（句柄 RAII、错误派生）
 │   ├── integration/             # 需活连接：test_integration.cpp、test_gen_e2e.cpp
 │   │                            # 与 golden/gen_it_schema.hpp（生成物快照）
 │   ├── install/                 # 外部消费者工程（install_smoke 用它走 find_package）
@@ -238,7 +238,6 @@ environment& shared_environment();     // 进程内共享，首次使用时创�
 class connection {                     // SQLHDBC，move-only
     explicit connection(environment& env);
     void open(std::string_view connection_string);      // SQLDriverConnect
-    void open_dsn(std::string_view dsn, std::string_view user, std::string_view password);
     void close();
     bool is_open() const noexcept;
     void set_autocommit(bool enabled);                  // 事务支持
@@ -300,7 +299,7 @@ class statement {                      // SQLHSTMT，move-only
 
 - 库内部所有 `std::string` / `string_view` 均为 UTF-8；
 - ODBC 边界一律窄字符：列与参数按 `SQL_C_CHAR` / `SQL_VARCHAR` 绑定，连接串按
-  `SQLDriverConnect` / `SQLConnect` 的窄接口提交，库内不做任何编码转换；
+  `SQLDriverConnect` 的窄接口提交，库内不做任何编码转换；
 - 于是"边界上的字节就是 UTF-8"这一前提由驱动与驱动管理器的字符集设置兜住
   （unixODBC 会按应用 locale 做 iconv 转换，MariaDB Connector/ODBC 按连接字符集
   输出）。locale 或驱动字符集不是 UTF-8 时，非 ASCII 数据就会错位——这是本策略的
@@ -1340,7 +1339,8 @@ CLI 开一个公开 `uniorm::orm`，向它取 `schema()`（§4.7；它转给底�
 `connection::schema()`）；backend 不提供自省即抛
 `capability_not_supported`，CLI 原样报错退出（今天的 ODBC backend 一直给）。
 `--dsn` 与 `--connection-string` 于是汇成同一条路：前者拼成
-`DSN=<dsn>[;UID=…][;PWD=…]` 交给同一个连接串，不再另走 `SQLConnect`。
+`DSN=<dsn>[;UID=…][;PWD=…]` 交给同一个连接串；句柄层里那条 DSN 专用的
+`SQLConnect` 通路失去最后一个调用者，随之删掉。
 
 分工：backend 只回答"目录里有什么"，留下什么、怎么摆由 `uniorm-gen` 决定。
 
@@ -1452,14 +1452,16 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
   （scheme 解析边界、注册/重复注册/未注册 scheme；其中真正解析到
   "odbc" backend 的用例在 `UNIORM_TEST_BACKEND_ODBC` 宏内）、`test_pool`
   （用一个记录调用的假 backend 驱动 `connection_pool::release`：归还时回滚挂起的
-  工作并复位 autocommit，复位抛异常则该连接被淘汰且名额扣回）；
+  工作并复位 autocommit，复位抛异常则该连接被淘汰且名额扣回）、
+  `test_gen_config`（TOML 子集解析正例/错误行号/非法键）、
+  `test_gen_output`（命名转换边界 + 生成器快照与覆写/跳表/converter 生成/DECIMAL 列
+  以 `cpp_type` 覆写成 `uniorm::decimal_t`/错误路径）；后两个只在
+  `UNIORM_BUILD_TOOLS` 打开时编入（同时定义 `UNIORM_TEST_GEN`），要链的是
+  `uniorm_gen_core`——生成器改走公共自省接口之后它自己不再点名驱动，这两个用例
+  于是回到不链 ODBC 的目标里；
   `uniorm_odbc_unit_tests` 链接 ODBC——`test_odbc_handles`（句柄 RAII）、
   `test_odbc_error_is_backend_error`（`odbc_error` 就是 `backend_error`，
-  无需二次翻译）、`test_gen_config`（TOML 子集解析正例/错误行号/非法键）、
-  `test_gen_output`（命名转换边界 + 生成器快照与覆写/跳表/converter 生成/DECIMAL 列
-  以 `cpp_type` 覆写成 `uniorm::decimal_t`/错误路径）；
-  后两个只在 `UNIORM_BUILD_TOOLS` 打开时编入（同时定义 `UNIORM_TEST_GEN`），
-  因为它们要链 `uniorm_gen_core`；
+  无需二次翻译）；
 - **集成测试**（已实现，DSN/凭据由 `UNIORM_IT_DSN` / `UNIORM_IT_USER` / `UNIORM_IT_PWD` 指定，凭据以 `UID`/`PWD` 写进连接串；连不上时 ctest SKIP）：execute/params 往返、动态行（含 `connection::execute` 显式块取行大小 0 退回逐行）、DECIMAL 动态路径（`DECIMAL(20,4)` / `(20,0)` / `(38,0)` 取回精确定点字面量与 `column_info::scale`，按需解析成 double、scale-0 解析成 int64，带小数或超 int64 范围的字面量抛 `type_mismatch`，NULL 仍报 `is_null`）、DECIMAL 映射路径（`DECIMAL(20,4)` / `(65,30)` / `(20,0)` 三列配 `decimal_t` 与 `std::optional<decimal_t>` 成员：批量插入与实体读回逐字核对 `to_literal`（含 65,30 列第 30 位为 1 的值——没有任何整型或 double 装得下它）、聚合投影、动态行 `get<decimal_t>`、以 `decimal_t` 为右值的 `where(gt(&T::amount, ...))` 落到同一字面量）、聚合投影（含长字符串与 timestamp）、converter 往返（批量插入、实体物化含 NULL、
 `in` 谓词、投影、构建器 `set`/批量 update、动态行 `get<T>`）、orm validate（含 strict
 的列缺失/可空/类型族三条失败路径）、查询构建器全谓词与分页、事务 commit/rollback/析构回滚、批量插入（含空 optional 写 NULL、1500 行跨 `paramset_size` 分批）、批量 update / 批量 remove（实体版按主键与全字段两种 WHERE，含一张复合主键表验证单实体与批量都按全部键列命中、非键行不被牵连，动态版 `orm::update(table)` / `orm::remove(table)`，以及 `query<T>::set/update/remove` 与无 WHERE / 无 SET / WHERE 字段未映射的守卫抛错）、语句缓存（hit/miss 计数、流式 result_set 借出期间并发 miss、清空）、跨层错误上报（驱动失败以 `backend_error` 捕获，核对 `backend_name()`

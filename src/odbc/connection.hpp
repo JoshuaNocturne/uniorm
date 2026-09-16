@@ -23,8 +23,6 @@ public:
   connection& operator=(connection const&) = delete;
 
   void open(std::string_view connection_string);
-  void open_dsn(
-    std::string_view dsn, std::string_view user, std::string_view password);
   void close();
   bool is_open() const noexcept {
     return open_;

@@ -644,8 +644,7 @@ void backend_connection::rollback() {
 }
 
 backend::capabilities backend_connection::caps() const noexcept {
-  return {/*streaming=*/true, /*async_io=*/false, /*copy_protocol=*/false,
-    /*notifications=*/false, /*columnar_batch=*/true,
+  return {/*columnar_batch=*/true,
     /*array_rowcount_totals=*/array_rowcount_totals_};
 }
 

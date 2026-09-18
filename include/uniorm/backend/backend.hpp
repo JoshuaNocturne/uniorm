@@ -85,10 +85,8 @@ struct column_buffer {
 // the core can do without: it takes a slower route rather than throwing, so a
 // backend that leaves every flag false is still correct.
 struct capabilities {
-  bool streaming;
-  bool async_io;
-  bool copy_protocol;
-  bool notifications;
+  // Batch writes fill a batch_writer's column buffers; otherwise the core
+  // hands bind_batch_params() one params vector per row.
   bool columnar_batch;
   // One execute of an array of parameter sets reports the row count of the
   // whole array. Without it, a write that has to tally affected rows executes

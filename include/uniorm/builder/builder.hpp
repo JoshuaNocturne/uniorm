@@ -140,12 +140,13 @@ public:
   std::size_t row_array_size() const noexcept {
     return orm_->row_array_size();
   }
-  dialect const& sql_dialect() const;
+  // The connection's, so every statement spells its names the same way.
+  dialect const& sql_dialect() const {
+    return conn().sql_dialect();
+  }
 
 private:
   orm* orm_;
-  mutable bool dialect_detected_ = false;
-  mutable dialect dialect_;
 };
 
 template <class T>

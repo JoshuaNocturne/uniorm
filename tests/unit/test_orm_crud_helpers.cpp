@@ -136,4 +136,10 @@ void test_orm_crud_helpers() {
   CHECK(db.row_array_size() == orm::default_row_array_size);
   db.row_array_size(25);
   CHECK(db.row_array_size() == 25);
+
+  // A disconnected orm keeps the spelling policy it was given, ready to
+  // install on whatever connection it later leases.
+  CHECK(db.identifier_case() == dialect::identifier_case::keep);
+  db.identifier_case(dialect::identifier_case::lower);
+  CHECK(db.identifier_case() == dialect::identifier_case::lower);
 }

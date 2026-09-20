@@ -109,6 +109,26 @@ std::string connection::dbms_name() const {
   return backend_->dbms_name();
 }
 
+dialect::identifier_case connection::identifier_case() const noexcept {
+  return identifiers_;
+}
+
+void connection::identifier_case(dialect::identifier_case policy) {
+  identifiers_ = policy;
+  if (sql_dialect_) {
+    sql_dialect_->identifiers = policy;
+  }
+}
+
+dialect const& connection::sql_dialect() {
+  if (!sql_dialect_) {
+    dialect d = dialect::detect(dbms_name());
+    d.identifiers = identifiers_;
+    sql_dialect_ = d;
+  }
+  return *sql_dialect_;
+}
+
 backend::capabilities connection::caps() const noexcept {
   return backend_->caps();
 }

@@ -1,7 +1,8 @@
 #pragma once
 
 // Private header, not installed: resolves the WHERE field names an entity
-// write was handed and derives the columns it assigns. No connection here.
+// write was handed, derives the columns it assigns, and checks a mapping
+// against a catalog. No connection object here.
 
 #include <cstddef>
 #include <optional>
@@ -9,8 +10,11 @@
 #include <string_view>
 #include <vector>
 
+#include <uniorm/detail/identifier.hpp>
+#include <uniorm/dialect.hpp>
 #include <uniorm/error.hpp>
 #include <uniorm/mapping/registry.hpp>
+#include <uniorm/schema.hpp>
 
 namespace uniorm::detail {
 
@@ -82,6 +86,79 @@ inline std::vector<std::size_t> set_columns_of(entity_meta const& m,
     }
   }
   return out;
+}
+
+// --- Validation ---
+
+// The one name in `have` differing from `wanted` by case alone: two spellings
+// of the same object, which is what a mapping carries between servers.
+inline std::optional<std::string> case_variant(
+  std::vector<std::string> const& have, std::string_view wanted) {
+  std::string const folded = fold_lower(wanted);
+  for (auto const& name : have) {
+    if (name != wanted && fold_lower(name) == folded) {
+      return name;
+    }
+  }
+  return std::nullopt;
+}
+
+inline std::string case_hint(std::optional<std::string> const& alt) {
+  return alt ? " (only case differs from '" + *alt + "')" : std::string();
+}
+
+// One entity against the catalog's own spellings, which a miss has to name:
+// rejecting the pair without them leaves the caller comparing by eye. Each
+// name is asked for as the dialect will emit it, so a miss is reported in the
+// one spelling the policy can be fixed in.
+inline void validate_entity(schema_meta& md, entity_meta const& m,
+  validation_mode mode, dialect const& d) {
+  std::string const table = d.fold_identifier(m.table);
+  auto live = md.shape({ {}, {}, table });
+  if (live.empty()) {
+    // The whole catalog is searched, so a candidate is shown where it lives:
+    // the same name under another schema is not the table this mapping wants.
+    std::string const folded = fold_lower(table);
+    std::string candidate;
+    for (auto const& row : md.tables({}, {})) {
+      if (row.name != table && fold_lower(row.name) == folded) {
+        candidate =
+          row.schema.empty() ? row.name : row.schema + "." + row.name;
+        break;
+      }
+    }
+    throw mapping_error("table not found: " + table +
+      (candidate.empty() ? std::string()
+                         : " (only case differs from '" + candidate + "')"));
+  }
+  std::vector<std::string> columns;
+  columns.reserve(live.size());
+  for (auto const& c : live) {
+    columns.push_back(c.name);
+  }
+  for (auto const& c : m.columns) {
+    std::string const column = d.fold_identifier(c.column);
+    auto* found = find_column(live, column);
+    if (found == nullptr) {
+      throw mapping_error("column not found in table " + table + ": " +
+        column + case_hint(case_variant(columns, column)));
+    }
+    if (mode == validation_mode::lenient) {
+      continue;
+    }
+    // sql_type::other is a type no backend could be blamed for misreading:
+    // with no family to compare, there is nothing to check.
+    if (found->type != sql_type::other &&
+        (c.accepted_types & sql_type_bit(found->type)) == 0) {
+      throw mapping_error("column " + table + "." + column + " is " +
+        sql_type_name(found->type) +
+        ", which the mapped member does not bind");
+    }
+    if (found->nullable && !c.nullable) {
+      throw mapping_error("column " + table + "." + column +
+        " is nullable but the mapped member is not std::optional");
+    }
+  }
 }
 
 }  // namespace uniorm::detail

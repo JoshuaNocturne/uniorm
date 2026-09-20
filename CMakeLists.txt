@@ -37,7 +37,6 @@ add_library(uniorm SHARED
     src/backend/error.cpp
     src/backend/registry.cpp
     src/builder/expression.cpp
-    src/builder/builder.cpp
     src/mapping/registry.cpp
     src/orm.cpp
 )

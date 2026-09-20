@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -72,6 +73,16 @@ public:
   std::string dbms_name() const;
   backend::capabilities caps() const noexcept;
 
+  // --- Identifier spelling ---
+  // How the SQL this connection generates quotes its names. Kept on the
+  // connection because that is where the server's other quirks are known.
+  dialect::identifier_case identifier_case() const noexcept;
+  void identifier_case(dialect::identifier_case policy);
+
+  // The dialect built from the server's name and the policy above, made on
+  // first use.
+  dialect const& sql_dialect();
+
   // Prepared-statement cache observability (keyed by SQL text, LRU).
   unsigned long long statement_cache_hits() const;
   unsigned long long statement_cache_misses() const;
@@ -102,6 +113,10 @@ private:
   std::shared_ptr<detail::statement_cache> stmt_cache_;
   // Mirrors the last mode the backend was told; ODBC connects autocommitting.
   bool autocommit_ = true;
+  dialect::identifier_case identifiers_ = dialect::identifier_case::keep;
+  // Built on first spelling. A closed connection is never reopened, so the
+  // server facts it holds cannot go stale; the policy is rewritten in place.
+  std::optional<dialect> sql_dialect_;
 };
 
 }  // namespace uniorm

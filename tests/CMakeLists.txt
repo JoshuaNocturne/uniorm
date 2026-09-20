@@ -8,6 +8,7 @@ add_executable(uniorm_unit_tests
     unit/test_expression.cpp
     unit/test_registry.cpp
     unit/test_orm_crud_helpers.cpp
+    unit/test_orm_validate.cpp
     unit/test_backend_registry.cpp
     unit/test_pool.cpp
 )

@@ -2,13 +2,28 @@
 
 #include <algorithm>
 
+#include <uniorm/detail/identifier.hpp>
+
 namespace uniorm {
 
+std::string dialect::fold_identifier(std::string_view identifier) const {
+  switch (identifiers) {
+  case identifier_case::lower:
+    return detail::fold_lower(identifier);
+  case identifier_case::upper:
+    return detail::fold_upper(identifier);
+  case identifier_case::keep:
+    break;
+  }
+  return std::string(identifier);
+}
+
 std::string dialect::quote_identifier(std::string_view identifier) const {
+  std::string const folded = fold_identifier(identifier);
   std::string out;
-  out.reserve(identifier.size() + 2);
+  out.reserve(folded.size() + 2);
   out.push_back(quote_open);
-  out.append(identifier);
+  out += folded;
   out.push_back(quote_close);
   return out;
 }

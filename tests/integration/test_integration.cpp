@@ -540,6 +540,17 @@ void test_query_builder(orm& db) {
   dialect const d = dialect::detect(db.native_connection().dbms_name());
   CHECK(sql.find(d.quote_identifier("uniorm_it_user")) != std::string::npos);
   CHECK(sql.find(d.quote_identifier("id") + " = ?") != std::string::npos);
+
+  // The spelling policy rides the same emission point, so one mapping can
+  // serve a server that stores its names the other way.
+  db.identifier_case(dialect::identifier_case::upper);
+  std::string raised = db.query()
+                         .of<User>()
+                         .where(eq(&User::id, std::int64_t{ 1 }))
+                         .build_select();
+  CHECK(raised.find(d.quote_identifier("UNIORM_IT_USER")) != std::string::npos);
+  CHECK(raised.find(d.quote_identifier("id") + " = ?") == std::string::npos);
+  db.identifier_case(dialect::identifier_case::keep);
 }
 
 void test_transaction(orm& db) {

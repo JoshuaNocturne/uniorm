@@ -93,7 +93,8 @@ public:
 
   std::size_t size() const noexcept;
 
-  // Validate mappings against live schema.
+  // Check every registered mapping against the live catalog, under the
+  // connection's spelling policy. A miss names the spelling the catalog has.
   void validate(validation_mode mode = validation_mode::strict);
 
   // ========================================================================
@@ -259,6 +260,17 @@ public:
   bool auto_commit() const noexcept;
   void auto_commit(bool enabled);
 
+  // --- Identifier spelling ---
+  // How the SQL built from a mapping spells the names it quotes: keep the
+  // mapping's own spelling, or fold it to one case. A deployment sets this once
+  // to what its server stores, which is what lets one generated header serve
+  // servers that spell the same table differently. `validate()` asks the
+  // catalog under the same policy and answers a miss with its own spelling.
+  // This is the orm's setting as auto_commit is: every lease re-applies it, so
+  // one set on native_connection() lasts until the next.
+  dialect::identifier_case identifier_case() const noexcept;
+  void identifier_case(dialect::identifier_case policy);
+
   // --- Cache observability ---
   unsigned long long statement_cache_hits() const;
   unsigned long long statement_cache_misses() const;
@@ -285,6 +297,8 @@ private:
   std::size_t row_array_size_ = default_row_array_size;
   std::size_t paramset_size_ = default_paramset_size;
   bool auto_commit_ = true;  // commit mode applied to every connection
+  // Spelling policy applied to every connection, as auto_commit_ is.
+  dialect::identifier_case identifiers_ = dialect::identifier_case::keep;
 
   void ensure_connected() const;
 

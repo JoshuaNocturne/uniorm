@@ -19,11 +19,13 @@ namespace {
 
 // Begin a lease in the mode its new owner asked for, discarding any pending
 // work a previous lease left behind: enabling autocommit would commit it.
-void adopt_connection(connection& conn, bool autocommit) {
+void adopt_connection(
+  connection& conn, bool autocommit, dialect::identifier_case identifiers) {
   if (!conn.autocommit()) {
     conn.rollback();
   }
   conn.set_autocommit(autocommit);
+  conn.identifier_case(identifiers);
 }
 
 }  // namespace
@@ -33,11 +35,11 @@ void adopt_connection(connection& conn, bool autocommit) {
 orm::orm(std::string_view connection_string)
   : pooled_conn_(connection_pool_registry::instance().acquire(
       std::string(connection_string))) {
-  adopt_connection(native_connection(), auto_commit_);
+  adopt_connection(native_connection(), auto_commit_, identifiers_);
 }
 
 orm::orm(connection_pool& pool) : pooled_conn_(pool.acquire()) {
-  adopt_connection(native_connection(), auto_commit_);
+  adopt_connection(native_connection(), auto_commit_, identifiers_);
 }
 
 orm::~orm() = default;
@@ -49,7 +51,7 @@ orm& orm::operator=(orm&&) noexcept = default;
 void orm::connect(std::string_view connection_string) {
   pooled_conn_ =
     connection_pool_registry::instance().acquire(std::string(connection_string));
-  adopt_connection(native_connection(), auto_commit_);
+  adopt_connection(native_connection(), auto_commit_, identifiers_);
 }
 
 void orm::disconnect() {
@@ -86,35 +88,10 @@ std::size_t orm::size() const noexcept {
 // --- Validation ---
 
 void orm::validate(validation_mode mode) {
-  auto& md = schema();
+  auto& conn = native_connection();
+  dialect const& d = conn.sql_dialect();
   for (auto const& [type, meta] : entities_) {
-    auto live = md.shape({ {}, {}, meta.table });
-    if (live.empty()) {
-      throw mapping_error("table not found: " + meta.table);
-    }
-    for (auto const& c : meta.columns) {
-      auto* column = find_column(live, c.column);
-      if (column == nullptr) {
-        throw mapping_error(
-          "column not found in table " + meta.table + ": " + c.column);
-      }
-      if (mode == validation_mode::lenient) {
-        continue;
-      }
-      // sql_type::other is a type no backend could be blamed for misreading:
-      // with no family to compare, there is nothing to check.
-      if (column->type != sql_type::other &&
-          (c.accepted_types & sql_type_bit(column->type)) == 0) {
-        throw mapping_error("column " + meta.table + "." + c.column + " is " +
-                            sql_type_name(column->type) +
-                            ", which the mapped member does not bind");
-      }
-      if (column->nullable && !c.nullable) {
-        throw mapping_error("column " + meta.table + "." + c.column +
-                            " is nullable but the mapped member is not "
-                            "std::optional");
-      }
-    }
+    detail::validate_entity(conn.schema(), meta, mode, d);
   }
 }
 
@@ -164,7 +141,7 @@ std::size_t update_builder::execute() {
   if (blank(where_)) {
     throw uniorm_error("update: refusing to execute without a WHERE clause");
   }
-  dialect const d = dialect::detect(orm_->native_connection().dbms_name());
+  dialect const& d = orm_->native_connection().sql_dialect();
   std::string sql = "UPDATE " + d.quote_identifier(table_) + " SET ";
   std::vector<sql_value> values;
   values.reserve(set_.size() + where_params_.size());
@@ -194,7 +171,7 @@ std::size_t remove_builder::execute() {
   if (blank(where_)) {
     throw uniorm_error("remove: refusing to execute without a WHERE clause");
   }
-  dialect const d = dialect::detect(orm_->native_connection().dbms_name());
+  dialect const& d = orm_->native_connection().sql_dialect();
   std::string sql =
     "DELETE FROM " + d.quote_identifier(table_) + " WHERE " + where_;
   return orm_->execute_update(sql, where_params_);
@@ -278,6 +255,17 @@ void orm::auto_commit(bool enabled) {
     pooled_conn_->get().set_autocommit(enabled);
   }
   auto_commit_ = enabled;
+}
+
+dialect::identifier_case orm::identifier_case() const noexcept {
+  return identifiers_;
+}
+
+void orm::identifier_case(dialect::identifier_case policy) {
+  if (pooled_conn_ && pooled_conn_->get().is_open()) {
+    pooled_conn_->get().identifier_case(policy);
+  }
+  identifiers_ = policy;
 }
 
 // --- Entity write pipeline ---
@@ -401,7 +389,7 @@ enum class row_tally { bound_rows, affected_rows };
 std::size_t update_single_row(connection& conn, entity_meta const& m,
   std::vector<std::size_t> const& set_col_indices,
   std::vector<std::size_t> const& where_col_indices, void const* entity) {
-  dialect const d = dialect::detect(conn.dbms_name());
+  dialect const& d = conn.sql_dialect();
   std::vector<sql_value> values = extract_row(
     m, entity, concat_columns(set_col_indices, where_col_indices));
   return conn.execute_update(
@@ -411,7 +399,7 @@ std::size_t update_single_row(connection& conn, entity_meta const& m,
 
 std::size_t delete_single_row(connection& conn, entity_meta const& m,
   std::vector<std::size_t> const& where_col_indices, void const* entity) {
-  dialect const d = dialect::detect(conn.dbms_name());
+  dialect const& d = conn.sql_dialect();
   return conn.execute_update(delete_statement(m, d, where_col_indices),
     params(extract_row(m, entity, where_col_indices)));
 }
@@ -422,7 +410,7 @@ std::size_t update_rowwise(connection& conn, entity_meta const& m,
   std::vector<std::size_t> const& set_col_indices,
   std::vector<std::size_t> const& where_col_indices, void const* rows,
   std::size_t row_stride, std::size_t row_count, std::size_t batch_size) {
-  dialect const d = dialect::detect(conn.dbms_name());
+  dialect const& d = conn.sql_dialect();
   std::string sql =
     update_statement(m, d, set_col_indices, where_col_indices);
   std::vector<std::size_t> const param_cols =
@@ -453,7 +441,7 @@ std::size_t update_rowwise(connection& conn, entity_meta const& m,
 std::size_t insert_rowwise(connection& conn, entity_meta const& m,
   void const* rows, std::size_t row_stride, std::size_t row_count,
   std::size_t batch_size) {
-  dialect const d = dialect::detect(conn.dbms_name());
+  dialect const& d = conn.sql_dialect();
   std::string sql = build_insert_sql(d, m);
   std::vector<std::size_t> const param_cols = all_columns(m);
 
@@ -482,7 +470,7 @@ std::size_t insert_rowwise(connection& conn, entity_meta const& m,
 std::size_t delete_rowwise(connection& conn, entity_meta const& m,
   std::vector<std::size_t> const& where_col_indices, void const* rows,
   std::size_t row_stride, std::size_t row_count, std::size_t batch_size) {
-  dialect const d = dialect::detect(conn.dbms_name());
+  dialect const& d = conn.sql_dialect();
   std::string sql = delete_statement(m, d, where_col_indices);
 
   std::size_t affected = 0;
@@ -640,7 +628,7 @@ std::size_t orm::insert_impl(connection& conn, entity_meta const& m,
 
   std::size_t inserted;
   if (conn.caps().columnar_batch) {
-    dialect const d = dialect::detect(conn.dbms_name());
+    dialect const& d = conn.sql_dialect();
     inserted = columnar_batch_write(conn, m, build_insert_sql(d, m),
       all_columns(m), rows, row_stride, row_count, chunk,
       row_tally::bound_rows);
@@ -690,7 +678,7 @@ std::size_t orm::update_batch_impl(connection& conn, entity_meta const& m,
 
   std::size_t updated;
   if (conn.caps().columnar_batch) {
-    dialect const d = dialect::detect(conn.dbms_name());
+    dialect const& d = conn.sql_dialect();
     updated = columnar_batch_write(conn, m,
       update_statement(m, d, set_cols, where_cols),
       concat_columns(set_cols, where_cols), rows, row_stride, row_count, chunk,
@@ -730,7 +718,7 @@ std::size_t orm::delete_batch_impl(connection& conn, entity_meta const& m,
 
   std::size_t deleted;
   if (conn.caps().columnar_batch) {
-    dialect const d = dialect::detect(conn.dbms_name());
+    dialect const& d = conn.sql_dialect();
     deleted = columnar_batch_write(conn, m,
       delete_statement(m, d, where_cols), where_cols, rows, row_stride,
       row_count, chunk, row_tally::affected_rows);

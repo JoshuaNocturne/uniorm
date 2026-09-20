@@ -104,6 +104,25 @@ void test_expression() {
     CHECK(d.pagination(std::nullopt, 0).empty());
   }
   {
+    // The policy that decides what a quoted name is spelled as. Keeping is
+    // what quoting alone did before it existed.
+    dialect keep;
+    CHECK(keep.identifiers == dialect::identifier_case::keep);
+    CHECK(keep.fold_identifier("User_Id") == "User_Id");
+    CHECK(keep.quote_identifier("User_Id") == "\"User_Id\"");
+
+    dialect lower;
+    lower.identifiers = dialect::identifier_case::lower;
+    CHECK(lower.fold_identifier("USER_ID") == "user_id");
+    CHECK(lower.quote_identifier("USER_ID") == "\"user_id\"");
+    // The server's own quote character survives the fold.
+    dialect mysql = dialect::detect("MySQL");
+    mysql.identifiers = dialect::identifier_case::upper;
+    CHECK(mysql.quote_identifier("user_id") == "`USER_ID`");
+    // Folding stops at ASCII, so a name in another alphabet is left alone.
+    CHECK(lower.fold_identifier("Stra\xc3\x9f" "e") == "stra\xc3\x9f" "e");
+  }
+  {
     dialect m = dialect::detect("MySQL");
     CHECK(m.quote_open == '`' && m.quote_close == '`');
     CHECK(m.quote_identifier("col") == "`col`");

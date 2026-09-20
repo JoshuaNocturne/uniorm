@@ -16,6 +16,7 @@
 #include <uniorm/connection.hpp>
 #include <uniorm/converter.hpp>
 #include <uniorm/decimal.hpp>
+#include <uniorm/detail/identifier.hpp>
 #include <uniorm/detail/time.hpp>
 #include <uniorm/dialect.hpp>
 #include <uniorm/mapping/registry.hpp>
@@ -83,6 +84,13 @@ struct converter<grade> {
   }
 };
 
+// Mapped by a name spelled the way this server does not store it, so the
+// spelling policy has something to reconcile.
+struct CaseUser {
+  std::int64_t id = 0;
+  std::string name;
+};
+
 }  // namespace uniorm
 
 namespace {
@@ -92,6 +100,9 @@ char const* k_pair_table = "uniorm_it_pair";
 char const* k_order_table = "uniorm_it_order";
 char const* k_dec_table = "uniorm_it_decimal";
 char const* k_money_table = "uniorm_it_money";
+// Unquoted DDL, so each server folds it the way it folds any name: MySQL and
+// MariaDB keep this spelling, PostgreSQL answers with all lower.
+char const* k_case_table = "UNIORM_IT_CASE_USER";
 std::string const long_note(1000, 'x');
 
 void prepare_schema(orm& db) {
@@ -126,6 +137,12 @@ void prepare_schema(orm& db) {
                       " amount DECIMAL(20,4) NOT NULL,"
                       " wide DECIMAL(65,30) NULL,"
                       " whole DECIMAL(20,0) NOT NULL)");
+  db.execute_update(std::string("DROP TABLE IF EXISTS ") + k_case_table);
+  db.execute_update(std::string("CREATE TABLE ") + k_case_table +
+                      " (ID BIGINT NOT NULL PRIMARY KEY,"
+                      " NAME VARCHAR(64) NOT NULL)");
+  db.execute_update(std::string("INSERT INTO ") + k_case_table +
+                      " (ID, NAME) VALUES (1, 'raised')");
 }
 
 void seed_rows(orm& db) {
@@ -477,6 +494,117 @@ void test_validate(std::string_view conn_string) {
     } catch (...) {
       CHECK(false);
     }
+  }
+}
+
+// The policy's live half: folding to the spelling this server stores has to
+// make both the check and the statement work, and missing it has to say so.
+void test_identifier_spelling(std::string_view conn_string) {
+  orm probe(conn_string);
+  auto& md = probe.schema();
+  std::string const lowered = detail::fold_lower(k_case_table);
+  std::string stored;
+  for (auto const& row : md.tables({}, {})) {
+    if (detail::fold_lower(row.name) == lowered) {
+      stored = row.name;
+      break;
+    }
+  }
+  CHECK(!stored.empty());
+  if (stored.empty()) {
+    return;
+  }
+
+  std::string const declared = stored == lowered ? k_case_table : lowered;
+  // A server whose catalog read answers the declared spelling leaves no table
+  // miss to name; the column check is exact, so the miss moves there.
+  bool const table_apart = md.shape({ {}, {}, declared }).empty();
+
+  // Declared opposite to the way this server reports a name, so whichever way
+  // it folds, the mapping starts out disagreeing with the catalog.
+  auto opposite = [](std::string const& name) {
+    return name == detail::fold_lower(name) ? detail::fold_upper(name)
+                                            : detail::fold_lower(name);
+  };
+  std::string reported_id;
+  std::string id_column;
+  std::string name_column;
+  for (auto const& column : md.shape({ {}, {}, stored })) {
+    std::string const folded = detail::fold_lower(column.name);
+    if (folded == "id") {
+      reported_id = column.name;
+      id_column = opposite(column.name);
+    } else if (folded == "name") {
+      name_column = opposite(column.name);
+    }
+  }
+  CHECK(!reported_id.empty() && !id_column.empty() && !name_column.empty());
+  if (id_column.empty() || name_column.empty()) {
+    return;
+  }
+
+  // The fold carrying one spelling onto the other; no answer where the two
+  // differ by more than case.
+  auto fold_to = [](std::string const& from, std::string const& to)
+    -> std::optional<dialect::identifier_case> {
+    if (detail::fold_upper(from) == to) {
+      return dialect::identifier_case::upper;
+    }
+    if (detail::fold_lower(from) == to) {
+      return dialect::identifier_case::lower;
+    }
+    return std::nullopt;
+  };
+  // How a server folds its table names and how it folds its column names are
+  // two facts, and one policy has to serve both: that is what this records.
+  std::printf("note: %s stores %s as %s and %s as %s\n",
+    probe.native_connection().dbms_name().c_str(), declared.c_str(),
+    stored.c_str(), id_column.c_str(), reported_id.c_str());
+  auto const table_fold = fold_to(declared, stored);
+  auto const column_fold = fold_to(id_column, reported_id);
+  CHECK(table_fold.has_value());
+  CHECK(table_fold == column_fold);
+  if (!table_fold || table_fold != column_fold) {
+    return;
+  }
+
+  orm db(conn_string);
+  db.map<CaseUser>(declared)
+    .primary_key(id_column, &CaseUser::id)
+    .column(name_column, &CaseUser::name);
+
+  // `keep` has to miss on every server, the question is only on which side.
+  std::string miss;
+  try {
+    db.validate();
+  } catch (mapping_error const& e) {
+    miss = e.what();
+  }
+  CHECK(!miss.empty());
+  if (miss.empty()) {
+    return;
+  }
+  if (table_apart) {
+    // The candidate carries the server's own schema qualification, so pin the
+    // stored spelling rather than the whole message.
+    CHECK(miss.find("table not found: " + declared) != std::string::npos);
+    CHECK(miss.find("only case differs from") != std::string::npos);
+    CHECK(miss.find(stored) != std::string::npos);
+  } else {
+    // The column registered first is the one the check reaches first.
+    std::string const head =
+      "column not found in table " + declared + ": " + id_column;
+    CHECK(miss.find(head) != std::string::npos);
+    CHECK(miss.find(reported_id) != std::string::npos);
+  }
+
+  db.identifier_case(*table_fold);
+  db.validate();
+  auto rows = db.query().of<CaseUser>().all();
+  CHECK(rows.size() == 1);
+  if (rows.size() == 1) {
+    CHECK(rows[0].id == 1);
+    CHECK(rows[0].name == "raised");
   }
 }
 
@@ -1176,6 +1304,7 @@ int main() {
     test_projection(db);
     test_converter_round_trip(db);
     test_validate(conn_string);
+    test_identifier_spelling(conn_string);
 
     test_query_builder(db);
     test_transaction(db);
@@ -1195,6 +1324,7 @@ int main() {
     db.execute_update(std::string("DROP TABLE ") + k_order_table);
     db.execute_update(std::string("DROP TABLE ") + k_dec_table);
     db.execute_update(std::string("DROP TABLE ") + k_money_table);
+    db.execute_update(std::string("DROP TABLE ") + k_case_table);
   } catch (std::exception const& e) {
     std::printf("FATAL: unexpected exception: %s\n", e.what());
     ++uniorm::test::failure_count();

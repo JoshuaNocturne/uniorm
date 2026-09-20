@@ -1541,7 +1541,14 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
 `in` 谓词、投影、构建器 `set`/批量 update、动态行 `get<T>`）、orm validate（含 strict
 的列缺失/可空/类型族三条失败路径）、查询构建器全谓词与分页（末了拿 `build_select()`
 的文本比对这条连接自己那家方言的引号；再把策略声明成 `upper` 重发一次——表名跟着升
-上去、原来那条小写断言反过来不成立，出口仍只有一处，随后退回 `keep`）、事务
+上去、原来那条小写断言反过来不成立，出口仍只有一处，随后退回 `keep`）、标识符拼法
+的活目录一半（`UNIORM_IT_CASE_USER` 这段建表 DDL 不加引号，于是它存成哪一侧由服务器
+自己的折叠决定；用例先读目录拿到存下的那一侧，把表名与两个列名都声明在相反的一侧。
+`keep` 下 `validate()` 必须落空——目录放过只差大小写的表名时，逐字比的列名一侧必响，
+所以这条断言不分腿成立；消息按先响的那一侧核对，目录分得开两种拼法就断表名候选、
+分不开就断列候选点名报表那一侧；再把策略折过去，断 `validate()` 通过且实体读回那一
+行。策略由表名与列名各自推出一次再要求相等：一家怎么折表名与怎么折列名是两桩事实，
+而一份策略要同时救整份映射；每格的实拼法无条件记一行 `note:`）、事务
 commit/rollback/析构回滚、批量插入（含空 optional 写 NULL、1500 行跨 `paramset_size` 分批）、批量 update / 批量 remove（实体版按主键与全字段两种 WHERE，含一张复合主键表验证单实体与批量都按全部键列命中、非键行不被牵连，动态版 `orm::update(table)` / `orm::remove(table)`，以及 `query<T>::set/update/remove` 与无 WHERE / 无 SET / WHERE 字段未映射的守卫抛错）、语句缓存（hit/miss 计数、流式 result_set 借出期间并发 miss、清空）、跨层错误上报（驱动失败以 `backend_error` 捕获，核对 `backend_name()`
 与 SQLSTATE 诊断）、连接池借还与超时、连接池维护（心跳保活计数、空闲超时驱逐、失败心跳丢弃；"排空"一律轮询等待而非单次采样，因为正被心跳的连接仍计入 `idle_count()`）；后续按库加条件标签覆盖方言与类型怪癖；
 - **性能基准**（已实现，ctest 标签 `perf`，`tests/perf/test_perf.cpp`）：

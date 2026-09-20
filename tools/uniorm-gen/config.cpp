@@ -1,9 +1,10 @@
 #include "config.hpp"
 
-#include <algorithm>
 #include <cctype>
 #include <string>
 #include <vector>
+
+#include "naming.hpp"
 
 namespace uniorm::gen {
 
@@ -35,12 +36,6 @@ std::string trim(std::string_view s) {
     --end;
   }
   return std::string(s.substr(begin, end - begin));
-}
-
-std::string to_upper(std::string s) {
-  std::transform(s.begin(), s.end(), s.begin(),
-    [](unsigned char c) { return std::toupper(c); });
-  return s;
 }
 
 // Reads a possibly-quoted token starting at pos; advances pos past it.
@@ -155,13 +150,13 @@ table_config& table_entry(
   if (name.empty()) {
     throw config_error(fail(line_no, "empty table name in section"));
   }
-  return cfg.tables[name];
+  return cfg.tables[fold_lower(name)];
 }
 
 void apply_setting(gen_config& cfg, std::vector<std::string> const& section,
   key_value const& kv, std::size_t line_no) {
   if (section.size() == 1 && section[0] == "types") {
-    cfg.type_overrides[to_upper(kv.key)] =
+    cfg.type_overrides[fold_upper(kv.key)] =
       parse_string_value(kv.value, line_no, "[types] value");
     return;
   }
@@ -181,7 +176,7 @@ void apply_setting(gen_config& cfg, std::vector<std::string> const& section,
       if (section[3].empty()) {
         throw config_error(fail(line_no, "empty column name in section"));
       }
-      column_override& c = t.columns[section[3]];
+      column_override& c = t.columns[fold_lower(section[3])];
       if (kv.key == "cpp_type") {
         c.cpp_type = parse_string_value(kv.value, line_no, "cpp_type");
       } else if (kv.key == "converter") {

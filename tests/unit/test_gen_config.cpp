@@ -51,6 +51,21 @@ void test_parse_quoted_table_name() {
         *cfg.tables.at("my.table").class_name == "X");
 }
 
+// Section keys are folded on the way in, so one file serves a catalog that
+// spells its tables another way.
+void test_parse_folds_section_keys() {
+  gen_config cfg = parse_config(
+    "[types]\nnumeric(10,2) = \"std::int64_t\"\n"
+    "[tables.T_USER]\nclass = \"User\"\n"
+    "[tables.T_USER.columns.Status]\ncpp_type = \"std::int16_t\"\n");
+
+  CHECK(cfg.type_overrides.at("NUMERIC(10,2)") == "std::int64_t");
+  table_config const& user = cfg.tables.at("t_user");
+  CHECK(user.class_name && *user.class_name == "User");
+  CHECK(user.columns.at("status").cpp_type &&
+        *user.columns.at("status").cpp_type == "std::int16_t");
+}
+
 void test_parse_errors() {
   CHECK_THROWS(parse_config("key = \"v\"\n"), config_error);
   CHECK_THROWS(parse_config("[unknown]\nk = \"v\"\n"), config_error);
@@ -73,5 +88,6 @@ void test_parse_errors() {
 void test_gen_config() {
   test_parse_sample();
   test_parse_quoted_table_name();
+  test_parse_folds_section_keys();
   test_parse_errors();
 }

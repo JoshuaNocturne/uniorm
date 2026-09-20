@@ -26,6 +26,9 @@ void test_naming() {
 
   CHECK(to_unit_name("My-DB.1") == "my_db_1");
   CHECK(to_unit_name("") == "_");
+
+  CHECK(fold_lower("USER_ID") == "user_id");
+  CHECK(fold_upper("numeric") == "NUMERIC");
 }
 
 column_model make_column(std::string name, sql_type type,
@@ -152,6 +155,130 @@ void test_generate_errors() {
   CHECK_THROWS(generate_header(make_fixture(), cfg), config_error);
 }
 
+// A config written against one catalog's spelling still applies to another's,
+// and the names reaching the SQL strings are the catalog's, not the config's.
+void test_generate_case_insensitive_config() {
+  gen_config cfg = parse_config(
+    "[tables.T_ORDER]\nclass = \"Order\"\n"
+    "[tables.T_ORDER.columns.STATUS]\ncpp_type = \"std::int16_t\"\n");
+  generated_output out = generate_header(make_fixture(), cfg);
+
+  CHECK(contains(out.text, "struct Order {"));
+  CHECK(contains(out.text, "std::optional<std::int16_t> status;"));
+  CHECK(contains(out.text, ".column(\"status\", &Order::status)"));
+}
+
+void test_generate_uppercase_catalog() {
+  schema_model model;
+  model.name = "db";
+  table_model table;
+  table.name = "USER_ACCOUNTS";
+  table.columns.push_back(
+    make_column("USER_ID", sql_type::bigint, "BIGINT", false, true));
+  model.tables.push_back(std::move(table));
+
+  gen_config cfg =
+    parse_config("[tables.user_accounts]\nclass = \"Account\"\n");
+  generated_output out = generate_header(model, cfg);
+
+  CHECK(contains(out.text, "struct Account {"));
+  CHECK(contains(out.text, "registry.map<Account>(\"USER_ACCOUNTS\")"));
+  CHECK(contains(out.text, ".primary_key(\"USER_ID\", &Account::userId)"));
+}
+
+// Two tables that arrive at one class name cannot both be declared, so the run
+// stops rather than write a header that will not compile.
+void test_generate_class_name_collision() {
+  schema_model model;
+  model.name = "db";
+  for (char const* name : { "user_accounts", "user_accounts_" }) {
+    table_model table;
+    table.name = name;
+    table.columns.push_back(
+      make_column("USER_ID", sql_type::bigint, "BIGINT", false, true));
+    model.tables.push_back(std::move(table));
+  }
+
+  CHECK_THROWS(generate_header(model, gen_config{}), config_error);
+  try {
+    generate_header(model, gen_config{});
+  } catch (config_error const& e) {
+    CHECK(std::string(e.what()) ==
+      "tables collide on one class name: 'UserAccounts' names user_accounts, "
+      "user_accounts_. Set class in one of their [tables.*] sections.");
+  }
+
+  gen_config cfg =
+    parse_config("[tables.user_accounts]\nclass = \"Legacy\"\n");
+  generated_output out = generate_header(model, cfg);
+  CHECK(contains(out.text, "struct Legacy {"));
+  CHECK(contains(out.text, "struct UserAccounts {"));
+}
+
+// Names differing by case alone are one config key, so a class override moves
+// both tables with it: the report has to rule that advice out.
+void test_generate_case_only_collision() {
+  schema_model model;
+  model.name = "db";
+  for (char const* name : { "users", "USERS" }) {
+    table_model table;
+    table.name = name;
+    table.columns.push_back(
+      make_column("ID", sql_type::bigint, "BIGINT", false, true));
+    model.tables.push_back(std::move(table));
+  }
+
+  CHECK_THROWS(generate_header(model, gen_config{}), config_error);
+  try {
+    generate_header(model, gen_config{});
+  } catch (config_error const& e) {
+    CHECK(std::string(e.what()) ==
+      "tables collide on one class name: 'Users' names users, USERS. users, "
+      "USERS differ by case alone, which no [tables.*] section can split: ask "
+      "for one of them with --tables.");
+  }
+
+  gen_config cfg = parse_config("[tables.users]\nclass = \"Legacy\"\n");
+  CHECK_THROWS(generate_header(model, cfg), config_error);
+  try {
+    generate_header(model, cfg);
+  } catch (config_error const& e) {
+    CHECK(contains(e.what(), "'Legacy' names users, USERS"));
+  }
+}
+
+void test_check_config() {
+  schema_model model = make_fixture();
+  std::vector<std::string> catalog = { "T_ORDER", "t_audit", "t_report" };
+
+  check_config(parse_config("[tables.T_ORDER.columns.STATUS]\n"
+                            "cpp_type = \"std::int16_t\"\n"
+                            "[tables.T_AUDIT]\nskip = true\n"),
+    model, catalog);
+  // A table this run left out reads no columns, so its block is not judged on
+  // names the catalog listing cannot settle.
+  check_config(
+    parse_config("[tables.t_report.columns.anything]\ncpp_type = \"double\"\n"),
+    model, catalog);
+
+  CHECK_THROWS(
+    check_config(parse_config("[tables.t_orders]\nskip = true\n"), model,
+      catalog),
+    config_error);
+  CHECK_THROWS(
+    check_config(parse_config("[tables.t_order.columns.status2]\n"
+                              "cpp_type = \"double\"\n"),
+      model, catalog),
+    config_error);
+
+  try {
+    check_config(
+      parse_config("[tables.t_orders]\nskip = true\n"), model, catalog);
+  } catch (config_error const& e) {
+    CHECK(std::string(e.what()).find("[tables.t_orders]") != std::string::npos);
+  }
+}
+
 void test_generate_real_warning() {
   schema_model model;
   model.name = "db";
@@ -175,4 +302,9 @@ void test_gen_output() {
   test_generate_decimal_member();
   test_generate_errors();
   test_generate_real_warning();
+  test_generate_case_insensitive_config();
+  test_generate_uppercase_catalog();
+  test_generate_class_name_collision();
+  test_generate_case_only_collision();
+  test_check_config();
 }

@@ -26,8 +26,9 @@ struct table_config {
 };
 
 struct gen_config {
-  // Keys are stored uppercased so matching is case-insensitive; a key may
-  // carry precision, e.g. "NUMERIC(10,2)".
+  // Keys are folded so matching is case-insensitive: type keys uppercased, a
+  // table or column key lowercased and compared against the catalog name
+  // folded the same way. A type key may carry precision, e.g. "NUMERIC(10,2)".
   std::unordered_map<std::string, std::string> type_overrides;
   std::unordered_map<std::string, table_config> tables;
 };

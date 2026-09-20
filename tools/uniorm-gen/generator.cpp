@@ -2,8 +2,12 @@
 
 #include <algorithm>
 #include <cctype>
+#include <map>
+#include <optional>
 #include <string>
 #include <unordered_set>
+#include <utility>
+#include <vector>
 
 #include "naming.hpp"
 #include "uniorm/types.hpp"
@@ -11,12 +15,6 @@
 namespace uniorm::gen {
 
 namespace {
-
-std::string to_upper(std::string s) {
-  std::transform(s.begin(), s.end(), s.begin(),
-    [](unsigned char c) { return std::toupper(c); });
-  return s;
-}
 
 std::string normalize_type(std::string t) {
   t.erase(std::remove_if(t.begin(), t.end(),
@@ -97,7 +95,7 @@ std::string default_cpp_type(
 
 std::string const* find_type_override(
   column_model const& col, gen_config const& cfg) {
-  std::string base = to_upper(col.type_name);
+  std::string base = fold_upper(col.type_name);
   std::string with_ps = base + "(" + std::to_string(col.size) + "," +
                         std::to_string(col.decimals) + ")";
   auto it = cfg.type_overrides.find(with_ps);
@@ -141,11 +139,89 @@ struct member_info {
   bool through_converter = false;
 };
 
+// The override block a config section leaves for this table, matched with the
+// catalog name folded the way config keys are stored.
+table_config const* table_config_for(
+  gen_config const& cfg, table_model const& table) {
+  auto it = cfg.tables.find(fold_lower(table.name));
+  return it != cfg.tables.end() ? &it->second : nullptr;
+}
+
+// The class a table contributes, nothing when the config skips it. One answer
+// feeds both the struct and the register function, so they cannot drift.
+std::optional<std::string> emitted_class(
+  gen_config const& cfg, table_model const& table) {
+  table_config const* tcfg = table_config_for(cfg, table);
+  if (tcfg == nullptr) {
+    return to_pascal_case(table.name);
+  }
+  if (tcfg->skip) {
+    return std::nullopt;
+  }
+  return tcfg->class_name ? *tcfg->class_name : to_pascal_case(table.name);
+}
+
+std::string join(std::vector<std::string> const& items,
+  std::string_view separator) {
+  std::string out;
+  for (std::size_t i = 0; i < items.size(); ++i) {
+    if (i != 0) {
+      out += separator;
+    }
+    out += items[i];
+  }
+  return out;
+}
+
+// What one collision costs the run, and what can undo it. A class override
+// works while the tables have distinct config keys; names differing by case
+// alone share one key, so no section reaches one of them without the other.
+std::string collision_report(std::string const& class_name,
+  std::vector<std::string> const& tables) {
+  std::map<std::string, std::vector<std::string>> by_key;
+  for (std::string const& name : tables) {
+    by_key[fold_lower(name)].push_back(name);
+  }
+  std::vector<std::string> twins;
+  for (auto const& folded : by_key) {
+    if (folded.second.size() > 1) {
+      twins.push_back(join(folded.second, ", "));
+    }
+  }
+  std::string out = "'" + class_name + "' names " + join(tables, ", ");
+  if (twins.empty()) {
+    return out + ". Set class in one of their [tables.*] sections.";
+  }
+  return out + ". " + join(twins, ", ") +
+    " differ by case alone, which no [tables.*] section can split: ask for "
+    "one of them with --tables.";
+}
+
+// Two tables reaching the same class name would declare one struct twice, and
+// the header would not compile, so the run stops with the tables and the way
+// out named.
+void check_class_names(
+  std::vector<std::pair<table_model const*, std::string>> const& emitted) {
+  std::map<std::string, std::vector<std::string>> names;
+  for (auto const& [table, class_name] : emitted) {
+    names[class_name].push_back(table->name);
+  }
+  std::vector<std::string> collisions;
+  for (auto const& [class_name, tables] : names) {
+    if (tables.size() > 1) {
+      collisions.push_back(collision_report(class_name, tables));
+    }
+  }
+  if (collisions.empty()) {
+    return;
+  }
+  throw config_error(
+    "tables collide on one class name: " + join(collisions, "; "));
+}
+
 std::vector<member_info> build_members(
   table_model const& table, gen_config const& cfg, generated_output& out) {
-  auto table_it = cfg.tables.find(table.name);
-  table_config const* tcfg =
-    table_it != cfg.tables.end() ? &table_it->second : nullptr;
+  table_config const* tcfg = table_config_for(cfg, table);
 
   std::vector<member_info> members;
   std::unordered_set<std::string> used;
@@ -155,7 +231,7 @@ std::vector<member_info> build_members(
 
     column_override const* ovr = nullptr;
     if (tcfg != nullptr) {
-      auto c_it = tcfg->columns.find(col.shape.name);
+      auto c_it = tcfg->columns.find(fold_lower(col.shape.name));
       if (c_it != tcfg->columns.end()) {
         ovr = &c_it->second;
       }
@@ -191,16 +267,8 @@ std::vector<member_info> build_members(
 }
 
 void emit_table(std::string& text, table_model const& table,
-  gen_config const& cfg, generated_output& out) {
-  auto table_it = cfg.tables.find(table.name);
-  if (table_it != cfg.tables.end() && table_it->second.skip) {
-    return;
-  }
-  std::string class_name =
-    (table_it != cfg.tables.end() && table_it->second.class_name)
-      ? *table_it->second.class_name
-      : to_pascal_case(table.name);
-
+  gen_config const& cfg, std::string const& class_name,
+  generated_output& out) {
   std::vector<member_info> members = build_members(table, cfg, out);
 
   text += "// table: " + table.name + "\n";
@@ -279,25 +347,69 @@ generated_output generate_header(
   text += "#include <uniorm/mapping/registry.hpp>\n\n";
   text += "namespace " + unit + " {\n\n";
 
+  std::vector<std::pair<table_model const*, std::string>> emitted;
   for (table_model const& table : model.tables) {
-    emit_table(text, table, cfg, out);
+    if (std::optional<std::string> class_name = emitted_class(cfg, table)) {
+      emitted.emplace_back(&table, std::move(*class_name));
+    }
+  }
+  check_class_names(emitted);
+
+  for (auto const& [table, class_name] : emitted) {
+    emit_table(text, *table, cfg, class_name, out);
   }
 
   text += "inline void register_" + unit + "_schema(uniorm::orm& registry) {\n";
-  for (table_model const& table : model.tables) {
-    auto table_it = cfg.tables.find(table.name);
-    if (table_it != cfg.tables.end() && table_it->second.skip) {
-      continue;
-    }
-    std::string class_name =
-      (table_it != cfg.tables.end() && table_it->second.class_name)
-        ? *table_it->second.class_name
-        : to_pascal_case(table.name);
+  for (auto const& [table, class_name] : emitted) {
     text += "  register_" + class_name + "_mapping(registry);\n";
   }
   text += "}\n\n";
   text += "}  // namespace " + unit + "\n";
   return out;
+}
+
+void check_config(gen_config const& cfg, schema_model const& model,
+  std::vector<std::string> const& catalog_tables) {
+  std::unordered_set<std::string> listed;
+  for (std::string const& name : catalog_tables) {
+    listed.insert(fold_lower(name));
+  }
+
+  std::vector<std::string> offenders;
+  for (auto const& [key, tcfg] : cfg.tables) {
+    // Keys arrive folded, so a miss is a name the catalog does not have; the
+    // printed form is folded with it.
+    if (listed.count(key) == 0) {
+      offenders.push_back("[tables." + key + "]");
+      continue;
+    }
+    table_model const* table = nullptr;
+    for (table_model const& m : model.tables) {
+      if (fold_lower(m.name) == key) {
+        table = &m;
+        break;
+      }
+    }
+    // A table this run left out reports no columns to check against.
+    if (table == nullptr) {
+      continue;
+    }
+    std::unordered_set<std::string> columns;
+    for (column_model const& c : table->columns) {
+      columns.insert(fold_lower(c.shape.name));
+    }
+    for (auto const& [column, ovr] : tcfg.columns) {
+      if (columns.count(column) == 0) {
+        offenders.push_back("[tables." + key + ".columns." + column + "]");
+      }
+    }
+  }
+  if (offenders.empty()) {
+    return;
+  }
+  std::sort(offenders.begin(), offenders.end());
+  throw config_error(
+    "config names no table or column: " + join(offenders, ", "));
 }
 
 }  // namespace uniorm::gen

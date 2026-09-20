@@ -18,8 +18,8 @@ struct read_options {
 // Builds the generator's schema snapshot out of a backend's introspection.
 // Which reads a backend performs is the backend's business; what to keep of
 // them is decided here. Catalog oddities (a table that came back without
-// columns) are appended to *warnings when it is non-null. Throws
-// uniorm_error when a named table is missing.
+// columns, a primary key naming no column) are appended to *warnings when it is
+// non-null. Throws uniorm_error when a named table is missing.
 schema_model read_schema(schema_meta& md,
   read_options const& opts, std::vector<std::string>* warnings = nullptr);
 

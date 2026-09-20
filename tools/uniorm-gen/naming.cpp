@@ -14,10 +14,7 @@ std::vector<std::string> split_words(std::string_view s) {
   std::string current;
   auto flush = [&] {
     if (!current.empty()) {
-      for (char& c : current) {
-        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-      }
-      words.push_back(std::move(current));
+      words.push_back(fold_lower(current));
       current.clear();
     }
   };

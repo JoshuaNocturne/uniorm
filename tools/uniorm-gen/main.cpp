@@ -25,7 +25,10 @@ char const* k_usage =
   "\n"
   "Extracts the schema of a live database through uniorm's backend\n"
   "introspection and writes <out>/<name>_schema.hpp with entity structs\n"
-  "and a register_<name>_schema(uniorm::orm&) function.\n";
+  "and a register_<name>_schema(uniorm::orm&) function.\n"
+  "\n"
+  "--catalog, --schema and --tables name objects, they are not ODBC\n"
+  "patterns: a name is matched for that name, case aside.\n";
 
 bool read_flag(std::vector<std::string> const& args, std::string_view prefix,
   std::string& out) {
@@ -132,12 +135,23 @@ int main(int argc, char** argv) {
     uniorm::gen::schema_model model =
       uniorm::gen::read_schema(md, opts, &warnings);
     model.name = unit;
-
-    uniorm::gen::generated_output out =
-      uniorm::gen::generate_header(model, cfg);
     for (std::string const& w : warnings) {
       std::cerr << "warning: " << w << "\n";
     }
+
+    // A section that matches nothing is an override silently ignored, so
+    // every config table is checked against the catalog. That read lists the
+    // whole catalog, so it happens only when there is a section to check.
+    if (!cfg.tables.empty()) {
+      std::vector<std::string> listed;
+      for (auto const& row : md.tables(opts.catalog, opts.schema)) {
+        listed.push_back(row.name);
+      }
+      uniorm::gen::check_config(cfg, model, listed);
+    }
+
+    uniorm::gen::generated_output out =
+      uniorm::gen::generate_header(model, cfg);
     for (std::string const& w : out.warnings) {
       std::cerr << "warning: " << w << "\n";
     }

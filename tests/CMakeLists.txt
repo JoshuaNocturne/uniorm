@@ -27,6 +27,7 @@ if(UNIORM_BUILD_TOOLS)
     target_sources(uniorm_unit_tests PRIVATE
         unit/test_gen_config.cpp
         unit/test_gen_output.cpp
+        unit/test_gen_reader.cpp
     )
     target_link_libraries(uniorm_unit_tests PRIVATE uniorm_gen_core)
     target_compile_definitions(uniorm_unit_tests PRIVATE UNIORM_TEST_GEN)

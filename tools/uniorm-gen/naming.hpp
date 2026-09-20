@@ -3,6 +3,8 @@
 #include <string>
 #include <string_view>
 
+#include <uniorm/detail/identifier.hpp>
+
 namespace uniorm::gen {
 
 // t_user -> TUser; splits on '_'/'-' and on case boundaries. The result is
@@ -16,5 +18,10 @@ std::string to_camel_case(std::string_view identifier);
 // Lowercase [a-z0-9_] identifier suitable for namespace/header names; a
 // leading digit gains a '_' prefix. Never returns an empty string.
 std::string to_unit_name(std::string_view identifier);
+
+// Comparing a declared name with a catalog name uses the core's one ASCII
+// folding: the generator keeps no rule of its own to diverge by.
+using uniorm::detail::fold_lower;
+using uniorm::detail::fold_upper;
 
 }  // namespace uniorm::gen

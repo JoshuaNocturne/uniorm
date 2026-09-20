@@ -1,12 +1,12 @@
 #include "schema_reader.hpp"
 
 #include <algorithm>
-#include <cctype>
 #include <iterator>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "naming.hpp"
 #include "uniorm/error.hpp"
 
 namespace uniorm::gen {
@@ -14,12 +14,6 @@ namespace uniorm::gen {
 namespace {
 
 using meta = schema_meta;
-
-std::string to_lower(std::string s) {
-  std::transform(s.begin(), s.end(), s.begin(),
-    [](unsigned char c) { return std::tolower(c); });
-  return s;
-}
 
 // The identity the backend listed the table under, which is what the
 // per-table reads have to be narrowed by.
@@ -53,8 +47,9 @@ std::vector<table_model> list_tables(
     if (hit == nullptr) {
       // Some servers (lower_case_table_names) report table names with
       // different case than requested.
+      std::string const folded = fold_lower(want);
       for (table_model const& have : all) {
-        if (to_lower(have.name) == to_lower(want)) {
+        if (fold_lower(have.name) == folded) {
           hit = &have;
           break;
         }
@@ -80,14 +75,29 @@ void read_columns(meta& md, table_model& table) {
   }
 }
 
-void read_primary_keys(meta& md, table_model& table) {
+// Reports the key names that matched no column: a second catalog read spelling
+// the same column differently would otherwise drop the flag in silence.
+std::vector<std::string> read_primary_keys(meta& md, table_model& table) {
+  std::vector<std::string> unmatched;
   for (std::string const& pk : md.primary_key(ref_of(table))) {
-    for (column_model& c : table.columns) {
-      if (c.shape.name == pk) {
-        c.primary_key = true;
-      }
+    auto hit = std::find_if(table.columns.begin(), table.columns.end(),
+      [&](column_model const& c) { return c.shape.name == pk; });
+    if (hit != table.columns.end()) {
+      hit->primary_key = true;
+      continue;
     }
+    std::string folded = fold_lower(pk);
+    auto alt = std::find_if(table.columns.begin(), table.columns.end(),
+      [&](column_model const& c) {
+        return fold_lower(c.shape.name) == folded;
+      });
+    std::string name = pk;
+    if (alt != table.columns.end()) {
+      name += " (only case differs from '" + alt->shape.name + "')";
+    }
+    unmatched.push_back(std::move(name));
   }
+  return unmatched;
 }
 
 void read_foreign_keys(meta& md, table_model& table) {
@@ -122,19 +132,39 @@ void read_indexes(meta& md, table_model& table) {
   }
 }
 
+// The catalog reads ask by name, so a wildcard in one of these arguments
+// stands for itself and narrows the list to nothing. Saying so beats an empty
+// run.
+void warn_pattern(std::string_view flag, std::string_view value,
+  std::vector<std::string>* warnings) {
+  if (warnings != nullptr && value.find('%') != std::string_view::npos) {
+    warnings->push_back(std::string(flag) + "='" + std::string(value) +
+                        "': catalog names are asked as names, '%' is not a "
+                        "wildcard here");
+  }
+}
+
 }  // namespace
 
 schema_model read_schema(schema_meta& md,
   read_options const& opts, std::vector<std::string>* warnings) {
   schema_model model;
+  warn_pattern("--catalog", opts.catalog, warnings);
+  warn_pattern("--schema", opts.schema, warnings);
   auto tables = list_tables(md, opts);
   for (table_model& table : tables) {
     read_columns(md, table);
-    read_primary_keys(md, table);
+    std::vector<std::string> unmatched = read_primary_keys(md, table);
     read_foreign_keys(md, table);
     read_indexes(md, table);
-    if (table.columns.empty() && warnings != nullptr) {
-      warnings->push_back("table has no columns: " + table.name);
+    if (warnings != nullptr) {
+      if (table.columns.empty()) {
+        warnings->push_back("table has no columns: " + table.name);
+      }
+      for (std::string const& pk : unmatched) {
+        warnings->push_back(
+          table.name + ": primary key names no such column: " + pk);
+      }
     }
     model.tables.push_back(std::move(table));
   }

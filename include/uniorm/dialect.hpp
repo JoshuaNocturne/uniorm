@@ -23,7 +23,7 @@ struct UNIORM_API dialect {
   identifier_case identifiers = identifier_case::keep;
 
   // The name as this dialect will put it in SQL, quotes aside. Catalog reads
-  // ask by it, so what a mapping validates is what it will emit.
+  // ask by it, so a miss is reported in the spelling the statement uses.
   std::string fold_identifier(std::string_view identifier) const;
   std::string quote_identifier(std::string_view identifier) const;
   std::string pagination(

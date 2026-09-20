@@ -782,9 +782,8 @@ class orm {                             // 非线程安全，按线程/会话持
     void validate(validation_mode mode = validation_mode::strict);
     // 不接 connection 参数：经 schema() 取表元数据（每表一次 shape()，
     // backend 不提供自省即抛 capability_not_supported）。每个名字都按连接的
-    // 拼法策略折过再去问目录，于是"校验通过"与"查询发得出"是同一件事（§4.8）。
-    // 落空的消息点名目录里那一侧：唯一只差大小写的同名对象会被带出来，两边都不
-    // 差时不提。逐实体核对：
+    // 拼法策略折过再去问目录（§4.8）。落空的消息点名目录里那一侧：唯一只差大
+    // 小写的同名对象会被带出来，两边都不差时不提。逐实体核对：
     //  - 表不存在（形状为空）         → mapping_error
     //  - 列缺失                       → mapping_error
     //  - 列可空但成员非 optional      → strict 抛 mapping_error / lenient 放行
@@ -942,8 +941,8 @@ struct dialect {
     bool ansi_pagination = true;                  // false → LIMIT/OFFSET
     identifier_case identifiers = identifier_case::keep;
 
-    // 这个名字将以什么拼法进 SQL（引号除外）。目录读取也按它问，
-    // 于是 validate() 校验收的正是查询会发出去的那个名字（§4.7）
+    // 这个名字将以什么拼法进 SQL（引号除外）。目录读取也按它问，所以落空时
+    // 报的就是查询要发出去的那个名字（§4.7）
     std::string fold_identifier(std::string_view identifier) const;
     std::string quote_identifier(std::string_view identifier) const;   // 先折叠后加引号
     // ANSI: " OFFSET n ROWS FETCH NEXT m ROWS ONLY"；否则 " LIMIT m OFFSET n"

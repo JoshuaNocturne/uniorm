@@ -42,8 +42,9 @@ inline column_shape const* find_column(
 }
 
 struct schema_meta {
-  // Names a table for the per-table reads. An empty catalog or schema
-  // leaves that part to whatever the connection already sees.
+  // Every name here is asked for as a name, not a pattern, and a read answers
+  // with the rows the server reports under that name. An empty catalog or
+  // schema leaves that part to whatever the connection already sees.
   struct table_ref {
     std::string catalog;
     std::string schema;

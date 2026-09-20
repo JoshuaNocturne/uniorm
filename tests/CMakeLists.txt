@@ -37,6 +37,7 @@ if(UNIORM_BACKEND_ODBC)
     add_executable(uniorm_odbc_unit_tests
         unit/test_odbc_main.cpp
         unit/test_odbc_handles.cpp
+        unit/test_odbc_catalog.cpp
     )
     target_link_libraries(uniorm_odbc_unit_tests PRIVATE uniorm::uniorm ODBC::ODBC)
     # White-box test of the private ODBC handle layer (src/odbc/).

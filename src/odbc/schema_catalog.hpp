@@ -7,10 +7,21 @@
 #include <string_view>
 #include <vector>
 
+#include <uniorm/detail/identifier.hpp>
 #include <uniorm/schema.hpp>
 #include "connection.hpp"
 
 namespace uniorm::odbc {
+
+// The catalog calls take their names as pattern values, so a driver may
+// answer with objects nobody asked about. A row whose reported name differs
+// from the one asked for is such a row; case alone is not a difference, and
+// a name the driver left out or an argument left wide open keeps the row.
+inline bool catalog_name_matches(
+  std::string_view asked, std::string_view reported) {
+  return asked.empty() || reported.empty() ||
+    uniorm::detail::fold_lower(asked) == uniorm::detail::fold_lower(reported);
+}
 
 struct odbc_schema_meta : schema_meta {
   explicit odbc_schema_meta(connection& conn) : conn_(conn) {}

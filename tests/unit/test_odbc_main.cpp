@@ -1,10 +1,12 @@
 #include "check.hpp"
 
 void test_odbc_handles();
+void test_odbc_catalog_name_matches();
 void test_odbc_error_is_backend_error();
 
 int main() {
   test_odbc_handles();
+  test_odbc_catalog_name_matches();
   test_odbc_error_is_backend_error();
 
   int failures = uniorm::test::failure_count();

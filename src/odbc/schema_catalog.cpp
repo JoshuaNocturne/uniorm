@@ -50,6 +50,32 @@ struct char_buffer {
   }
 };
 
+// The three name columns a catalog result leads its rows with, bound at a
+// column offset: 1 for SQLTables, SQLColumns, SQLPrimaryKeys and
+// SQLStatistics; 5 for the foreign-key table of SQLForeignKeys. A row whose
+// names are not the ones asked for describes another object.
+struct reported_names {
+  char_buffer catalog;
+  char_buffer schema;
+  char_buffer table;
+
+  void bind(odbc::statement& stmt, SQLUSMALLINT first) {
+    stmt.bind_column(
+      first, SQL_C_CHAR, catalog.data, sizeof(catalog.data), &catalog.ind);
+    stmt.bind_column(
+      first + 1, SQL_C_CHAR, schema.data, sizeof(schema.data), &schema.ind);
+    stmt.bind_column(
+      first + 2, SQL_C_CHAR, table.data, sizeof(table.data), &table.ind);
+  }
+
+  bool asked_as(std::string_view catalog_name, std::string_view schema_name,
+    std::string_view table_name) const {
+    return catalog_name_matches(catalog_name, catalog.str()) &&
+      catalog_name_matches(schema_name, schema.str()) &&
+      catalog_name_matches(table_name, table.str());
+  }
+};
+
 // A catalog name. SQLGetInfo reports the length it wrote itself, so there
 // is no indicator to consult, and the buffer may have been the limit.
 std::string info_text(SQLHDBC dbc, SQLUSMALLINT info) {
@@ -83,19 +109,9 @@ std::vector<meta::table_row> odbc_schema_meta::tables(
     nullptr, 0, nullptr, 0);
   odbc::throw_if_error(rc, SQL_HANDLE_STMT, stmt.native(), "SQLTables");
 
-  char_buffer table_catalog;
-  char_buffer table_schema;
-  char_buffer table_name;
+  reported_names names;
   char_buffer table_type;
-  stmt.bind_column(
-    1, SQL_C_CHAR, table_catalog.data, sizeof(table_catalog.data),
-    &table_catalog.ind);
-  stmt.bind_column(
-    2, SQL_C_CHAR, table_schema.data, sizeof(table_schema.data),
-    &table_schema.ind);
-  stmt.bind_column(
-    3, SQL_C_CHAR, table_name.data, sizeof(table_name.data),
-    &table_name.ind);
+  names.bind(stmt, 1);
   stmt.bind_column(
     4, SQL_C_CHAR, table_type.data, sizeof(table_type.data),
     &table_type.ind);
@@ -108,8 +124,11 @@ std::vector<meta::table_row> odbc_schema_meta::tables(
     if (type != "TABLE" && type != "BASE TABLE") {
       continue;
     }
-    rows.push_back(
-      table_row{ table_catalog.str(), table_schema.str(), table_name.str() });
+    if (!names.asked_as(catalog, schema, {})) {
+      continue;
+    }
+    rows.push_back(table_row{
+      names.catalog.str(), names.schema.str(), names.table.str() });
   }
   return rows;
 }
@@ -129,6 +148,7 @@ std::vector<meta::column_row> odbc_schema_meta::table_columns(
   odbc::throw_if_error(
     rc, SQL_HANDLE_STMT, stmt.native(), "SQLColumns(" + tbl + ")");
 
+  reported_names names;
   char_buffer name;
   char_buffer type_name;
   char_buffer default_value;
@@ -141,6 +161,7 @@ std::vector<meta::column_row> odbc_schema_meta::table_columns(
   SQLSMALLINT nullable = SQL_NO_NULLS;
   SQLLEN nullable_ind = SQL_NULL_DATA;
 
+  names.bind(stmt, 1);
   stmt.bind_column(4, SQL_C_CHAR, name.data, sizeof(name.data), &name.ind);
   stmt.bind_column(
     5, SQL_C_SLONG, &data_type, sizeof(data_type), &data_type_ind);
@@ -157,7 +178,7 @@ std::vector<meta::column_row> odbc_schema_meta::table_columns(
 
   std::vector<column_row> rows;
   while (stmt.fetch()) {
-    if (name.is_null()) {
+    if (name.is_null() || !names.asked_as(cat, sch, tbl)) {
       continue;
     }
     column_row row;
@@ -193,12 +214,14 @@ std::vector<std::string> odbc_schema_meta::primary_key(
   odbc::throw_if_error(
     rc, SQL_HANDLE_STMT, stmt.native(), "SQLPrimaryKeys(" + tbl + ")");
 
+  reported_names names;
   char_buffer name;
+  names.bind(stmt, 1);
   stmt.bind_column(4, SQL_C_CHAR, name.data, sizeof(name.data), &name.ind);
 
   std::vector<std::string> columns;
   while (stmt.fetch()) {
-    if (!name.is_null()) {
+    if (!name.is_null() && names.asked_as(cat, sch, tbl)) {
       columns.push_back(name.str());
     }
   }
@@ -226,15 +249,20 @@ std::vector<meta::foreign_key_row> odbc_schema_meta::foreign_keys(
   char_buffer pk_table;
   char_buffer pk_column;
   char_buffer fk_column;
+  reported_names names;
   stmt.bind_column(
     3, SQL_C_CHAR, pk_table.data, sizeof(pk_table.data), &pk_table.ind);
   stmt.bind_column(
     4, SQL_C_CHAR, pk_column.data, sizeof(pk_column.data), &pk_column.ind);
+  names.bind(stmt, 5);
   stmt.bind_column(
     8, SQL_C_CHAR, fk_column.data, sizeof(fk_column.data), &fk_column.ind);
 
   std::vector<foreign_key_row> rows;
   while (stmt.fetch()) {
+    if (!names.asked_as(cat, sch, tbl)) {
+      continue;
+    }
     rows.push_back(foreign_key_row{
       pk_table.str(), pk_column.str(), fk_column.str() });
   }
@@ -257,6 +285,7 @@ std::vector<meta::index_row> odbc_schema_meta::indexes(
   odbc::throw_if_error(
     rc, SQL_HANDLE_STMT, stmt.native(), "SQLStatistics(" + tbl + ")");
 
+  reported_names names;
   SQLSMALLINT non_unique = 0;
   SQLLEN non_unique_ind = SQL_NULL_DATA;
   char_buffer index_name;
@@ -264,6 +293,7 @@ std::vector<meta::index_row> odbc_schema_meta::indexes(
   SQLLEN row_type_ind = SQL_NULL_DATA;
   char_buffer column;
 
+  names.bind(stmt, 1);
   stmt.bind_column(
     4, SQL_C_SSHORT, &non_unique, sizeof(non_unique), &non_unique_ind);
   stmt.bind_column(
@@ -275,6 +305,9 @@ std::vector<meta::index_row> odbc_schema_meta::indexes(
 
   std::vector<index_row> rows;
   while (stmt.fetch()) {
+    if (!names.asked_as(cat, sch, tbl)) {
+      continue;
+    }
     // TYPE names what the row describes: only the plain index rows are
     // indexes, the rest are the table-statistics pseudo row and the
     // clustered or hash accesses an index may also enable.

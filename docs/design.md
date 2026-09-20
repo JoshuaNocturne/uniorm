@@ -1547,7 +1547,8 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
 所以这条断言不分腿成立；消息按先响的那一侧核对，目录分得开两种拼法就断表名候选、
 分不开就断列候选点名报表那一侧；再把策略折过去，断 `validate()` 通过且实体读回那一
 行。策略由表名与列名各自推出一次再要求相等：一家怎么折表名与怎么折列名是两桩事实，
-而一份策略要同时救整份映射；每格的实拼法无条件记一行 `note:`）、事务
+而一份策略要同时救整份映射；每格的实拼法无条件记一行 `note:`，而通过的用例 ctest 不
+出它的输出，故作业以 `-V` 跑）、事务
 commit/rollback/析构回滚、批量插入（含空 optional 写 NULL、1500 行跨 `paramset_size` 分批）、批量 update / 批量 remove（实体版按主键与全字段两种 WHERE，含一张复合主键表验证单实体与批量都按全部键列命中、非键行不被牵连，动态版 `orm::update(table)` / `orm::remove(table)`，以及 `query<T>::set/update/remove` 与无 WHERE / 无 SET / WHERE 字段未映射的守卫抛错）、语句缓存（hit/miss 计数、流式 result_set 借出期间并发 miss、清空）、跨层错误上报（驱动失败以 `backend_error` 捕获，核对 `backend_name()`
 与 SQLSTATE 诊断）、连接池借还与超时、连接池维护（心跳保活计数、空闲超时驱逐、失败心跳丢弃；"排空"一律轮询等待而非单次采样，因为正被心跳的连接仍计入 `idle_count()`）；后续按库加条件标签覆盖方言与类型怪癖；
 - **性能基准**（已实现，ctest 标签 `perf`，`tests/perf/test_perf.cpp`）：
@@ -1635,6 +1636,7 @@ commit/rollback/析构回滚、批量插入（含空 optional 写 NULL、1500 �
   但不 `-Werror`，免得依赖头升级把与回归无关的红压进分支。三条数据库腿各有一道报警：
   测试连不上就返回 77，而 ctest 把 77 记成 Skip 并照样打印"100% tests passed"，所以作业
   见到输出里的 `Skipped` 即判失败（真正的失败交给 `set -o pipefail`，测试条数不写死），
+  且以 `-V` 跑（§8 那条 `note:` 出自通过的用例，ctest 默认不出其输出），
   并在构建之前先用 `isql` 问过是哪台服务端答的：每条腿带一个 `server_prefix`（引号不能省，
   `11.` 裸写会被 YAML 读成数字 11，那前缀任何 MariaDB banner 都对得上），拿**该腿自己的**
   那句版本查询的 banner 去比前缀，对不上即红——问哪句也是服务端自己的选择，PostgreSQL 的

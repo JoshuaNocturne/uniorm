@@ -45,14 +45,17 @@ ODBC 驱动的数据库，而不依赖特定厂商的 C 客户端。实体映射
   `shape()` 把一张表约成 `column_shape` 列表——`validate()` 校验映射时读的正是
   它——于是生成器与校验器走同一份契约
 - **方言自适应**：标识符引号与分页语法按 `SQL_DBMS_NAME` 推断
-  （MySQL/MariaDB 用反引号 + LIMIT/OFFSET，其余 ANSI）
+  （MySQL/MariaDB 用反引号 + LIMIT/OFFSET，其余 ANSI）；标识符拼法另有一把部署级
+  开关，`keep`（默认，原样）/ `lower` / `upper`，作用在标识符进 SQL 的那一处，
+  `validate()` 问目录时也按它折
 - **代码生成**：`uniorm-gen` 连活库，经 backend 自省读取 schema，生成实体
   struct + 注册函数（TOML 覆写类型/类名/跳过表）
 - **可插拔 backend**：核心 API 构建在驱动中立的 backend 接口之上，连接串
   scheme 选择后端（`odbc://...`；裸 ODBC 连接串保持向后兼容），而目前落地实现
   的后端只有 ODBC 一个。目录读取也是这份接口的一部分（`schema()`），没有目录
-  的 backend 于是答 `capability_not_supported`，而不是在某次读取内部失败；
-  能力按后端声明，但目前被读的只有两个：`columnar_batch` 选批量写的那条通道，
+  的 backend 于是答 `capability_not_supported`，而不是在某次读取内部失败；这里的每
+  个名字都按名字问、不按 pattern 问，一次读取因此只带回服务端在该名下报出的行。能力
+  清单里只有核心真会分岔的两条：`columnar_batch` 选批量写的那条通道，
   `array_rowcount_totals` 决定数受累行数的扫描怎么分批
 
 ## 要求
@@ -208,6 +211,25 @@ if (auto const* id = uniorm::find_column(shape, "id")) {
 里写明 schema。这个引用属于所借的那条连接，`disconnect()` 或重新借出都会让它
 失效，别缓存它。
 
+### 标识符拼法
+
+映射声明的名字只经一处进 SQL，而那一个名字该以哪种拼法进 SQL 是部署级的事实：
+Oracle 存 `USERS`，PostgreSQL 存 `users`，Linux 上的 MySQL 存的正是 `CREATE TABLE`
+当时写下的那一种。
+
+```cpp
+db.identifier_case(uniorm::dialect::identifier_case::upper);  // 默认 keep
+```
+
+默认的 `keep` 原样发出声明的名字；`lower` 与 `upper` 只折 ASCII 字母，别的字母表
+里的名字不会被折到另一个名字上。连接之后声明一次即可，`orm` 每次租到连接都会重贴
+上去，与 `auto_commit` 同一个解法。`validate()` 按同一个策略去问目录，落空的消息
+点名目录里那一侧的拼法：
+
+    table not found: USER_ACCOUNTS (only case differs from 'user_accounts')
+
+手写的 SQL 不改写：`where("...")` 的片段与 `execute()` 的语句照你给的文本进去。
+
 ### 批量写入
 
 ```cpp
@@ -288,9 +310,9 @@ uniorm-gen --dsn=mydb --user=u --password=p \
 
 `--dsn` 与 `--connection-string` 是同一件事的两种写法——前者拼成
 `DSN=<dsn>[;UID=…][;PWD=…]`，交给消费者自己也会用的那个 `uniorm::orm`
-构造器——两者只能选一个，`--out` 则必须给。`--catalog` 与 `--schema`
-收窄去哪找表（留空即由连接说了算），`--name` 改输出单元名，`--tables`
-取逗号分隔的表名列表。
+构造器——两者只能选一个，`--out` 则必须给。`--catalog` 与 `--schema` 收窄去哪
+找表，按名字而不是通配模式：值里的 `%` 不匹配任何东西，运行会先这么说（留空即由
+连接说了算）。`--name` 改输出单元名，`--tables` 取逗号分隔的表名列表。
 
 输出 `build/gen/<name>_schema.hpp`：每表一个 struct（可空列自动
 `std::optional`，DECIMAL/NUMERIC 生成为无损的 `std::string`），PK/FK/索引
@@ -310,7 +332,11 @@ skip = false
 cpp_type = "std::string"       # 单列类型覆写
 ```
 
-覆写仅限注册表可绑定的类型，完整规格见设计文档 §6。
+覆写仅限注册表可绑定的类型。配置里的键不区分大小写，指向不存在的表或列的那一段
+会在生成前报错而不是被静默忽略（`skip` 写错最坏）；两张表折成同一个类名同样当场报错
+并点名它们，同一个 `struct` 声明两次的头不是交付物。名字不只差大小写的一对，
+一个 `class` 覆写就能分开；只差大小写的一对共享同一个配置键，指不到其中单独
+一张，于是运行改让你用 `--tables` 只取其中一张。完整规格见设计文档 §6。
 
 ## 测试
 
@@ -318,12 +344,12 @@ cpp_type = "std::string"       # 单列类型覆写
 ctest --test-dir build --output-on-failure
 ```
 
-- **unit_tests**：纯内存测试，无外部依赖；基于 fake backend 运行且不链接
-  ODBC，公共 API 一旦泄漏驱动类型即编译失败。`UNIORM_BUILD_TOOLS=ON` 时它还
-  收纳生成器的配置与输出用例——那部分逻辑已不点名任何驱动，于是住进那个不链
-  驱动的测试目标
-- **odbc_unit_tests**：私有 ODBC 句柄层及其错误转换（仅驱动管理器，无需
-  DSN）；只在 `UNIORM_BACKEND_ODBC=ON` 时构建
+- **unit_tests**：纯内存测试，无外部依赖；基于 fake backend 运行（`validate()`
+  那组则是 fake 目录），且不链接 ODBC，公共 API 一旦泄漏驱动类型即编译失败。
+  `UNIORM_BUILD_TOOLS=ON` 时它还收纳生成器的配置与输出用例——那部分逻辑已不点名
+  任何驱动，于是住进那个不链驱动的测试目标
+- **odbc_unit_tests**：私有 ODBC 句柄层、它的错误转换，以及目录行按名字再筛的那条
+  判据（仅驱动管理器，无需 DSN）；只在 `UNIORM_BACKEND_ODBC=ON` 时构建
 - **integration_tests**：需要可达的 ODBC DSN，读取环境变量
   `UNIORM_IT_DSN`、`UNIORM_IT_USER`、`UNIORM_IT_PWD`（三者均须设置），
   凭据以 `UID`/`PWD` 拼入连接串；任一未设置或连不上时以 ctest SKIP 处理
@@ -373,39 +399,60 @@ docs/design.md        设计文档（权威 API 参考）
 
 ## 状态
 
-v1 已完成并通过 MariaDB 集成验证（含 `uniorm-gen` 端到端）；同一套测试经
-Connector/ODBC 走服务端预处理，对一个真 MySQL 服务端也全绿，经 psqlODBC 对一个
-真 PostgreSQL 17 服务端同样全绿。v2 进行中：
-backend 抽象已落地（中立接口 + scheme 注册表，ODBC 迁移至接口之后、
-改为 PRIVATE 链接，核心单测在不链接 ODBC 的情况下编译运行），v1 最后一笔
-类型层面的欠账已清（`uniorm::decimal_t`），自省所读的 schema 也成了一
-份独立的公开契约：`orm::schema()` 交出 `uniorm::schema_meta`，目录读取退到
-拥有它的 backend 里面。生成器建在消费者同样会用的那对
-`orm`/`schema()` 之上，于是它既不点名驱动、也不链接 `find_package` 交出来的
-东西以下的任何目标——生成器的配置与输出用例因此搬进了不链 ODBC 的那个测试目标。
-CI 工作流已入仓库，两条形状
-都有人守（不链接 ODBC 的编译契约 + 每条腿拿自家连接器连自家服务端、对活库跑）。
-加服务端这一轴，不是因为几家写的 SQL 都不同（`dialect::detect` 给两个 MySQL 线的
-banner 同一套引号与分页，给 PostgreSQL 的 banner ANSI 那套默认），而是因为生成器读的是
-服务端答的元数据：本地第一次拿真 MySQL 8.4 跑，
-就撞出 MariaDB 连接器 `3.1.12` 用 `COLUMN_KEY = 'pri'` 去问 `information_schema`，
-撞上那台服务端把该列声明成 `utf8mb3_bin` 而什么都问不到，生成的头文件主键整列消失，
-却照样编译、注册、过 `validate(strict)`。这类沉默如今由比对本身兜：抽取测试拿生成的
-代码与 golden 的比，两边每行 `//` 之后的注释先截掉，三条腿都这么比——注释按"连接器
-× 服务端"每格都不同，留着它就等于把 golden 钉死在一格上。那次主键读丢在代码里就是
-`.column` 撞上 golden 的 `.primary_key`；只有 FK 与二级索引还要靠标记点名，因为
-它们在代码里不留任何痕迹。GitHub 上跑绿过一副两条腿的形状
-（两条腿当时都连 MariaDB 服务端；其中一趟还把一处驱动头漏进无 ODBC 构建的地方抓了
-出来，本地重放抓不到它——仿 runner 的那只容器为了编驱动早就装好了 ODBC 开发头）。
-那两条腿后来沿服务端铺开成四条，在装着 CI 钉的两支连接器的 `ubuntu:24.04` 容器里
-对 `8.4.11` 与 `11.8.9` 各连一次跑满四格、五条测试条条全绿，随后又收回成两条同名配对的
-形状：CI 守的是正常用法，跨格那两种配法是有意识地拿掉的，§9 里留着这笔账。
-如今这副上长出第三条腿——psqlODBC 对 PostgreSQL 17，三支里唯一 Ubuntu 自己打包的那支——
-而它撞出来的那处只有真连 PG 才撞得到：数组绑定的 UPDATE/DELETE，psqlODBC 每组参数都
-执行了，`SQLRowCount` 却停在其中一组的行数，两支 MySQL 线连接器报的是整组的总数。
-`update()` 与 `remove()` 返回的正是这个数，于是核心改问 `array_rowcount_totals`，
-没有它就一组一次 execute 地扫。夹具表改成三家都认的写法，一份 golden 便供三家。
-每条腿在构建之前还要问一句 DSN 背后答的是哪台服务端，与自家名字不符即红——问哪句也是
-按腿给的，PostgreSQL 的 `SELECT VERSION()` 开头是名字不是数字，那条腿问
-`SHOW SERVER_VERSION`。这副四支作业的形状都在 runner 的同族镜像里按作业原样重放过，
-还欠 runner 一趟。后续为 libpq / Oracle OCI 原生 backend 等，见设计文档 §5 与 §9。
+### 已交付
+
+v1 已完成：三条访问路径（裸 SQL / 聚合投影 / 实体映射）、批量写入、事务、连接池、
+方言层、`uniorm::decimal_t`，以及 `uniorm-gen` 端到端，每一条都对活库验过。同一套
+测试在 MariaDB 上、经 Connector/ODBC 走服务端预处理在真 MySQL 上、经 psqlODBC 在
+PostgreSQL 上全绿。夹具表改成三家都认的写法，于是一份 golden 便供三家。
+
+v2 进行中，v1 之上另外落地三块：
+
+- **backend 抽象**：驱动中立的接口 + scheme 注册表，ODBC 迁到接口之后、改为
+  `PRIVATE` 链接。`UNIORM_BACKEND_ODBC=OFF` 的构建编得出核心库、跑得了它自己的
+  单测，链接行里没有 ODBC。
+- **自省成为公开契约**：`orm::schema()` 交出 `uniorm::schema_meta`，目录读取退到
+  拥有它的 backend 里面。生成器建在消费者同样会用的那对 `orm`/`schema()` 之上，
+  于是它既不点名驱动、也不链接 `find_package` 交出来的东西以下的任何目标——它的
+  配置与输出用例随之搬进不链 ODBC 的那个测试目标。
+- **标识符拼法成为部署策略**：`dialect::identifier_case` 由连接持有，只在标识符进
+  SQL 的那一处生效，`validate()` 按同一个策略去问目录。默认 `keep`，不声明的人行为
+  一字不变；另两折让一份生成物供得起把同一张表存成两种拼法的两家。落空的消息带出目录
+  里的拼法，策略因此可以从错误里读出来。
+
+### CI 守什么
+
+四支作业。`core` 把无 ODBC 的构建压在一对读下去只会报错的 `sql.h`/`sqlext.h`
+上编，驱动类型一旦漏进公共头，就在这次专为它设的编译里失败。`driver` 带三条腿，
+每条拿自家的连接器连自家会用的服务端，且每条在构建之前先问一句 DSN 背后答的是
+哪台服务端，与自家名字不符即红——问哪句按腿给，PostgreSQL 问
+`SHOW SERVER_VERSION`，因为那里 `SELECT VERSION()` 开头是名字不是数字。任何一条
+测试被跳过都会让作业红，所以"五条全过"意味着确实连上了服务端。四支作业在 runner
+上已全绿：`core` 一条，每条腿五条，服务端依次答 8.4.11、
+`11.8.9-MariaDB-ubu2404` 与 17.11。
+
+### 两处代码学会去问的答案
+
+**生成器读的是服务端答的元数据，不是方言写的 SQL。** 不是因为几家写的 SQL 不同
+（`dialect::detect` 给两个 MySQL 线的 banner 同一套引号与分页，给 PostgreSQL 的
+banner ANSI 那套默认），而是因为生成器走的那张目录是服务端的答案：MariaDB 连接器
+`3.1.12` 用 `COLUMN_KEY = 'pri'` 去问 `information_schema`，撞上 MySQL 8.4 把该列
+声明成 `utf8mb3_bin` 而什么都问不到，生成的头文件主键整列消失，却照样编译、注册、
+过 `validate()`。这类沉默如今由比对本身兜，三条腿都这么比：拿生成的代码与 golden
+的比，两边每行 `//` 之后的注释先截掉——注释按"连接器 × 服务端"每格都不同，留着它
+就等于把 golden 钉死在一格上。那次主键读丢在代码里就是 `.column` 撞上 golden 的
+`.primary_key`；只有 FK 与二级索引还要靠标记点名，因为它们在代码里不留任何痕迹。
+
+**返回值也可以是驱动的意见，而不是服务端的事实**：数组绑定的 UPDATE/DELETE，
+psqlODBC 每组参数都执行了，`SQLRowCount` 却停在其中一组的行数，两支 MySQL 线
+连接器报的是整组的总数。`update()` 与 `remove()` 返回的正是这个数，于是核心改向
+backend 要 `array_rowcount_totals`，没有它就一组一次 execute 地扫。
+
+### 未结
+
+跨格配法——MariaDB 连接器对 MySQL 服务端、Connector/ODBC 对 MariaDB 服务端——
+不在 CI 里，这是选的不是漏的：作业守的是一支驱动实际会与哪家同配的那种用法。
+设计文档 §9 把它记成一笔认下的缺口，而且值得记：迄今唯一那次真读丢，正是从跨格
+撞出来的。
+
+后续为 libpq / Oracle OCI 原生 backend 等，见设计文档 §5 与 §9。

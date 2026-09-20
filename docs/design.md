@@ -102,13 +102,15 @@ uniorm/
 │   ├── connection.hpp           # connection：连接前置的 low-level 入口（含语句缓存原语）
 │   ├── transaction.hpp
 │   ├── pool.hpp                 # connection_pool / pooled_connection / connection_pool_registry
-│   ├── dialect.hpp              # 方言特性（引用符、分页）
+│   ├── dialect.hpp              # 方言特性（引用符、标识符拼法、分页）
 │   ├── backend/                 # 驱动中立的 backend 契约（见 §5.2）
 │   │   ├── backend.hpp          # column_buffer / capabilities / statement_iface / connection_iface
 │   │   │                        # / batch_writer_iface（列式批量写）
 │   │   ├── registry.hpp         # scheme 解析 + backend 注册表（out-of-tree backend 注册入口）
 │   │   └── error.hpp            # backend_error / capability_not_supported / unknown_scheme
 │   ├── detail/
+│   │   ├── identifier.hpp       # 全库唯一的那一处 ASCII 折叠：凡比较或发出
+│   │   │                        # 标识符名字的都经它（§4.8、§5.2、§6.2）
 │   │   ├── pfr.hpp              # 自实现聚合体反射（字段数探测 + 展开，上限 64）
 │   │   ├── projection.hpp       # 聚合 struct 投影绑定（field_binding 体系）
 │   │   ├── traits.hpp           # is_optional_v 等共享 traits
@@ -139,8 +141,10 @@ uniorm/
 ├── tests/
 │   ├── unit/                    # 无库依赖：check.hpp（CHECK/CHECK_THROWS）+
 │   │                            # uniorm_unit_tests（不链 ODBC，含 fake backend 的
-│   │                            # test_pool.cpp 与 uniorm-gen 的纯逻辑用例）与
-│   │                            # uniorm_odbc_unit_tests（句柄 RAII、错误派生）
+│   │                            # test_pool.cpp、fake 目录的 test_orm_validate.cpp
+│   │                            # 与 uniorm-gen 的纯逻辑用例）与
+│   │                            # uniorm_odbc_unit_tests（句柄 RAII、错误派生、
+│   │                            # 目录行再筛的判据）
 │   ├── integration/             # 需活连接：test_integration.cpp、test_gen_e2e.cpp
 │   │                            # 与 golden/gen_it_schema.hpp（生成物快照）
 │   ├── install/                 # 外部消费者工程（install_smoke 用它走 find_package）
@@ -553,6 +557,12 @@ class connection {
     // 元数据
     std::string dbms_name() const;             // SQL_DBMS_NAME，方言推断输入
     backend::capabilities caps() const noexcept;
+
+    // 标识符拼法：部署声明一次，管这条连接发出的每一条 SQL（见 §4.8）
+    dialect::identifier_case identifier_case() const noexcept;   // 默认 keep
+    void identifier_case(dialect::identifier_case policy);
+    dialect const& sql_dialect();     // banner 探测与上面的策略合成的那一份
+
     schema_meta& schema() const;               // 表自省，见 5.2
 
     // 逃生舱：调用方点名期望的原生句柄类型（ODBC 下 T = void 的 SQLHDBC）
@@ -761,6 +771,8 @@ class orm {                             // 非线程安全，按线程/会话持
     std::size_t row_array_size() const noexcept;  void row_array_size(std::size_t);  // default_row_array_size = 100
     std::size_t paramset_size() const noexcept;   void paramset_size(std::size_t);   // default_paramset_size = 1000
     bool auto_commit() const noexcept;            void auto_commit(bool);            // true：即连接的 autocommit 属性（见 §4.9）
+    dialect::identifier_case identifier_case() const noexcept;
+    void identifier_case(dialect::identifier_case);   // keep：标识符拼法，租到连接时重贴（见 §4.8）
 
     template <class T> mapping_builder<T> map(std::string_view table);  // 重复注册抛 mapping_error
     template <class T> entity_meta const& meta() const;                 // 未注册抛 mapping_error
@@ -769,7 +781,10 @@ class orm {                             // 非线程安全，按线程/会话持
 
     void validate(validation_mode mode = validation_mode::strict);
     // 不接 connection 参数：经 schema() 取表元数据（每表一次 shape()，
-    // backend 不提供自省即抛 capability_not_supported）。逐实体核对：
+    // backend 不提供自省即抛 capability_not_supported）。每个名字都按连接的
+    // 拼法策略折过再去问目录，于是"校验通过"与"查询发得出"是同一件事（§4.8）。
+    // 落空的消息点名目录里那一侧：唯一只差大小写的同名对象会被带出来，两边都不
+    // 差时不提。逐实体核对：
     //  - 表不存在（形状为空）         → mapping_error
     //  - 列缺失                       → mapping_error
     //  - 列可空但成员非 optional      → strict 抛 mapping_error / lenient 放行
@@ -814,8 +829,9 @@ std::string_view>)` 与动态表名版区分；无主键又没给 `where_fields`
 `meta<Entity>()` 与 `(data, sizeof(Entity), size)`，余下的 WHERE 解析、SET/WHERE
 列划分、语句文本、通道选择与事务都编译在库里，`Entity` 本身只在头文件这一层出现。
 同一条纪律也管住了非模板成员：配置访问器（`row_array_size` / `paramset_size` /
-`auto_commit`）、`find` / `size` 与 `native_connection` 都定义在 `src/orm.cpp`，
-头文件里只剩下声明、两个 `default_*` 常量，以及必须由调用方实例化的模板。写路径
+`auto_commit` / `identifier_case`）、`find` / `size` 与 `native_connection` 都定义
+在 `src/orm.cpp`，头文件里只剩下声明、两个 `default_*` 常量，以及必须由调用方实例
+化的模板。写路径
 因此并未变慢：批量入口读的是 `paramset_size_` 成员本身，是否自开事务看
 `connection::autocommit()`（一个缓存的提交模式），每行一次的循环里没有新增
 任何跨库调用。
@@ -920,16 +936,30 @@ template <class T, class M> column_ref<T, M> col(M T::*member);
 
 ```cpp
 struct dialect {
+    enum class identifier_case { keep, lower, upper };   // 部署级拼法，默认 keep
+
     char quote_open = '"', quote_close = '"';     // MySQL/MariaDB → ` `
     bool ansi_pagination = true;                  // false → LIMIT/OFFSET
+    identifier_case identifiers = identifier_case::keep;
 
-    std::string quote_identifier(std::string_view identifier) const;
+    // 这个名字将以什么拼法进 SQL（引号除外）。目录读取也按它问，
+    // 于是 validate() 校验收的正是查询会发出去的那个名字（§4.7）
+    std::string fold_identifier(std::string_view identifier) const;
+    std::string quote_identifier(std::string_view identifier) const;   // 先折叠后加引号
     // ANSI: " OFFSET n ROWS FETCH NEXT m ROWS ONLY"；否则 " LIMIT m OFFSET n"
     std::string pagination(std::optional<std::size_t> limit, std::size_t offset) const;
 
     static dialect detect(std::string_view dbms_name);   // 输入 connection::dbms_name()
 };
 ```
+
+折叠只按 ASCII，不走 locale：同一个名字因进程 locale 不同而指向两张表，比大小写
+本身更糟。三值里 `keep` 是现状——不声明的人行为一字不变。策略住在 `connection`
+（banner 与它是同一处的两个输入），`connection::sql_dialect()` 把探测与策略合成一
+份方言、首次用到才建，被发出的每一条 SQL 与每次目录读取都从这一处取名；`orm` 在
+租到连接时把它重贴上去，与 `auto_commit` 同一个解法（池复用会带走上一个持有者的
+设置）。不从连接串解析：多出来的键会连同驱动关键字一起交出去，为一个枚举引入一套
+转义与冲突规则不值。
 
 构建器与网关最终 API：
 
@@ -958,7 +988,7 @@ public:
     connection& conn() const;                        // 转发 orm::native_connection()
     orm& get_orm() const;
     std::size_t row_array_size() const noexcept;     // 转发 orm::row_array_size()，即块取行大小
-    dialect const& sql_dialect() const;              // 首次调用时探测并缓存
+    dialect const& sql_dialect() const;              // 转给连接的同一份，网关不自建缓存
 };
 
 // 无实体映射的表上的动态 UPDATE / DELETE：orm::update(table) / orm::remove(table)
@@ -1163,8 +1193,9 @@ perf、`uniorm-gen` 都不生成，`UNIORM_BUILD_TOOLS` 直接被 CMake 拦下�
 
 接口位于 `include/uniorm/backend/backend.hpp`，ODBC 是唯一内置实现
 （`src/odbc/backend.cpp`）。核心 API（查询构建器、映射、池、事务）只依赖
-接口；能力缺失时应当抛清晰错误而非静默降级——这条纪律目前只在
-`columnar_batch` 与 `array_rowcount_totals` 两个能力上有真正的分岔（见下方能力清单）。
+接口；能力缺失时应当抛清晰错误而非静默降级。`capabilities` 上只有两条真分岔——
+`columnar_batch` 与 `array_rowcount_totals`——各有一条更慢的退路可走，其余缺什么
+抛什么（见下方能力清单）。
 
 **中立列缓冲契约**——三条物化路径（result_set / 聚合投影 / 实体直绑）
 统一为"调用方缓冲 + indicator"：
@@ -1190,9 +1221,7 @@ struct column_buffer { buffer_type type; void* data; std::size_t capacity;
 **语句与连接接口**：
 
 ```cpp
-struct capabilities { bool streaming, async_io, copy_protocol,
-                             notifications, columnar_batch,
-                             array_rowcount_totals; };
+struct capabilities { bool columnar_batch, array_rowcount_totals; };
 
 struct statement_iface {
     void prepare(std::string_view sql);                    // SQL 用 '?' 占位符
@@ -1243,17 +1272,29 @@ struct schema_meta { /* 住在 public 的 <uniorm/schema.hpp>，命名空间 uni
 同一份字段只拼一次。声明侧的对应物是 `column_meta`，它带的是成员能绑定的类型
 **集合**而非单个类型，所以比对有方向：形状是事实，映射是断言。
 
-ODBC 实现的当前能力：`{streaming=true, async_io=false, copy_protocol=false,
-notifications=false, columnar_batch=true, array_rowcount_totals=开连接时按驱动探测}`。
-**被读的只有 `columnar_batch` 与 `array_rowcount_totals`**：前者让 `orm` 的三个批量
-入口据此在列式与行式通道间二选一（§4.5.2），后者决定两条受累行数 sweep 的分批粒度
-（§4.5），ODBC 实现按 `SQL_DRIVER_NAME` 认出 psqlODBC 才清零它。每个标志只表示
-"有一条更快的路"：缺能力时核心走慢的那条而不抛错，所以 backend 全置 `false`
-也不失正确性。表结构自省不在这批标志里：它没有更慢的那条路可退，答不出即由
-`connection::schema()` 抛 `capability_not_supported`（门面侧的
-`orm::schema()` 只转发，§4.7）。
-`streaming` / `async_io` / `copy_protocol` / `notifications` 四个标志位是为
-libpq/OCI 预留的占位。
+名字按名字问，不按 pattern 问——这是接口对每家实现的要求。ODBC 那五个目录函数
+（`SQLTables` / `SQLColumns` / `SQLPrimaryKeys` / `SQLForeignKeys` /
+`SQLStatistics`）把名称参数当 pattern value，`%` 与 `_` 在其中是通配符（且常常不
+区分大小写），于是一次读取可以带回别人家的行：声明 `user_id` 那张表的列，可以被
+`userXid` 的列一并约进来。ODBC 实现因此把回来的行再筛一遍，规则是一条：
+驱动**报出**的名字与问出的名字只差大小写，算同一个名字（折叠是运行期策略的事，
+§4.8）；驱动把名字报成空、或那一项本就留空不限定，都留着——那是驱动的沉默，
+不是别人的表。筛的是每行行首那三列（catalog、schema、table；`SQLForeignKeys`
+的外键侧同一组偏到第 5 到 7 列）：catalog 与 schema 一样是 pattern value，
+只筛表名的话 `SALES%` 仍会把别家 schema 里同名表的整份列带回来。筛过之后这些
+参数就只是名字了，`uniorm-gen` 的 `--catalog` / `--schema` 因此不再接受通
+配符，值里带 `%` 会先出一条告警说明它不参与匹配（§6.3）。
+
+ODBC 实现的当前能力：`{columnar_batch=true, array_rowcount_totals=开连接时按驱动
+探测}`。两个标志各有真实消费点：前者让 `orm` 的三个批量入口据此在列式与行式通道间
+二选一（§4.5.2），后者决定两条受累行数 sweep 的分批粒度（§4.5），ODBC 实现按
+`SQL_DRIVER_NAME` 认出 psqlODBC 才清零它。每个标志只表示"有一条更快的路"：缺能力时
+核心走慢的那条而不抛错，所以 backend 全置 `false` 也不失正确性。表结构自省不在这批
+标志里：它没有更慢的那条路可退，答不出即由 `connection::schema()` 抛
+`capability_not_supported`（门面侧的 `orm::schema()` 只转发，§4.7）。清单只装核心
+真会分岔的地方：`streaming` / `async_io` / `copy_protocol` / `notifications` 四个
+标志位曾按 libpq/OCI 的特性集预留在此，全仓零读者，而它们要命名的特性按 §5.3 走
+`native_handle`、不经过核心，占位因此无处兑现。
 
 事务的 autocommit 开关逻辑留在核心（`transaction` 不变），backend 只暴露
 原语。`reset()` 的契约是缓存复用：某条 SQL 文本再次从缓存交出时、重新绑定之前调用，
@@ -1310,7 +1351,8 @@ PQputCopyData(pg, ...);                     // 用户自行驱动原生操作
 1. **libpq**（PostgreSQL）——COPY、LISTEN/NOTIFY、异步 I/O
 2. **Oracle OCI**——数组绑定及 OCI 专有特性
 
-两者均来自既有项目中必须绕开 ODBC 的实际经验。能力清单按上述特性集设计。
+两者均来自既有项目中必须绕开 ODBC 的实际经验。能力清单不为它们的特性集预留标志位：
+一家 backend 落地后，只有核心真需要分岔的地方才进清单（§5.2）。
 
 ## 6. uniorm-gen 代码生成工具
 
@@ -1327,12 +1369,13 @@ uniorm-gen (--dsn=<dsn> [--user=<u> --password=<p>]
            --out=<dir>
            [--config=<file>]          # TOML，见 §6.4
            [--tables=a,b,c]           # 逗号分隔的表名过滤
-           [--catalog=<c>] [--schema=<s>]
+           [--catalog=<c>] [--schema=<s>]   # 名字，不是 ODBC pattern
            [--name=<n>]               # 产物/命名空间名，缺省取 backend 报的库名
 ```
 
 `--dsn` 与 `--connection-string` 必须二选一，`--out` 必填，否则打印 usage 并
-返回失败。
+返回失败。`--catalog` / `--schema` 的值里有 `%` 时照常读取，但先打一条警告：
+目录按名字问，那个字符不参与匹配（§5.2）。
 
 ### 6.2 Schema 提取（走 `orm::schema()`）
 
@@ -1354,7 +1397,10 @@ CLI 开一个公开 `uniorm::orm`，向它取 `schema()`（§4.7；它转给底�
   外加只有活读才有的：服务端自己的类型拼法、`column_size`、`decimals`、默认值
   （ODBC 侧为 `SQLColumns`，`DATA_TYPE` 的归一发生在它那一侧）。生成器的列模型
   就嵌着这个形状，不再重拼那三项
-- `primary_key(ref)` → 主键列名，生成物里标 `.primary_key()`
+- `primary_key(ref)` → 主键列名，生成物里标 `.primary_key()`。这是与列清单**两次
+  独立的读取**，名字逐字精确比：某个主键名在该表列里找不到，则那一列照常生成、
+  不带主键标记，另打一条警告点名它（两份读取只差大小写时警告里带出该表的实际拼
+  法）。宁可响一声：静默丢掉主键标记的产物编译得过、跑得通，只是键错了
 - `foreign_keys(ref)` → 一个列对一行（ODBC 侧为 `SQLForeignKeys`，按被引用表的
   键序），gen 按被引用表首次出现的顺序分组还原成约束
 - `indexes(ref)` → 一个索引一行（列序 + 唯一性，ODBC 侧为 `SQLStatistics`），
@@ -1371,11 +1417,19 @@ CLI 开一个公开 `uniorm::orm`，向它取 `schema()`（§4.7；它转给底�
 
 1. 每表一个 `struct`：表名 → PascalCase 类名、列名 → camelCase 成员名，
    C++ 关键字/非法起始字符会被改写。**命名规则固定，不可配置**——可配置的
-   只有 §6.4 里逐表的 `class` 覆写；
+   只有 §6.4 里逐表的 `class` 覆写；两张表折成同一个类名时在写文件之前抛
+   `config_error` 点名它们，出路分两种：拼法不同的（`user_accounts` 与
+   `user_accounts_`）给其中一张写 `class` 即可拆开，只差大小写的两张共用同一个
+   配置键、`class` 会把两张一起搬走，只能 `--tables` 只要其中一张。产物里同一个
+   `struct` 出现两次，编译期才响，而工具不该把编不过的东西交出去
 2. 可空列 → `std::optional<T>`；
 3. 每表一个 `inline void register_<Class>_mapping(orm&)`，外加汇总的
    `inline void register_<name>_schema(orm&)`；
 4. SQL 类型 ↔ C++ 类型映射遵循 §4.3 表，可被配置覆写。
+
+进注册调用的表名与列名是**源目录的逐字拼法**，生成期不折叠：拼法是那家目录的事实，
+而"该发哪一种"要到连接建立之后才知道，所以它交给部署声明的 `identifier_case`，在
+标识符出口应用（§4.8）。一份产物因此可以服务存储拼法不同的两家。
 
 生成物只输出到指定目录，视为不可手改。头文件仅依赖
 `<uniorm/mapping/registry.hpp>` 与标准库。
@@ -1403,6 +1457,14 @@ converter = "Status"                 # 域类型：成员生成为 Status，绑�
 （§4.4）。converter 只有逐列入口，没有全局覆写。库自带的类型不必如此——`cpp_type =
 "uniorm::decimal_t"` 用不着消费者额外 include：生成物唯一依赖的
 `<uniorm/mapping/registry.hpp>` 传递带着 `<uniorm/decimal.hpp>`。
+
+键的匹配忽略大小写：`[types]` 两侧折成大写，`[tables.NAME]` 与
+`[tables.NAME.columns.COLUMN]` 两侧折成小写，于是同一份配置对拼法不同的目录
+（Oracle 的 `USERS` 与 MySQL 的 `users`）同样适用。表名命不中目录里的任何表、
+或某个列块命不中该表任何列，写文件之前抛 `config_error` 点名各段：被静默忽略的
+覆写（最坏的是 `skip`）比一次失败更难查。目录里有、但被 `--tables` 筛掉的那张
+表只报得出名字、报不出列，它的列块因此不在检查之内。这项检查要把整份目录列一遍，
+所以配置里没有 `[tables.*]` 段时就不列。
 
 ## 7. 错误体系总览
 
@@ -1446,26 +1508,41 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
   负零、指数/分隔符/多小数点/超 78 位的拒绝、跨 scale 的序与等值、
   `to_double` / `to_int64` 及两者越界、动态行经 `value_cast<decimal_t>` 与
   `converter<decimal_t>` 的读写往返）、
-  `test_expression`（谓词 SQL 生成、方言、分页）、`test_registry`
+  `test_expression`（谓词 SQL 生成、方言、分页；`identifier_case` 三值是纯函数，
+  连同只折 ASCII 字母这一条一起钉住——非 ASCII 名字原样返回，`lower` 也不碰）、
+  `test_registry`
   （映射注册/populate/read 闭包/错误路径）、`test_orm_crud_helpers`
   （实体 CRUD 的映射级归一：全部键列推断、WHERE 字段解析与 SET 分区、
-  `paramset_size` / `row_array_size` 的 0 归一）、`test_backend_registry`
+  `paramset_size` / `row_array_size` 的 0 归一；未连接的 `orm` 上策略读写自洽）、
+  `test_orm_validate`（一份假目录实现 `schema_meta`，把 `validate()` 的每条消息逐字
+  钉住：strict/lenient、类型族、可空，以及落空时目录侧的拼法——唯一只差大小写才提，
+  而候选是拿整份目录比的，于是带出它所在的 schema；
+  同一份映射与同一份目录，只换 `identifier_case` 就在成败两侧来回）、`test_backend_registry`
   （scheme 解析边界、注册/重复注册/未注册 scheme；其中真正解析到
   "odbc" backend 的用例在 `UNIORM_TEST_BACKEND_ODBC` 宏内）、`test_pool`
   （用一个记录调用的假 backend 驱动 `connection_pool::release`：归还时回滚挂起的
   工作并复位 autocommit，复位抛异常则该连接被淘汰且名额扣回）、
   `test_gen_config`（TOML 子集解析正例/错误行号/非法键）、
   `test_gen_output`（命名转换边界 + 生成器快照与覆写/跳表/converter 生成/DECIMAL 列
-  以 `cpp_type` 覆写成 `uniorm::decimal_t`/错误路径）；后两个只在
+  以 `cpp_type` 覆写成 `uniorm::decimal_t`/错误路径，含两张表折成同一个类名时在写文件
+  之前抛——拼法不同的那对按提示写 `class` 就能过，只差大小写的那对则逐字钉住它报出的
+  另一条出路）、`test_gen_reader`（一份假目录钉住主键名与列清单两次读取的三种形状：
+  命中、只差大小写、根本没有，警告文本带出该表的实际拼法；另钉 `--catalog` /
+  `--schema` 带 `%` 时的告警）；后三个只在
   `UNIORM_BUILD_TOOLS` 打开时编入（同时定义 `UNIORM_TEST_GEN`），要链的是
-  `uniorm_gen_core`——生成器改走公共自省接口之后它自己不再点名驱动，这两个用例
+  `uniorm_gen_core`——生成器改走公共自省接口之后它自己不再点名驱动，这三个用例
   于是回到不链 ODBC 的目标里；
   `uniorm_odbc_unit_tests` 链接 ODBC——`test_odbc_handles`（句柄 RAII）、
+  `test_odbc_catalog`（目录行再筛的那条判据是纯函数：只差大小写算同名，`user_orders`
+  对 `userxorders` 不算——后者正是 pattern 里 `_` 的通配，两侧任一为空则留）、
   `test_odbc_error_is_backend_error`（`odbc_error` 就是 `backend_error`，
   无需二次翻译）；
 - **集成测试**（已实现，DSN/凭据由 `UNIORM_IT_DSN` / `UNIORM_IT_USER` / `UNIORM_IT_PWD` 指定，凭据以 `UID`/`PWD` 写进连接串；连不上时 ctest SKIP）：execute/params 往返、动态行（含 `connection::execute` 显式块取行大小 0 退回逐行）、DECIMAL 动态路径（`DECIMAL(20,4)` / `(20,0)` / `(38,0)` 取回精确定点字面量与 `column_info::scale`，按需解析成 double、scale-0 解析成 int64，带小数或超 int64 范围的字面量抛 `type_mismatch`，NULL 仍报 `is_null`）、DECIMAL 映射路径（`DECIMAL(20,4)` / `(65,30)` / `(20,0)` 三列配 `decimal_t` 与 `std::optional<decimal_t>` 成员：批量插入与实体读回逐字核对 `to_literal`（含 65,30 列第 30 位为 1 的值——没有任何整型或 double 装得下它）、聚合投影、动态行 `get<decimal_t>`、以 `decimal_t` 为右值的 `where(gt(&T::amount, ...))` 落到同一字面量）、聚合投影（含长字符串与 timestamp）、converter 往返（批量插入、实体物化含 NULL、
 `in` 谓词、投影、构建器 `set`/批量 update、动态行 `get<T>`）、orm validate（含 strict
-的列缺失/可空/类型族三条失败路径）、查询构建器全谓词与分页、事务 commit/rollback/析构回滚、批量插入（含空 optional 写 NULL、1500 行跨 `paramset_size` 分批）、批量 update / 批量 remove（实体版按主键与全字段两种 WHERE，含一张复合主键表验证单实体与批量都按全部键列命中、非键行不被牵连，动态版 `orm::update(table)` / `orm::remove(table)`，以及 `query<T>::set/update/remove` 与无 WHERE / 无 SET / WHERE 字段未映射的守卫抛错）、语句缓存（hit/miss 计数、流式 result_set 借出期间并发 miss、清空）、跨层错误上报（驱动失败以 `backend_error` 捕获，核对 `backend_name()`
+的列缺失/可空/类型族三条失败路径）、查询构建器全谓词与分页（末了拿 `build_select()`
+的文本比对这条连接自己那家方言的引号；再把策略声明成 `upper` 重发一次——表名跟着升
+上去、原来那条小写断言反过来不成立，出口仍只有一处，随后退回 `keep`）、事务
+commit/rollback/析构回滚、批量插入（含空 optional 写 NULL、1500 行跨 `paramset_size` 分批）、批量 update / 批量 remove（实体版按主键与全字段两种 WHERE，含一张复合主键表验证单实体与批量都按全部键列命中、非键行不被牵连，动态版 `orm::update(table)` / `orm::remove(table)`，以及 `query<T>::set/update/remove` 与无 WHERE / 无 SET / WHERE 字段未映射的守卫抛错）、语句缓存（hit/miss 计数、流式 result_set 借出期间并发 miss、清空）、跨层错误上报（驱动失败以 `backend_error` 捕获，核对 `backend_name()`
 与 SQLSTATE 诊断）、连接池借还与超时、连接池维护（心跳保活计数、空闲超时驱逐、失败心跳丢弃；"排空"一律轮询等待而非单次采样，因为正被心跳的连接仍计入 `idle_count()`）；后续按库加条件标签覆盖方言与类型怪癖；
 - **性能基准**（已实现，ctest 标签 `perf`，`tests/perf/test_perf.cpp`）：
   连不上库时 SKIP；行数由 `UNIORM_PERF_ROWS` 指定（默认 10000）。
@@ -1517,8 +1594,9 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
   生成的授权与 `mariadb-admin ping` 健康门（约 20 s 转 healthy）也一并验了；提交过
   三趟，头一趟卡在 YAML 校验，第二趟作业真跑起来了、`core` 当场抓出一处真漏，第三趟三支作业
   全绿——前两样的账都在下面。此后驱动那一支沿服务端铺开成四条腿、量完又收回两条，收回之后
-  又长出第三条（psqlODBC 对 PostgreSQL 17）：这副四支作业的形状还没被 runner 看过，但三条腿
-  都各自在 runner 的同族镜像里按作业原样重放过）：
+  又长出第三条（psqlODBC 对 PostgreSQL 17）：这副四支作业的形状先在 runner 的同族镜像里
+  按作业原样重放过，随后就在 runner 上跑绿了——四支作业全绿，三条驱动腿各自跑满除 `perf`
+  外的五条，服务端依次答 8.4.11、`11.8.9-MariaDB-ubu2404` 与 17.11）：
   一支 `UNIORM_BACKEND_ODBC=OFF`
   的构建只跑 `unit_tests`，替 §3 那条"驱动类型不漏进 statement 层之上的公开头"把关——
   这条承诺此前只在注释里，没有任何东西在守它。另一支是三条腿，每条拿自家的连接器连自家的
@@ -1642,8 +1720,9 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
   报绑定的行数会让 `remove()` 对不存在的行撒谎；不分驱动永远逐组 execute 则多付服务端
   命令——`Questions` 的增量量出 MariaDB 的连接器本来把 5 组压成**一条**命令、
   Connector/ODBC 本来就发 **5** 条。列式 insert 数的是绑定的行数，不受影响。
-  欠 runner 的只剩作业自己这副形状：矩阵选镜像、按镜像给端口与那句版本查询、
-  `health_cmd` 按镜像给、`services` 里三套 env 前缀，而配错一条腿的 banner 预检会先红。
+  runner 欠的那笔已经还上：作业自己这副形状——矩阵选镜像、按镜像给端口与那句版本查询、
+  `health_cmd` 按镜像给、`services` 里三套 env 前缀，配错一条腿则 banner 预检先红——
+  在 runner 上四支全绿，三条腿的服务端分别答 8.4.11、`11.8.9-MariaDB-ubu2404` 与 17.11。
   至于先前那笔 SSPS 与 `NO_SSPS` 的代价对照，量的是 `8.4.0` 对 `8.4.0`（服务端
   `mysqld-8.4.11`，只切那一把）：缓存命中的形状上 SSPS 略优（每语句 0.212 ms 对 0.228 ms，
   数组绑定批量 0.193 对 0.218——驱动得在本地把值格式化进语句文本），每个只出现一次的语句
@@ -1657,7 +1736,7 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
 
 **v1 欠账**（`decimal_t` 随 0.2.0 落地、CI 的三条作业既在它们所要用的镜像里按作业原样重放过
 一遍、也在 GitHub 上跑绿之后，本清单一度清空；驱动那一支沿服务端铺开成四条腿、收回两条、
-又长出第三条之后，剩下两件事，见打包条目末尾）：
+又长出第三条，这副四支作业在 GitHub 上再次全绿之后，只剩一件事，见打包条目末尾）：
 
 - ~~ODBC 宽字符路径（§4.2）~~ **已按该条目自己给出的第二条路了结**：确认不做，
   删掉零调用者的 `utf8_to_utf16` / `utf16_to_utf8` 与只有它们会抛出的公开类型
@@ -1687,13 +1766,13 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
   注册、`isql` 预检、`-LE perf` 过滤后的五条，连同作业那段 `services`（授权与健康门）也
   都在镜像里绿过。GitHub 也已经真跑过它了：头一趟只有 YAML 校验拦下的一件事（`services`
   块读不到 `env` 上下文），改完的第二趟作业起了、`core` 抓出一处真漏并已修，第三趟三支作业
-  全绿（两处细节都在 §8）。**待做**两样。其一，这副长出第三条腿后的形状还没被 runner
-  看过：驱动腿
+  全绿（两处细节都在 §8）。**待做**如今只剩一样。原先其一——长出第三条腿后的这副形状还没被
+  runner 看过——已经结掉：驱动腿
   一度沿服务端铺开成四条腿，在装着 CI 那两支连接器的 `ubuntu:24.04` 容器里按当前构建跑满
   四格全绿，随后收回两条同名腿（CI 守的是正常用法，§8），第三条腿是在这副两腿上长出来的，
-  它和另两条都在 runner 的同族镜像里按作业原样各自跑满五条（§8）——要 runner 确认的是作业自己
-  （矩阵选镜像、按镜像给的端口、健康门与那句版本查询、`services` 里三套 env 前缀；配错了
-  会撞上那条腿自己的 banner 预检）。其二是一笔认下的欠账：跨格（MariaDB 连接器对 MySQL 服务端、
+  它和另两条都在 runner 的同族镜像里按作业原样各自跑满五条（§8）；作业自己那副形状
+  （矩阵选镜像、按镜像给的端口、健康门与那句版本查询、`services` 里三套 env 前缀）随后在
+  runner 上四支全绿。剩下的一样是一笔认下的欠账：跨格（MariaDB 连接器对 MySQL 服务端、
   Connector/ODBC 对 MariaDB 服务端）从此没有 CI 覆盖，而唯一那次真读丢正是从跨格撞出来的。
   `uniorm-gen` 的元数据读取已挪到 `orm::schema()` 之后（§6.2）；挪动前后对
   同一份夹具逐字节相同：那格要不要补一道门，看它那时暴露出什么，届时再定。
@@ -1713,14 +1792,21 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
 7. 迁移脚本生成
 8. backend 拆成独立链接目标（如 `uniorm_odbc` / `uniorm_pq`）：多 backend 共存时
    让"只用一家"的部署不必在运行时载入其余驱动（见 §5.1）
-9. 能力清单落地：`capabilities` 的四个未读标志各自找到真实消费点（§5.2 今天被读的是
-   `columnar_batch` 与 `array_rowcount_totals`，后者随 §8 那条 PostgreSQL 腿落地）。
+9. ~~能力清单落地：`capabilities` 的四个未读标志各自找到真实消费点~~ **已完成**：
+   四个占位已删，清单只剩 `columnar_batch` 与 `array_rowcount_totals`，两条各有
+   读者（§5.2）；后者随 §8 那条 PostgreSQL 腿落地。
    ~~并把 `capability_not_supported` 的抛出接上~~ **已完成**：表结构自省没有
    更慢的退路，backend 答不出时由 `connection::schema()` 抛它（§5.2）
 10. ~~池归还时的状态清理~~ **已完成**：`release` 见 `autocommit()` 为假即
     rollback 后复位 autocommit，复位抛异常则淘汰该连接并扣回名额（见 §4.9）；
     兜底不再只挂在 `orm` 借出侧，直接用 `connection_pool::acquire()` 的借用者
     同样拿到干净的连接
+11. 标识符的延迟绑定：`validate()` 时对活目录逐名解析声明名——精确命中优先，不中
+    再按 ASCII 折叠比，唯一命中才采纳那家的拼法，折叠命中多个即抛并列出候选，绝不
+    代挑。触发条件是某个部署的 schema 拼法不统一（同库里既有 `UserAccounts` 又有
+    `users`）：那种地方没有库级事实可声明，§4.8 的 `identifier_case` 因此帮不上，
+    而逐名解析可以。代价是给每个 `entity_meta` 另存一份声明名（解析就地改写，第二
+    次解析不能再吃第一次的产物）。设计与取舍见 `docs/proposal-identifier-case.md` §6
 
 ## 10. 评审待定点
 

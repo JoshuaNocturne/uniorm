@@ -58,7 +58,9 @@ See [docs/design.md](docs/design.md) for the full design.
   generator and the validator read through the same contract
 - **Dialect adaptation** — identifier quoting and paging syntax inferred from
   `SQL_DBMS_NAME` (backticks + LIMIT/OFFSET for MySQL/MariaDB, ANSI
-  otherwise)
+  otherwise), plus a spelling policy the deployment declares: `keep` (default,
+  verbatim), `lower` or `upper`, applied where identifiers reach SQL and by
+  `validate()` when it asks the catalog
 - **Code generation** — `uniorm-gen` connects to a live database, reads
   its schema through the backend's introspection, and generates entity
   structs plus registration functions (TOML overrides for types/class
@@ -68,10 +70,11 @@ See [docs/design.md](docs/design.md) for the full design.
   (`odbc://...`, or a bare ODBC connection string for backward
   compatibility), and ODBC is the only backend built so far. Catalog reads are
   part of that interface (`schema()`), so a backend without a catalog answers
-  `capability_not_supported` rather than failing inside a read; capabilities
-  are declared per backend, and two are consulted today: `columnar_batch`
-  selects the bulk write path, `array_rowcount_totals` the batching of a
-  row-counting sweep
+  `capability_not_supported` rather than failing inside a read, and every name
+  there is asked for as a name rather than a pattern, so a read returns the rows
+  the server reports under it. The capability list holds only the two forks the
+  core takes — `columnar_batch` selects the bulk write path,
+  `array_rowcount_totals` the batching of a row-counting sweep
 
 ## Requirements
 
@@ -234,6 +237,27 @@ back as one merged shape. Name the schema in `ref` when that matters. Take the
 reference afresh rather than caching it: it belongs to the leased connection, and
 a `disconnect()` or a re-lease moves it.
 
+### Identifier spelling
+
+The names a mapping declares reach SQL through exactly one place, and which way
+they are spelled there is a deployment fact: Oracle stores `USERS`, PostgreSQL
+stores `users`, and MySQL on Linux stores whichever case `CREATE TABLE` wrote.
+
+```cpp
+db.identifier_case(uniorm::dialect::identifier_case::upper);  // default: keep
+```
+
+`keep` — the default — emits declared names verbatim. `lower` and `upper` fold
+ASCII letters and nothing else, so a name in another alphabet cannot fold onto a
+different one. Set it once, after connecting; the `orm` re-applies it to every
+connection it leases, the way it does `auto_commit`. `validate()` asks the
+catalog under the same policy, and a miss says which spelling the catalog has:
+
+    table not found: USER_ACCOUNTS (only case differs from 'user_accounts')
+
+Hand-written SQL is not rewritten: a `where("...")` clause and `execute()` carry
+exactly the text you gave them.
+
 ### Batch writes
 
 ```cpp
@@ -322,9 +346,10 @@ uniorm-gen --dsn=mydb --user=u --password=p \
 `--dsn` and `--connection-string` are two spellings of one thing — the first
 assembles `DSN=<dsn>[;UID=…][;PWD=…]` and hands it to the same `uniorm::orm`
 constructor you would use yourself — and exactly one of them is required, as is
-`--out`. `--catalog` and `--schema` narrow where tables are looked for (empty
-leaves that to the connection), `--name` renames the output unit, `--tables`
-takes a comma-separated list.
+`--out`. `--catalog` and `--schema` narrow where tables are looked for, by name:
+they are not ODBC patterns, so a `%` there matches nothing and the run says so
+(empty leaves that part to the connection). `--name` renames the output unit,
+`--tables` takes a comma-separated list.
 
 Writes `build/gen/<name>_schema.hpp`: one struct per table (nullable columns
 become `std::optional`, DECIMAL/NUMERIC arrive as a lossless `std::string`),
@@ -345,8 +370,13 @@ skip = false
 cpp_type = "std::string"       # per-column type override
 ```
 
-Overrides are restricted to types the registry can bind; see design doc §6
-for the full specification.
+Overrides are restricted to types the registry can bind. Config keys match
+regardless of case, and a section naming no table or column fails the run
+instead of being ignored; two tables that end up sharing one class name fail it
+the same way: a header declaring one struct twice is no deliverable. A `class`
+override splits such a pair whenever their names differ by more than case;
+names that differ by case alone share one config key, so the run asks for one of
+them with `--tables` instead. See design doc §6 for the full specification.
 
 ## Testing
 
@@ -355,13 +385,13 @@ ctest --test-dir build --output-on-failure
 ```
 
 - **unit_tests**: pure in-memory tests, no external dependencies; they run
-  against a fake backend and link no ODBC, so any driver-type leak into the
-  public API fails to compile. With `UNIORM_BUILD_TOOLS=ON` they also carry the
-  generator's config and output tests, which name no driver any more and so live
-  in the target that links none
-- **odbc_unit_tests**: the private ODBC handle layer and its error translation
-  (driver manager only, no DSN required); built only with
-  `UNIORM_BACKEND_ODBC=ON`
+  against a fake backend — and, for `validate()`, a fake catalog — and link no
+  ODBC, so any driver-type leak into the public API fails to compile. With
+  `UNIORM_BUILD_TOOLS=ON` they also carry the generator's config and output
+  tests, which name no driver any more and so live in the target that links none
+- **odbc_unit_tests**: the private ODBC handle layer, its error translation and
+  the catalog's name re-filter (driver manager only, no DSN required); built only
+  with `UNIORM_BACKEND_ODBC=ON`
 - **integration_tests**: needs a reachable ODBC DSN; reads `UNIORM_IT_DSN`,
   `UNIORM_IT_USER`, `UNIORM_IT_PWD` (all required); credentials
   are folded into the connection string as `UID`/`PWD`; ctest SKIPs when
@@ -419,52 +449,77 @@ docs/design.md        design document (authoritative API reference)
 
 ## Status
 
-v1 is complete and verified against MariaDB, including the `uniorm-gen`
-end-to-end flow; the same suite also passes against a real MySQL server
-through Connector/ODBC with server-side prepares, and against PostgreSQL 17
-through psqlODBC. v2 is underway: the
-backend abstraction is in place (neutral interface + scheme-based registry,
-ODBC migrated behind it, ODBC linked privately, core unit tests compile and
-run without ODBC), v1's last type-level debt is closed
-(`uniorm::decimal_t`), and the schema an introspecting caller reads is now a
-public contract of its own: `orm::schema()` hands out a `uniorm::schema_meta`
-and the catalog reads sit behind it, in the backend that owns them. The
-generator builds through the same `orm`/`schema()` pair a consumer would, so it
-names no driver and links nothing below what `find_package` hands over — which
-is also why its config and output tests moved to the target that links no ODBC.
-A CI workflow now guards both shapes — the ODBC-free
-compile contract, and the suite against a live server for each connector
-paired with the server it is used against. The server axis is there because
-the generator reads metadata the *server* answers, not SQL the dialect
-writes: against MySQL 8.4, MariaDB connector 3.1.12 asks
-`information_schema` for `COLUMN_KEY = 'pri'`, matches nothing once that
-server declares those columns `utf8mb3_bin`, and generates a header whose
-primary key is gone — one that still compiles, registers and validates. That
-class of silence is caught by the comparison itself, which every leg runs:
-generated code against the golden's, comments cut from both sides, since those
-comments differ per connector-and-server pair and comparing them would nail
-the golden to one cell. The lost key is `.column` where the golden has
+### Shipped
+
+v1 is complete: the three access paths (raw SQL, aggregate projection, entity
+mapping), batch writes, transactions, the pool, the dialect layer,
+`uniorm::decimal_t`, and the `uniorm-gen` end-to-end flow — each verified
+against a live database. The same suite passes on MariaDB, on MySQL through
+Connector/ODBC with server-side prepares, and on PostgreSQL through psqlODBC.
+One golden header serves all three families, because the fixture tables are
+spelled the way all of them parse.
+
+v2 is underway, and three pieces have landed on top of v1:
+
+- **The backend abstraction** — a driver-neutral interface plus a scheme
+  registry, with ODBC moved behind it and linked `PRIVATE`. A build with
+  `UNIORM_BACKEND_ODBC=OFF` compiles the core library and runs its unit tests
+  with no ODBC anywhere in the link line.
+- **Introspection as a public contract** — `orm::schema()` hands out a
+  `uniorm::schema_meta`, and the catalog reads sit behind it, in the backend
+  that owns them. The generator builds through the same `orm`/`schema()` pair a
+  consumer would, so it names no driver and links nothing below what
+  `find_package` hands over; its config and output tests moved along, into the
+  target that links none.
+- **Identifier spelling as a deployment policy** — `dialect::identifier_case`,
+  held by the connection and applied at the one point identifiers reach SQL, and
+  `validate()` asks the catalog under the same fold. `keep` is the default and
+  changes nothing for anyone who never sets it; the two folds let one generated
+  header serve servers that store the same table under different case. A miss
+  names the spelling the catalog has, so the policy can be read off the error.
+
+### What CI guards
+
+Four jobs. `core` configures the ODBC-free build over a pair of `sql.h` and
+`sqlext.h` stubs that do nothing but report an error, so a driver type reaching
+the public headers fails the one compile standing watch over that. `driver`
+carries three legs, each pairing a connector with the server it is used
+against, and each asking which server answered before it builds — PostgreSQL
+answers `SHOW SERVER_VERSION`, since `SELECT VERSION()` there starts with the
+server's name rather than a number. A leg whose tests skip fails, so five
+passes mean the server was really reached. All four are green on the runner:
+`core` over one test, each leg over five, off servers answering 8.4.11,
+`11.8.9-MariaDB-ubu2404` and 17.11.
+
+### Two answers the code had to learn to ask about
+
+**The generator reads metadata the server answers, not SQL the dialect
+writes.** Not because the SQL differs — `dialect::detect` gives both MySQL-wire
+banners the same quoting and paging, and PostgreSQL the ANSI defaults — but
+because the catalog the generator walks is a server answer. MariaDB connector
+3.1.12 asks `information_schema` for `COLUMN_KEY = 'pri'`, matches nothing once
+MySQL 8.4 declares that column `utf8mb3_bin`, and emits a header whose primary
+key is simply gone — one that still compiles, registers and validates. The
+comparison catches that class of silence now, on every leg: generated code
+against the golden's, with everything after `//` cut from both sides, since
+those comments differ per connector-and-server pair and comparing them would
+nail the golden to one cell. The lost key is `.column` where the golden has
 `.primary_key`; markers are left for the foreign key and the secondary index,
-the two facts no line of generated code carries. GitHub has run a two-leg
-shape green — both legs on a MariaDB server then — after one execution caught
-a driver header reaching the ODBC-free build, which no local replay could
-have, since the local image had the ODBC development headers installed to
-build the connectors with. Those legs then took both servers and passed all
-five tests in all four cells inside an `ubuntu:24.04` container carrying both
-pinned connectors, and came back down to the two pairings a driver is used
-with: the cross cells are out by choice, and design doc §9 keeps that as a
-named gap. A third leg has since grown on — psqlODBC against PostgreSQL 17, the
-only one of the three drivers Ubuntu packages — and it is what found the single
-place where a *driver's* answer, not the server's, used to decide a return
-value: psqlODBC applies every parameter set of an array-bound UPDATE or DELETE
-but leaves `SQLRowCount` at one set's count, where both MySQL-wire connectors
-report the array's total. `update()` and `remove()` return that number, so the
-core asks for `array_rowcount_totals` and sweeps one set per execute without
-it. One golden now serves all three families, because the fixture tables are
-spelled the way all of them parse. Each leg still asks which server answered
-before it builds, and stops if that is not the one its name claims — on
-PostgreSQL the question is `SHOW SERVER_VERSION`, since `SELECT VERSION()`
-there starts with the server's name rather than a number. That four-job shape
-is rehearsed step for step in the runner's own image family and still owed a
-runner pass. Native libpq / Oracle OCI backends follow — see design doc §5 and
-§9.
+the two facts no line of generated code carries.
+
+**A return value can be the driver's opinion rather than the server's fact** —
+psqlODBC applies every parameter set of an array-bound UPDATE or DELETE but
+leaves `SQLRowCount` at one set's count, where both MySQL-wire connectors
+report the array's total. `update()` and `remove()` hand back exactly that
+number, so the core asks the backend for `array_rowcount_totals` and sweeps one
+set per execute when it is not there.
+
+### Open
+
+The cross pairings — MariaDB's connector against MySQL's server, Connector/ODBC
+against MariaDB's — are out of CI by choice: what the workflow guards is the
+pairing a driver is actually used with. Design doc §9 books that as a named gap,
+and the gap is worth its keeping, since the one real metadata loss found so far
+came out of exactly such a cell.
+
+Next: native libpq and Oracle OCI backends — see design doc §5 and §9.

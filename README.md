@@ -102,9 +102,10 @@ Options:
 
 The product is a shared library, `libuniorm.so` (headers in
 `include/uniorm/`): the target is `SHARED` unconditionally, so `BUILD_SHARED_LIBS`
-changes nothing. Its `VERSION` is the project's (0.2.0) and its `SOVERSION` is
-major.minor (0.2), on purpose — a consumer left holding a stale binary fails at
-link time rather than at run time.
+changes nothing. Its `VERSION` is 0.3.0 and its `SOVERSION` is major.minor
+(0.3). Identifier resolution changes public layouts and the metadata vtable:
+rebuild consumers and third-party backends; do not mix 0.2 headers or binaries
+with this release.
 
 ### Installing
 
@@ -239,9 +240,10 @@ a `disconnect()` or a re-lease moves it.
 
 ### Identifier spelling
 
-The names a mapping declares reach SQL through exactly one place, and which way
-they are spelled there is a deployment fact: Oracle stores `USERS`, PostgreSQL
-stores `users`, and MySQL on Linux stores whichever case `CREATE TABLE` wrote.
+A mapping can retain its declared names or fold them at SQL emission. For
+unquoted DDL, PostgreSQL normally stores lowercase names; MySQL/MariaDB table
+spelling also depends on server configuration. Stored spelling and the server's
+case-sensitivity are different properties.
 
 ```cpp
 db.identifier_case(uniorm::dialect::identifier_case::upper);  // default: keep
@@ -255,8 +257,43 @@ catalog under the same policy, and a miss says which spelling the catalog has:
 
     table not found: USER_ACCOUNTS (only case differs from 'user_accounts')
 
-Hand-written SQL is not rewritten: a `where("...")` clause and `execute()` carry
-exactly the text you gave them.
+A name the listing carries only under the other case is reported as a missing
+table even where the server answers a name regardless of its case: the columns
+come back with it, but they were borrowed, and the name at fault is the table.
+
+A single fold cannot reconcile every mapping. For example, MariaDB may store
+tables lowercase but preserve uppercase column spellings; its SQL can work even
+when this exact-spelling validation rejects the mapping. Resolve each name
+explicitly after registration instead:
+
+```cpp
+db.resolve_identifiers("app_db", "public");  // PostgreSQL
+// db.resolve_identifiers("app_db", "");    // MySQL / MariaDB
+db.validate();
+```
+
+Resolution selects an exact name first, then a unique ASCII-case variant.
+Missing or ambiguous names throw `mapping_error`. All mappings are installed
+together, or none change. Declarations remain intact, including explicit
+update/remove WHERE field names; repeated resolution starts from them.
+
+Resolved mappings use the actual quoted names, ignoring `identifier_case`.
+PostgreSQL requires its current database and an explicit schema; MySQL/MariaDB
+require a database and an empty schema. SQL qualifies tables with that schema
+or database. Only ordinary tables are supported; there is no search-path or
+cross-schema guessing, and unsupported backends fail explicitly.
+
+`validate()` never resolves or mutates mappings. For resolved mappings it rereads
+the selected identity, so a missing object does not silently select another.
+`clear_identifier_resolution()` restores normal folding; connect/disconnect
+clear results too, including failed reconnect attempts. Clear results before
+extending a resolved mapping. New entity registrations remain unresolved until
+the next resolution. Use these operations exclusively, not concurrently with
+queries. Retained queries require their gateway and ORM to remain alive.
+`entity_meta::populate()` expects actual column labels when resolved.
+
+Hand-written SQL is not rewritten. Dynamic table builders are not resolved and
+continue using the connection's spelling policy.
 
 ### Batch writes
 

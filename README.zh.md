@@ -83,9 +83,9 @@ cmake --build build -j
 | `UNIORM_BACKEND_ODBC` | `ON` | 将 ODBC backend 编入 `libuniorm`；关闭后只剩一个没有任何 backend 的核心库，此时 `UNIORM_BUILD_TOOLS=ON` 是配置错误 |
 
 产物为动态库 `libuniorm.so`（头文件在 `include/uniorm/`）：目标一律是
-`SHARED`，`BUILD_SHARED_LIBS` 改变不了它。`VERSION` 取工程版本（0.2.0），
-`SOVERSION` 取 major.minor（0.2），这是刻意的——拿着旧二进制的消费者会在链接期
-失败，而不是等到运行时。
+`SHARED`，`BUILD_SHARED_LIBS` 改变不了它。`VERSION` 为 0.3.0，
+`SOVERSION` 取 major.minor（0.3）。逐名解析改变了公共布局和元数据虚表，
+消费者与第三方 backend 必须重新编译，不可混用 0.2 的头文件或二进制。
 
 ### 安装
 
@@ -213,9 +213,9 @@ if (auto const* id = uniorm::find_column(shape, "id")) {
 
 ### 标识符拼法
 
-映射声明的名字只经一处进 SQL，而那一个名字该以哪种拼法进 SQL 是部署级的事实：
-Oracle 存 `USERS`，PostgreSQL 存 `users`，Linux 上的 MySQL 存的正是 `CREATE TABLE`
-当时写下的那一种。
+映射可以保留声明名，也可以在生成 SQL 时统一转换大小写。不加引号的 DDL 在
+PostgreSQL 上通常存成小写；MySQL/MariaDB 的表名拼写还取决于服务器配置。
+目录保留的拼写和数据库比较名称时是否区分大小写，是两件不同的事。
 
 ```cpp
 db.identifier_case(uniorm::dialect::identifier_case::upper);  // 默认 keep
@@ -228,7 +228,34 @@ db.identifier_case(uniorm::dialect::identifier_case::upper);  // 默认 keep
 
     table not found: USER_ACCOUNTS (only case differs from 'user_accounts')
 
-手写的 SQL 不改写：`where("...")` 的片段与 `execute()` 的语句照你给的文本进去。
+表名只在目录里以另一种大小写存在时，就报在表名那一层：有的服务器比名字不分大小写，表
+会同它的列一起答回来，但那些列是顺带约来的，错的是表名。
+
+一个大小写策略不能适配所有映射。例如 MariaDB 可能将表名存成小写、列名保留大写；
+SQL 能执行，但精确拼写校验仍会拒绝。这时可在注册映射后显式逐名解析：
+
+```cpp
+db.resolve_identifiers("app_db", "public");  // PostgreSQL
+// db.resolve_identifiers("app_db", "");    // MySQL / MariaDB
+db.validate();
+```
+
+精确名称优先，否则只接受唯一的 ASCII 大小写候选；缺失或歧义抛 `mapping_error`。
+所有映射一起安装结果，任意一个失败则全部保留原状。声明名不改写，显式 update/remove
+WHERE 字段仍写声明名；再次解析也始终从声明名出发。
+
+已解析映射使用实际名称，不再受 `identifier_case` 影响。PostgreSQL 要求当前数据库
+和显式 schema；MySQL/MariaDB 要求 database 和空 schema。生成 SQL 分别带上 schema
+或 database 限定。首版只支持普通表，不猜 search_path、不跨 schema 寻找，后端不能
+保证精确元数据读取时明确报不支持。
+
+`validate()` 不解析、不修改映射；对已解析映射精确重读原来选中的对象，不会因对象
+消失而改选另一个。`clear_identifier_resolution()` 恢复原来的大小写策略；重连、
+断开也会清除结果，重连失败同样清除。扩展已解析映射前需要先清除；新注册的实体先保持
+未解析，下一次调用再统一解析。这些操作不能与查询并发进行。保留 query 时，必须让
+它依赖的 gateway 和 ORM 继续存活。已解析映射的 `populate()` 使用实际列标签。
+
+手写 SQL 不改写；动态表构建器不参与解析，继续使用连接的大小写策略。
 
 ### 批量写入
 

@@ -179,7 +179,7 @@ uniorm/
 
 | 位置 | 内容 |
 |---|---|
-| `<libdir>/` | `libuniorm.so.<VERSION>` 加 `SOVERSION`（`0.2`）与裸名两级符号链接；Windows 下 DLL 走 RUNTIME、导入库走 ARCHIVE |
+| `<libdir>/` | `libuniorm.so.<VERSION>` 加 `SOVERSION`（`0.3`）与裸名两级符号链接；Windows 下 DLL 走 RUNTIME、导入库走 ARCHIVE |
 | `include/uniorm/` | 全部 public 头文件；私有头贴邻 `.cpp` 留在 `src/`，不参与安装 |
 | `<libdir>/cmake/uniorm/` | `uniormConfig.cmake`、`uniormConfigVersion.cmake`、`uniormTargets.cmake` 与 `uniormTargets-<config>.cmake` |
 | `<bindir>/uniorm-gen` | 代码生成 CLI；仅 `UNIORM_BUILD_TOOLS=ON` 时安装（`UNIORM_BACKEND_ODBC=OFF` 时该选项被 CMake 直接拦下） |
@@ -198,7 +198,7 @@ C++20 标准都由导出目标携带：公开头自己就要用 `concept` 和 `r
   `DT_NEEDED` 载入，消费者无需 `find_dependency(ODBC)`。
 - `uniorm-gen` 走 RUNTIME 安装但不进 `EXPORT`：它是"跑一遍"的程序，不是被链接的
   目标，导出它便等于把 `uniorm_gen_core`（内部静态切分，靠 `-I src` 读私有头）
-  伪装成对外 API。它的 `DT_NEEDED` 写死 `libuniorm.so.<SOVERSION>`（现为 `0.2`），
+  伪装成对外 API。它的 `DT_NEEDED` 写死 `libuniorm.so.<SOVERSION>`（现为 `0.3`），
   而构建树留下的 `RPATH` 是绝对路径，故 ELF 上以 `INSTALL_RPATH` 改写成
   `$ORIGIN/../<libdir>`——装到哪个 prefix 就找哪个 prefix，与库同树发布时版本必然对上。
 
@@ -741,13 +741,22 @@ struct column_meta {
     std::function<std::size_t(void const* obj)> get_string_size;  // 变长列缓冲定尺；空值 0
 };
 
+struct identifier_resolution {
+    schema_meta::table_ref table;
+    std::vector<std::string> columns;
+};
+
 struct entity_meta {
     std::string table;
     std::vector<column_meta> columns;
     std::vector<member_key> ignored;
+    std::optional<identifier_resolution> resolved;
 
-    std::string const& column_name(member_key const& key) const;  // 未注册抛 mapping_error
-    void populate(void* obj, row const& r) const;                 // 按列名写回对象
+    std::string const& column_name(member_key const& key) const;
+    std::string table_sql(dialect const&) const;
+    std::string column_sql(std::size_t index, dialect const&) const;
+    std::string column_sql(member_key const&, dialect const&) const;
+    void populate(void* obj, row const& result_row) const;
 };
 
 // 成员类型须满足 readable_member：bool/int8~64/double/string/bytes/timestamp、
@@ -779,13 +788,17 @@ class orm {                             // 非线程安全，按线程/会话持
     entity_meta const* find(std::type_index type) const;
     std::size_t size() const noexcept;
 
+    void resolve_identifiers(std::string_view catalog, std::string_view schema);
+    void clear_identifier_resolution() noexcept;
     void validate(validation_mode mode = validation_mode::strict);
-    // 不接 connection 参数：经 schema() 取表元数据（每表一次 shape()，
-    // backend 不提供自省即抛 capability_not_supported）。每个名字都按连接的
-    // 拼法策略折过再去问目录（§4.8）。落空的消息点名目录里那一侧：唯一只差大
-    // 小写的同名对象会被带出来，两边都不差时不提。逐实体核对：
-    //  - 表不存在（形状为空）         → mapping_error
+    // 未解析映射按大小写策略查旧目录；已解析映射精确重读选中的身份（§4.8）。
+    // 校验不修改映射，逐实体核对：
+    //  - 表不存在（形状为空；或形状虽有，清单里却没有这一精确拼法、另有一个只差
+    //    大小写的——名字比对不分大小写的服务端就是这样，列是顺带约来的，错仍在表名）
+    //    → mapping_error
     //  - 列缺失                       → mapping_error
+    //    （清单里这一拼法本就独有，或压根没有只差大小写的另一种时才到这里：目录不含
+    //    视图，而视图的列读得到，那一列就是真缺的）
     //  - 列可空但成员非 optional      → strict 抛 mapping_error / lenient 放行
     //  - 列类型族与成员的 accepted_types 不符 → strict 抛 mapping_error（§4.3）；
     //    converter 成员的族由其表示决定；驱动归类为 sql_type::other 的列跳过
@@ -929,22 +942,24 @@ predicate operator||(predicate lhs, predicate rhs);
 template <class T, class M> column_ref<T, M> col(M T::*member);
 ```
 
-- 列名解析：成员指针 → 经 `entity_meta::column_name` 查注册表（未注册成员抛 `mapping_error`）；
+- 列名渲染：成员指针 → `entity_meta::column_sql`（未注册成员抛 `mapping_error`）；
+  `column_name` 保留声明词汇，SQL 选择声明名或单独保存的解析结果；
 - 生成 SQL 使用 `?` 占位符（ODBC 原生参数标记），值按序收集进 `params`；
 - 标识符引用与分页语法经 `dialect` 生成：
 
 ```cpp
 struct dialect {
-    enum class identifier_case { keep, lower, upper };   // 部署级拼法，默认 keep
+    enum class identifier_case { keep, lower, upper };
+    enum class qualification { unsupported, schema, catalog };
 
     char quote_open = '"', quote_close = '"';     // MySQL/MariaDB → ` `
     bool ansi_pagination = true;                  // false → LIMIT/OFFSET
     identifier_case identifiers = identifier_case::keep;
+    qualification table_qualification = qualification::unsupported;
 
-    // 这个名字将以什么拼法进 SQL（引号除外）。目录读取也按它问，所以落空时
-    // 报的就是查询要发出去的那个名字（§4.7）
     std::string fold_identifier(std::string_view identifier) const;
-    std::string quote_identifier(std::string_view identifier) const;   // 先折叠后加引号
+    std::string quote_identifier(std::string_view identifier) const;
+    std::string quote_exact_identifier(std::string_view identifier) const;
     // ANSI: " OFFSET n ROWS FETCH NEXT m ROWS ONLY"；否则 " LIMIT m OFFSET n"
     std::string pagination(std::optional<std::size_t> limit, std::size_t offset) const;
 
@@ -955,10 +970,32 @@ struct dialect {
 折叠只按 ASCII，不走 locale：同一个名字因进程 locale 不同而指向两张表，比大小写
 本身更糟。三值里 `keep` 是现状——不声明的人行为一字不变。策略住在 `connection`
 （banner 与它是同一处的两个输入），`connection::sql_dialect()` 把探测与策略合成一
-份方言、首次用到才建，被发出的每一条 SQL 与每次目录读取都从这一处取名；`orm` 在
-租到连接时把它重贴上去，与 `auto_commit` 同一个解法（池复用会带走上一个持有者的
-设置）。不从连接串解析：多出来的键会连同驱动关键字一起交出去，为一个枚举引入一套
-转义与冲突规则不值。
+份方言、首次用到才建；未解析映射的 SQL 和校验按该策略折叠。`orm` 在租到连接时
+重贴策略，与 `auto_commit` 相同。不从连接串解析额外配置。
+
+**显式逐名解析（0.3）**：注册后调用
+`resolve_identifiers(catalog, schema)`，只处理指定命名空间里的普通表。
+PostgreSQL 要求当前数据库及非空 schema，MySQL/MariaDB 要求非空 database 及空
+schema；其他 DBMS 报不支持。先精确匹配表名，再独立匹配每个列名；精确不中时只接受
+唯一的 ASCII 大小写候选，缺失或歧义抛 `mapping_error`。同一实体的多个声明列不能
+指向同一个实际列；不同实体可以映射同表。命名空间不折叠，也不猜 search_path。
+
+`entity_meta::resolved` 是可选的 `identifier_resolution`，保存完整 `table_ref`
+和按注册顺序排列的实际列名，原有 table/columns 声明不变。所有结果先暂存，全部成功
+才以不抛异常的交换安装；失败保留旧结果，且不替换实体对象或 columns 容器。
+重复解析始终从声明出发，避免 `Users → users` 后换库误选 `users`。
+
+所有映射 SQL 通过 `table_sql` / `column_sql` 输出：解析后直接引用实际名称，
+不再折叠；未解析时按旧策略输出。限定名逐段引用，闭合引号加倍，NUL 名称拒绝。
+PostgreSQL 输出 schema.table，MySQL 系输出 database.table。显式 WHERE 字段和
+`column_name()` 仍使用声明名；实体物化仍按序号，`populate()` 则使用实际列标签。
+SQL 字符串是缓存键，因此名称变化不要求额外清空 statement cache。
+
+`validate()` 不解析、不修改映射，已解析时通过精确元数据接口重读选中对象，沿用
+类型族/可空性及 strict/lenient 规则。`clear_identifier_resolution()` 清除结果；
+重连开始前及断开时也清除，重连失败不恢复旧结果。移动时记录随映射和连接转移。
+已解析实体不能再通过 builder 修改；先清除才能扩展，新实体可注册为未解析状态。
+解析、清除、注册不能与查询/结果使用并发，外部 DDL 变化后由应用重新解析或校验。
 
 构建器与网关最终 API：
 
@@ -1271,18 +1308,18 @@ struct schema_meta { /* 住在 public 的 <uniorm/schema.hpp>，命名空间 uni
 同一份字段只拼一次。声明侧的对应物是 `column_meta`，它带的是成员能绑定的类型
 **集合**而非单个类型，所以比对有方向：形状是事实，映射是断言。
 
-名字按名字问，不按 pattern 问——这是接口对每家实现的要求。ODBC 那五个目录函数
-（`SQLTables` / `SQLColumns` / `SQLPrimaryKeys` / `SQLForeignKeys` /
-`SQLStatistics`）把名称参数当 pattern value，`%` 与 `_` 在其中是通配符（且常常不
-区分大小写），于是一次读取可以带回别人家的行：声明 `user_id` 那张表的列，可以被
-`userXid` 的列一并约进来。ODBC 实现因此把回来的行再筛一遍，规则是一条：
-驱动**报出**的名字与问出的名字只差大小写，算同一个名字（折叠是运行期策略的事，
-§4.8）；驱动把名字报成空、或那一项本就留空不限定，都留着——那是驱动的沉默，
-不是别人的表。筛的是每行行首那三列（catalog、schema、table；`SQLForeignKeys`
-的外键侧同一组偏到第 5 到 7 列）：catalog 与 schema 一样是 pattern value，
-只筛表名的话 `SALES%` 仍会把别家 schema 里同名表的整份列带回来。筛过之后这些
-参数就只是名字了，`uniorm-gen` 的 `--catalog` / `--schema` 因此不再接受通
-配符，值里带 `%` 会先出一条告警说明它不参与匹配（§6.3）。
+旧目录接口保留原有宽松规则：ODBC 结果中的 catalog/schema/table 与所问名称
+只差 ASCII 大小写时保留，任一项为空也保留。它排除了部分 pattern 扩展出来的
+无关行，但不能区分同一命名空间里的大小写双表，也不能保证特殊字符名称完整匹配。
+ODBC 各参数是否为 pattern 要分别处理，不能一概当作通配模式。
+
+逐名解析只使用新增的 `exact_tables(catalog, schema)` 与
+`exact_table_columns(table_ref)`。前者完整枚举精确命名空间，后者只接受完整身份
+相符的表列；默认实现抛 `capability_not_supported`，不退回旧的宽松接口。
+ODBC 在丢弃原始行的身份字段前逐字筛选，必需身份缺失或截断时报错；pattern 参数
+按 `SQL_SEARCH_PATTERN_ESCAPE` 转义 `%`、`_` 和转义字符。空 schema 仅表示
+MySQL 一类本来没有该层级的命名空间，不是通配符。匹配器再去重完整表身份、检查
+矛盾列元数据，一次解析只枚举一次目标范围、每张实际表只读一次列。
 
 ODBC 实现的当前能力：`{columnar_batch=true, array_rowcount_totals=开连接时按驱动
 探测}`。两个标志各有真实消费点：前者让 `orm` 的三个批量入口据此在列式与行式通道间
@@ -1514,8 +1551,12 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
   （实体 CRUD 的映射级归一：全部键列推断、WHERE 字段解析与 SET 分区、
   `paramset_size` / `row_array_size` 的 0 归一；未连接的 `orm` 上策略读写自洽）、
   `test_orm_validate`（一份假目录实现 `schema_meta`，把 `validate()` 的每条消息逐字
-  钉住：strict/lenient、类型族、可空，以及落空时目录侧的拼法——唯一只差大小写才提，
-  而候选是拿整份目录比的，于是带出它所在的 schema；
+  钉住：strict/lenient、类型族、可空，以及落空时目录侧的拼法——只差大小写才提候选，
+  而候选是拿整份目录比的，于是带出它所在的 schema；这份假目录还能照 MySQL/MariaDB 那
+  样按不分大小写的名字答列，此时声明的拼法不在清单里而另一种在，表名即使问得到列也仍报
+  在表名；缺的列仍报在列的有两种——清单不收、列却读得到的那张表（视图正是这个形状），以及
+  两种拼法都在清单里、这一问正是按精确拼法答的；而每个列名都精确命中的映射压根不会去问清单
+  （钉住的是这个行为，不是一个补不上的用例）；假目录还数着自己被列了几趟，通过的校验是 0 趟；
   同一份映射与同一份目录，只换 `identifier_case` 就在成败两侧来回）、`test_backend_registry`
   （scheme 解析边界、注册/重复注册/未注册 scheme；其中真正解析到
   "odbc" backend 的用例在 `UNIORM_TEST_BACKEND_ODBC` 宏内）、`test_pool`
@@ -1541,14 +1582,20 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
 的列缺失/可空/类型族三条失败路径）、查询构建器全谓词与分页（末了拿 `build_select()`
 的文本比对这条连接自己那家方言的引号；再把策略声明成 `upper` 重发一次——表名跟着升
 上去、原来那条小写断言反过来不成立，出口仍只有一处，随后退回 `keep`）、标识符拼法
-的活目录一半（`UNIORM_IT_CASE_USER` 这段建表 DDL 不加引号，于是它存成哪一侧由服务器
-自己的折叠决定；用例先读目录拿到存下的那一侧，把表名与两个列名都声明在相反的一侧。
-`keep` 下 `validate()` 必须落空——目录放过只差大小写的表名时，逐字比的列名一侧必响，
-所以这条断言不分腿成立；消息按先响的那一侧核对，目录分得开两种拼法就断表名候选、
-分不开就断列候选点名报表那一侧；再把策略折过去，断 `validate()` 通过且实体读回那一
-行。策略由表名与列名各自推出一次再要求相等：一家怎么折表名与怎么折列名是两桩事实，
-而一份策略要同时救整份映射；每格的实拼法无条件记一行 `note:`，而通过的用例 ctest 不
-出它的输出，故作业以 `-V` 跑）、事务
+的活目录一半（`UNIORM_IT_CASE_USER` 这段建表 DDL 不加引号，于是它存成大写还是小写由
+服务器自己的折叠决定；用例先读目录拿到服务器实际存的拼法，把表名与两个列名都声明成相
+反的拼法。`keep` 下 `validate()` 必须报错，报错的位置却不交给目录的比对规则决定：声明的
+名字与服务器存的只差大小写就一定有地方对不上，而对不上的总是表名——有的目录比名字区分
+大小写，拿声明的表名问下去问不到表；有的目录比名字不区分大小写，表连同它的列都会答回来，
+但校验会先问一遍清单：这一拼法不在、而只差大小写的另一种在，就报在表名，不让顺带约来的列
+名冒充错误。于是三
+家同一条消息：报"表不存在"并把服务器存的那种拼法当候选带出来，用例也只断这一条，不分腿；
+表列能统一折叠时继续验证原策略成功；不能统一折叠时验证原策略仍拒绝，不再提前退出。
+两种形状都调用显式解析，随后校验及映射 CRUD 必须成功，并确认声明名没有被改写。
+另有 PostgreSQL 大小写双表用例：先唯一匹配小写表，再创建精确拼写的表并重新解析，
+从不同数据/列名确认改选正确对象；临时同名表改变搜索路径后仍访问明确限定的表，
+无精确候选时报告歧义。每格实测拼法记一行 `note:`；测试代码已加入，真实运行结果
+以当次测试输出为准，不据旧 CI 结果推断本次通过）、事务
 commit/rollback/析构回滚、批量插入（含空 optional 写 NULL、1500 行跨 `paramset_size` 分批）、批量 update / 批量 remove（实体版按主键与全字段两种 WHERE，含一张复合主键表验证单实体与批量都按全部键列命中、非键行不被牵连，动态版 `orm::update(table)` / `orm::remove(table)`，以及 `query<T>::set/update/remove` 与无 WHERE / 无 SET / WHERE 字段未映射的守卫抛错）、语句缓存（hit/miss 计数、流式 result_set 借出期间并发 miss、清空）、跨层错误上报（驱动失败以 `backend_error` 捕获，核对 `backend_name()`
 与 SQLSTATE 诊断）、连接池借还与超时、连接池维护（心跳保活计数、空闲超时驱逐、失败心跳丢弃；"排空"一律轮询等待而非单次采样，因为正被心跳的连接仍计入 `idle_count()`）；后续按库加条件标签覆盖方言与类型怪癖；
 - **性能基准**（已实现，ctest 标签 `perf`，`tests/perf/test_perf.cpp`）：
@@ -1633,10 +1680,11 @@ commit/rollback/析构回滚、批量插入（含空 optional 写 NULL、1500 �
   故健康命令按 matrix 给；`services` 的 env 三套前缀都写，三个镜像
   各读自己那半、取值相同，端口映射也按 matrix 给，因为两支 MySQL 线听 3306、
   PostgreSQL 听 5432。四支作业都带 `-Wall -Wextra`——今天零告警，
-  但不 `-Werror`，免得依赖头升级把与回归无关的红压进分支。三条数据库腿各有一道报警：
+  但不 `-Werror`，免得依赖头升级把与回归无关的红压进分支。三条数据库腿的测试以 `-V` 跑，
+  因为 §8 那个用例会记下每个名字实际存成了什么拼法，而那一行出自一个通过的用例，ctest
+  对通过的用例不出它的输出。三条数据库腿各有一道报警：
   测试连不上就返回 77，而 ctest 把 77 记成 Skip 并照样打印"100% tests passed"，所以作业
   见到输出里的 `Skipped` 即判失败（真正的失败交给 `set -o pipefail`，测试条数不写死），
-  且以 `-V` 跑（§8 那条 `note:` 出自通过的用例，ctest 默认不出其输出），
   并在构建之前先用 `isql` 问过是哪台服务端答的：每条腿带一个 `server_prefix`（引号不能省，
   `11.` 裸写会被 YAML 读成数字 11，那前缀任何 MariaDB banner 都对得上），拿**该腿自己的**
   那句版本查询的 banner 去比前缀，对不上即红——问哪句也是服务端自己的选择，PostgreSQL 的
@@ -1809,12 +1857,11 @@ commit/rollback/析构回滚、批量插入（含空 optional 写 NULL、1500 �
     rollback 后复位 autocommit，复位抛异常则淘汰该连接并扣回名额（见 §4.9）；
     兜底不再只挂在 `orm` 借出侧，直接用 `connection_pool::acquire()` 的借用者
     同样拿到干净的连接
-11. 标识符的延迟绑定：`validate()` 时对活目录逐名解析声明名——精确命中优先，不中
-    再按 ASCII 折叠比，唯一命中才采纳那家的拼法，折叠命中多个即抛并列出候选，绝不
-    代挑。触发条件是某个部署的 schema 拼法不统一（同库里既有 `UserAccounts` 又有
-    `users`）：那种地方没有库级事实可声明，§4.8 的 `identifier_case` 因此帮不上，
-    而逐名解析可以。代价是给每个 `entity_meta` 另存一份声明名（解析就地改写，第二
-    次解析不能再吃第一次的产物）。设计与取舍见 `docs/proposal-identifier-case.md` §6
+11. ~~标识符逐名解析~~ **已实现**：显式 `resolve_identifiers(catalog, schema)`，
+    不在 `validate()` 中隐式执行；声明保留，结果单独保存并原子安装（§4.8）。
+    首版范围为 PostgreSQL、MySQL/MariaDB 的明确命名空间内普通表。公共布局和
+    `schema_meta` 虚表发生变化，版本改为 0.3.0 / SONAME 0.3，消费者与第三方
+    backend 需要重新编译；不能仅因某个类型的 sizeof 没变就混用旧二进制。
 
 ## 10. 评审待定点
 

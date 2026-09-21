@@ -619,6 +619,9 @@ void test_identifier_spelling(std::string_view conn_string) {
   CHECK(db.insert(added) == 2);
   added[0].name = "second";
   CHECK(db.update(added[0], { id_column }) == 1);
+  // MySQL and MariaDB answer an UPDATE with rows changed, so the batch below
+  // has to alter every row it names or the driver will only count one.
+  added[0].name = "second again";
   added[1].name = "third";
   CHECK(db.update(added) == 2);
   CHECK(db.query().of<CaseUser>().where(eq(&CaseUser::id, std::int64_t{ 3 }))
@@ -628,7 +631,7 @@ void test_identifier_spelling(std::string_view conn_string) {
     .order_by(&CaseUser::id).all();
   CHECK(selected.size() == 2);
   if (selected.size() == 2) {
-    CHECK(selected[0].name == "second");
+    CHECK(selected[0].name == "second again");
     CHECK(selected[1].name == "changed");
   }
   CHECK(db.remove(added[0], { id_column }) == 1);

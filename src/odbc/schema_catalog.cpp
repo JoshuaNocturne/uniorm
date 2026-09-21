@@ -25,8 +25,12 @@ struct text_arg {
   SQLCHAR* ptr = nullptr;
   SQLSMALLINT len = 0;
 
+  // An empty text is passed as the ODBC "unrestricted" pointer in every
+  // mode; a literal empty string on SchemaName means "tables without an
+  // owner" to MySQL and MariaDB, which answers with nothing there. The
+  // exact-mode re-filter enforces byte equality afterwards.
   explicit text_arg(std::string const& text, bool exact = false) {
-    if (exact || !text.empty()) {
+    if (!text.empty()) {
       ptr = reinterpret_cast<SQLCHAR*>(const_cast<char*>(text.c_str()));
       len = exact ? exact_catalog_arg_length(text) : SQL_NTS;
     }

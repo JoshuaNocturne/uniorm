@@ -267,13 +267,13 @@ public:
     std::vector<sql_value> bound;
     bound.reserve(sets_.size());
     std::string sql =
-      "UPDATE " + gw_->sql_dialect().quote_identifier(meta_->table) + " SET ";
-    for (std::size_t i = 0; i < sets_.size(); ++i) {
-      if (i != 0) {
+      "UPDATE " + meta_->table_sql(gw_->sql_dialect()) + " SET ";
+    for (std::size_t index = 0; index < sets_.size(); ++index) {
+      if (index != 0) {
         sql += ", ";
       }
-      sql += resolve(sets_[i].first) + " = ?";
-      bound.push_back(sets_[i].second);
+      sql += resolve(sets_[index].first) + " = ?";
+      bound.push_back(sets_[index].second);
     }
     sql += " WHERE " + where_sql(resolve, bound);
     return gw_->conn().execute_update(sql, params(std::move(bound)));
@@ -286,8 +286,7 @@ public:
       throw uniorm_error("remove: refusing to run without a WHERE predicate");
     }
     std::vector<sql_value> bound;
-    std::string sql = "DELETE FROM " +
-                      gw_->sql_dialect().quote_identifier(meta_->table) +
+    std::string sql = "DELETE FROM " + meta_->table_sql(gw_->sql_dialect()) +
                       " WHERE " + where_sql(make_resolver(), bound);
     return gw_->conn().execute_update(sql, params(std::move(bound)));
   }
@@ -300,7 +299,7 @@ private:
 
   predicate::resolver make_resolver() const {
     return [this](member_key const& key) {
-      return gw_->sql_dialect().quote_identifier(meta_->column_name(key));
+      return meta_->column_sql(key, gw_->sql_dialect());
     };
   }
 
@@ -318,39 +317,39 @@ private:
 
   std::string render_select(
     std::optional<std::size_t> lim, std::vector<sql_value>& bound) const {
-    auto const& d = gw_->sql_dialect();
+    auto const& sql_dialect = gw_->sql_dialect();
     auto resolve = make_resolver();
 
     std::string sql = "SELECT ";
-    for (std::size_t i = 0; i < meta_->columns.size(); ++i) {
-      if (i != 0) {
+    for (std::size_t index = 0; index < meta_->columns.size(); ++index) {
+      if (index != 0) {
         sql += ", ";
       }
-      sql += d.quote_identifier(meta_->columns[i].column);
+      sql += meta_->column_sql(index, sql_dialect);
     }
-    sql += " FROM " + d.quote_identifier(meta_->table);
+    sql += " FROM " + meta_->table_sql(sql_dialect);
 
     if (!wheres_.empty()) {
       sql += " WHERE " + where_sql(resolve, bound);
     }
     if (!orders_.empty()) {
       sql += " ORDER BY ";
-      for (std::size_t i = 0; i < orders_.size(); ++i) {
-        if (i != 0) {
+      for (std::size_t index = 0; index < orders_.size(); ++index) {
+        if (index != 0) {
           sql += ", ";
         }
-        sql += resolve(orders_[i].key);
-        sql += orders_[i].dir == direction::asc ? " ASC" : " DESC";
+        sql += resolve(orders_[index].key);
+        sql += orders_[index].dir == direction::asc ? " ASC" : " DESC";
       }
     }
-    sql += d.pagination(lim, offset_);
+    sql += sql_dialect.pagination(lim, offset_);
     return sql;
   }
 
   std::string render_count(std::vector<sql_value>& bound) const {
-    auto const& d = gw_->sql_dialect();
+    auto const& sql_dialect = gw_->sql_dialect();
     std::string sql =
-      "SELECT COUNT(*) FROM " + d.quote_identifier(meta_->table);
+      "SELECT COUNT(*) FROM " + meta_->table_sql(sql_dialect);
     if (!wheres_.empty()) {
       sql += " WHERE " + where_sql(make_resolver(), bound);
     }

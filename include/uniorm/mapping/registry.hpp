@@ -6,6 +6,7 @@
 #include <cstring>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <typeindex>
@@ -18,10 +19,12 @@
 #include <uniorm/detail/projection.hpp>
 #include <uniorm/detail/time.hpp>
 #include <uniorm/detail/traits.hpp>
+#include <uniorm/dialect.hpp>
 #include <uniorm/error.hpp>
 #include <uniorm/export.hpp>
 #include <uniorm/builder/expression.hpp>
 #include <uniorm/row.hpp>
+#include <uniorm/schema.hpp>
 #include <uniorm/types.hpp>
 #include <uniorm/value.hpp>
 
@@ -52,14 +55,25 @@ struct column_meta {
   std::function<std::size_t(void const* obj)> get_string_size;
 };
 
+struct identifier_resolution {
+  schema_meta::table_ref table;
+  std::vector<std::string> columns;
+};
+
 struct UNIORM_API entity_meta {
   std::string table;
   std::vector<column_meta> columns;
   std::vector<member_key> ignored;
+  std::optional<identifier_resolution> resolved;
 
   std::string const& column_name(
     member_key const& key) const;  // throws mapping_error
-  void populate(void* obj, row const& r) const;
+  std::string table_sql(dialect const& sql_dialect) const;
+  std::string column_sql(
+    std::size_t index, dialect const& sql_dialect) const;
+  std::string column_sql(
+    member_key const& key, dialect const& sql_dialect) const;
+  void populate(void* obj, row const& result_row) const;
 };
 
 namespace detail {
@@ -297,6 +311,7 @@ public:
     static_assert(readable_member<M>,
       "member type not supported by the value layer; use a supported "
       "sql type, std::optional thereof, or specialize uniorm::converter");
+    require_unresolved();
     meta_.columns.push_back(detail::make_column_meta(column, member, false));
     return *this;
   }
@@ -306,17 +321,25 @@ public:
     static_assert(readable_member<M>,
       "member type not supported by the value layer; use a supported "
       "sql type, std::optional thereof, or specialize uniorm::converter");
+    require_unresolved();
     meta_.columns.push_back(detail::make_column_meta(column, member, true));
     return *this;
   }
 
   template <class M>
   mapping_builder& ignore(M T::* member) {
+    require_unresolved();
     meta_.ignored.push_back(make_member_key(member));
     return *this;
   }
 
 private:
+  void require_unresolved() const {
+    if (meta_.resolved) {
+      throw mapping_error("cannot modify a resolved entity mapping");
+    }
+  }
+
   entity_meta& meta_;
 };
 

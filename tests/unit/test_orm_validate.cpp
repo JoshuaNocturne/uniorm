@@ -32,6 +32,11 @@ public:
   std::string listed_schema;
   table_shape shape;
   std::vector<std::string> names;
+  // MySQL and MariaDB compare a name in information_schema without regard to
+  // its case, so their column read answers a differently spelled table.
+  bool read_ignores_case = false;
+  // The listing is only worth scanning when a rejection has to name a twin.
+  int tables_reads = 0;
 
   std::string database_name() override {
     return "fake";
@@ -39,6 +44,7 @@ public:
 
   std::vector<table_row> tables(
     std::string_view, std::string_view) override {
+    ++tables_reads;
     std::vector<table_row> out;
     for (auto const& name : names) {
       out.push_back(table_row{ {}, listed_schema, name });
@@ -47,7 +53,9 @@ public:
   }
 
   std::vector<column_row> table_columns(table_ref const& ref) override {
-    if (ref.name != table) {
+    if (ref.name != table &&
+        !(read_ignores_case &&
+          detail::fold_lower(ref.name) == detail::fold_lower(table))) {
       return {};
     }
     std::vector<column_row> out;
@@ -72,8 +80,9 @@ public:
 // spelling policy is the default one unless a case says otherwise.
 std::string failure(schema_meta& md, entity_meta const& m,
   validation_mode mode, dialect const& d = {}) {
+  detail::catalog cat{ md };
   try {
-    detail::validate_entity(md, m, mode, d);
+    detail::validate_entity(cat, m, mode, d);
   } catch (uniorm_error const& e) {
     return e.what();
   }
@@ -86,6 +95,50 @@ fake_catalog catalog_of(std::string table, std::vector<column_shape> columns) {
   md.shape = std::move(columns);
   md.names = { md.table };
   return md;
+}
+
+// The same members pointed at another table, spelling its columns by hand.
+entity_meta over(entity_meta const& base, std::string table,
+  std::vector<std::string> columns) {
+  entity_meta out = base;
+  out.table = std::move(table);
+  out.columns.resize(columns.size());
+  for (std::size_t index = 0; index < columns.size(); ++index) {
+    out.columns[index].column = std::move(columns[index]);
+  }
+  return out;
+}
+
+void test_identifier_candidates() {
+  auto resolve = [](std::vector<std::string> const& names,
+                   std::string_view declared) {
+    return detail::resolve_identifier(names, declared, "column", "App.Users");
+  };
+  auto rejected = [&](std::vector<std::string> const& names,
+                    std::string_view declared) {
+    try {
+      resolve(names, declared);
+    } catch (mapping_error const& error) {
+      return std::string(error.what());
+    }
+    return std::string();
+  };
+
+  CHECK(resolve({ "ID", "id", "Id" }, "Id") == "Id");
+  CHECK(resolve({ "Id", "id", "ID" }, "Id") == "Id");
+  CHECK(resolve({ "ignored", "User_Id" }, "USER_ID") == "User_Id");
+  CHECK(resolve({ "User_Id", "User_Id" }, "user_id") == "User_Id");
+  CHECK(rejected({}, "ID") == "column not found in App.Users: ID");
+  CHECK(rejected({ "other" }, "ID") ==
+    "column not found in App.Users: ID");
+  auto const ambiguous = rejected({ "id", "ID", "id" }, "Id");
+  CHECK(ambiguous ==
+    "ambiguous column in App.Users: Id (candidates: ID, id)");
+  CHECK(rejected({ "ID", "id" }, "Id") == ambiguous);
+  CHECK(resolve({ "\xc3\x84_ID" }, "\xc3\x84_id") == "\xc3\x84_ID");
+  CHECK(resolve({ "\xc3\x84_ID", "\xc3\xa4_ID" }, "\xc3\xa4_ID") ==
+    "\xc3\xa4_ID");
+  CHECK(!rejected({ "\xc3\x84_ID" }, "\xc3\xa4_id").empty());
 }
 
 }  // namespace
@@ -105,6 +158,7 @@ void test_orm_validate() {
   });
   CHECK(failure(good, m, validation_mode::strict).empty());
   CHECK(failure(good, m, validation_mode::lenient).empty());
+  CHECK(good.tables_reads == 0);
 
   // Strict compares the family; lenient is for a server whose types the
   // mapping was not written against.
@@ -135,6 +189,48 @@ void test_orm_validate() {
   });
   CHECK(failure(lower_table, m, validation_mode::strict) ==
     "table not found: USER_ACCOUNTS (only case differs from 'user_accounts')");
+  CHECK(lower_table.tables_reads == 1);
+
+  // The same miss on a server whose catalog read ignores case: the columns
+  // come back, and the one name the mapping cannot address is still the table.
+  auto lower_case_read = catalog_of("user_accounts", {
+    { "user_id", sql_type::bigint, false },
+    { "name", sql_type::varchar, false },
+    { "balance", sql_type::integer, true },
+  });
+  lower_case_read.read_ignores_case = true;
+  CHECK(failure(lower_case_read, m, validation_mode::strict) ==
+    "table not found: USER_ACCOUNTS (only case differs from 'user_accounts')");
+
+  // A table the listing does not carry but the column read answers -- a view
+  // is that shape of thing -- has no other spelling to blame, so the column
+  // that missed keeps the message that names it.
+  auto off_list = catalog_of("V", {
+    { "ID", sql_type::bigint, false },
+  });
+  off_list.names.clear();
+  CHECK(failure(off_list, over(m, "V", { "ID", "MISSING" }),
+    validation_mode::strict) == "column not found in table V: MISSING");
+
+  // Nor is the table the mistake where the listing carries both cases: the
+  // read answered this one by the name it asked for, so the column is.
+  auto both_cases = catalog_of("users", {
+    { "ID", sql_type::bigint, false },
+  });
+  both_cases.names.push_back("USERS");
+  CHECK(failure(both_cases, over(m, "users", { "ID", "MISSING" }),
+    validation_mode::strict) == "column not found in table users: MISSING");
+
+  // Nothing missed, so the catalog is never asked which spellings it has: a
+  // mapping whose columns all hit passes even though its table name is the
+  // other case from this server's.
+  auto columns_hit = catalog_of("USER_ACCOUNTS", {
+    { "USER_ID", sql_type::bigint, false },
+  });
+  columns_hit.read_ignores_case = true;
+  CHECK(failure(columns_hit, over(m, "user_accounts", { "USER_ID" }),
+    validation_mode::strict).empty());
+  CHECK(columns_hit.tables_reads == 0);
 
   auto absent = catalog_of("t_sessions", {});
   CHECK(failure(absent, m, validation_mode::strict) ==
@@ -187,4 +283,13 @@ void test_orm_validate() {
   CHECK(failure(good, m, validation_mode::strict, policy_upper).empty());
   CHECK(failure(all_lower, m, validation_mode::strict, policy_upper) ==
     "table not found: USER_ACCOUNTS (only case differs from 'user_accounts')");
+
+  auto legacy = catalog_of("USER_ACCOUNTS", {});
+  CHECK_THROWS(legacy.exact_tables("fake", "public"),
+    backend::capability_not_supported);
+  schema_meta::table_ref const exact{ "fake", "public", "USER_ACCOUNTS" };
+  CHECK_THROWS(legacy.exact_table_columns(exact),
+    backend::capability_not_supported);
+  CHECK(legacy.tables_reads == 0);
+  test_identifier_candidates();
 }

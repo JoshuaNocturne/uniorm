@@ -93,8 +93,15 @@ public:
 
   std::size_t size() const noexcept;
 
-  // Check every registered mapping against the live catalog, under the
-  // connection's spelling policy. A miss names the spelling the catalog has.
+  // Explicit, per-name resolution of every registered mapping against the
+  // catalog at (catalog, schema). `validate()` reads the catalog but never
+  // resolves; a mapping without a preceding call keeps the connection's
+  // spelling policy. Re-running overwrites, and clear restores the policy.
+  void resolve_identifiers(
+    std::string_view catalog, std::string_view schema);
+  void clear_identifier_resolution() noexcept;
+
+  // Resolved names take precedence over the connection's spelling policy.
   void validate(validation_mode mode = validation_mode::strict);
 
   // ========================================================================
@@ -261,13 +268,7 @@ public:
   void auto_commit(bool enabled);
 
   // --- Identifier spelling ---
-  // How the SQL built from a mapping spells the names it quotes: keep the
-  // mapping's own spelling, or fold it to one case. A deployment sets this once
-  // to what its server stores, which is what lets one generated header serve
-  // servers that spell the same table differently. `validate()` asks the
-  // catalog under the same policy and answers a miss with its own spelling.
-  // This is the orm's setting as auto_commit is: every lease re-applies it, so
-  // one set on native_connection() lasts until the next.
+  // Re-applied on every lease; resolved mappings bypass this policy.
   dialect::identifier_case identifier_case() const noexcept;
   void identifier_case(dialect::identifier_case policy);
 

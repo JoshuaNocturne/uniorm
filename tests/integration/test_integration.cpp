@@ -497,16 +497,22 @@ void test_validate(std::string_view conn_string) {
   }
 }
 
-// The policy's live half: folding to the spelling this server stores has to
-// make both the check and the statement work, and missing it has to say so.
 void test_identifier_spelling(std::string_view conn_string) {
   orm probe(conn_string);
-  auto& md = probe.schema();
+  auto& metadata = probe.schema();
+  std::string catalog_name = metadata.database_name();
+  std::string schema_name;
+  if (probe.native_connection().sql_dialect().table_qualification ==
+      dialect::qualification::schema) {
+    auto result = probe.execute("SELECT current_schema()");
+    CHECK(result.next());
+    schema_name = result.current().get<std::string>(0);
+  }
   std::string const lowered = detail::fold_lower(k_case_table);
   std::string stored;
-  for (auto const& row : md.tables({}, {})) {
-    if (detail::fold_lower(row.name) == lowered) {
-      stored = row.name;
+  for (auto const& table : metadata.exact_tables(catalog_name, schema_name)) {
+    if (detail::fold_lower(table.name) == lowered) {
+      stored = table.name;
       break;
     }
   }
@@ -516,9 +522,6 @@ void test_identifier_spelling(std::string_view conn_string) {
   }
 
   std::string const declared = stored == lowered ? k_case_table : lowered;
-  // A server whose catalog read answers the declared spelling leaves no table
-  // miss to name; the column check is exact, so the miss moves there.
-  bool const table_apart = md.shape({ {}, {}, declared }).empty();
 
   // Declared opposite to the way this server reports a name, so whichever way
   // it folds, the mapping starts out disagreeing with the catalog.
@@ -529,13 +532,14 @@ void test_identifier_spelling(std::string_view conn_string) {
   std::string reported_id;
   std::string id_column;
   std::string name_column;
-  for (auto const& column : md.shape({ {}, {}, stored })) {
-    std::string const folded = detail::fold_lower(column.name);
+  for (auto const& column : metadata.exact_table_columns(
+         { catalog_name, schema_name, stored })) {
+    std::string const folded = detail::fold_lower(column.shape.name);
     if (folded == "id") {
-      reported_id = column.name;
-      id_column = opposite(column.name);
+      reported_id = column.shape.name;
+      id_column = opposite(column.shape.name);
     } else if (folded == "name") {
-      name_column = opposite(column.name);
+      name_column = opposite(column.shape.name);
     }
   }
   CHECK(!reported_id.empty() && !id_column.empty() && !name_column.empty());
@@ -563,17 +567,14 @@ void test_identifier_spelling(std::string_view conn_string) {
   auto const table_fold = fold_to(declared, stored);
   auto const column_fold = fold_to(id_column, reported_id);
   CHECK(table_fold.has_value());
-  CHECK(table_fold == column_fold);
-  if (!table_fold || table_fold != column_fold) {
-    return;
-  }
+  CHECK(column_fold.has_value());
 
   orm db(conn_string);
   db.map<CaseUser>(declared)
     .primary_key(id_column, &CaseUser::id)
     .column(name_column, &CaseUser::name);
 
-  // `keep` has to miss on every server, the question is only on which side.
+  // `keep` has to miss on every server, and miss on the table name.
   std::string miss;
   try {
     db.validate();
@@ -584,28 +585,120 @@ void test_identifier_spelling(std::string_view conn_string) {
   if (miss.empty()) {
     return;
   }
-  if (table_apart) {
-    // The candidate carries the server's own schema qualification, so pin the
-    // stored spelling rather than the whole message.
-    CHECK(miss.find("table not found: " + declared) != std::string::npos);
-    CHECK(miss.find("only case differs from") != std::string::npos);
-    CHECK(miss.find(stored) != std::string::npos);
-  } else {
-    // The column registered first is the one the check reaches first.
-    std::string const head =
-      "column not found in table " + declared + ": " + id_column;
-    CHECK(miss.find(head) != std::string::npos);
-    CHECK(miss.find(reported_id) != std::string::npos);
+  // One mistake, one message on every server: a catalog answering a name
+  // whatever its case is stopped at the table rather than at the column it
+  // happens to report. The candidate carries the server's own schema
+  // qualification, so the stored spelling is pinned, not the whole message.
+  CHECK(miss.find("table not found: " + declared) != std::string::npos);
+  CHECK(miss.find("only case differs from") != std::string::npos);
+  CHECK(miss.find(stored) != std::string::npos);
+
+  if (table_fold && table_fold == column_fold) {
+    db.identifier_case(*table_fold);
+    db.validate();
+    CHECK(db.query().of<CaseUser>().count() == 1);
+  } else if (table_fold) {
+    db.identifier_case(*table_fold);
+    CHECK_THROWS(db.validate(), mapping_error);
   }
 
-  db.identifier_case(*table_fold);
+  db.resolve_identifiers(catalog_name, schema_name);
+  db.identifier_case(dialect::identifier_case::upper);
   db.validate();
+  CHECK(db.meta<CaseUser>().table == declared);
+  CHECK(db.meta<CaseUser>().columns[0].column == id_column);
   auto rows = db.query().of<CaseUser>().all();
   CHECK(rows.size() == 1);
   if (rows.size() == 1) {
     CHECK(rows[0].id == 1);
     CHECK(rows[0].name == "raised");
   }
+
+  auto transaction = db.begin();
+  std::vector<CaseUser> added{ { 2, "two" }, { 3, "three" } };
+  CHECK(db.insert(added) == 2);
+  added[0].name = "second";
+  CHECK(db.update(added[0], { id_column }) == 1);
+  added[1].name = "third";
+  CHECK(db.update(added) == 2);
+  CHECK(db.query().of<CaseUser>().where(eq(&CaseUser::id, std::int64_t{ 3 }))
+    .set(&CaseUser::name, "changed").update() == 1);
+  auto selected = db.query().of<CaseUser>()
+    .where(ge(&CaseUser::id, std::int64_t{ 2 }))
+    .order_by(&CaseUser::id).all();
+  CHECK(selected.size() == 2);
+  if (selected.size() == 2) {
+    CHECK(selected[0].name == "second");
+    CHECK(selected[1].name == "changed");
+  }
+  CHECK(db.remove(added[0], { id_column }) == 1);
+  CHECK(db.remove(std::vector<CaseUser>{ added[1] }) == 1);
+  CHECK(db.insert(std::vector<CaseUser>{ { 4, "four" } }) == 1);
+  CHECK(db.query().of<CaseUser>().where(eq(&CaseUser::id, std::int64_t{ 4 }))
+    .remove() == 1);
+  CHECK(db.query().of<CaseUser>().count() == 1);
+  transaction.rollback();
+}
+
+void test_identifier_case_twins(std::string_view conn_string) {
+  orm db(conn_string);
+  auto const& dialect = db.native_connection().sql_dialect();
+  if (dialect.table_qualification != dialect::qualification::schema) {
+    return;
+  }
+  std::string const catalog_name = db.schema().database_name();
+  std::string schema_name;
+  {
+    auto schema_result = db.execute("SELECT current_schema()");
+    CHECK(schema_result.next());
+    schema_name = schema_result.current().get<std::string>(0);
+  }
+  std::string const prefix = dialect.quote_exact_identifier(schema_name) + ".";
+  std::string const mixed_name = "Uniorm_IT_Resolve_Twin";
+  std::string const lower_name = detail::fold_lower(mixed_name);
+  std::string const mixed_table = prefix +
+    dialect.quote_exact_identifier(mixed_name);
+  std::string const lower_table = prefix +
+    dialect.quote_exact_identifier(lower_name);
+  auto transaction = db.begin();
+  db.execute_update("CREATE TABLE " + lower_table +
+    " (id BIGINT NOT NULL PRIMARY KEY, name VARCHAR(64) NOT NULL)");
+  db.execute_update("INSERT INTO " + lower_table + " VALUES (22, 'lower')");
+  db.map<CaseUser>(mixed_name)
+    .primary_key("Id", &CaseUser::id).column("Name", &CaseUser::name);
+  db.resolve_identifiers(catalog_name, schema_name);
+  CHECK(db.meta<CaseUser>().resolved->table.name == lower_name);
+  auto first = db.query().of<CaseUser>().one();
+  CHECK(first && first->id == 22 && first->name == "lower");
+
+  db.execute_update("CREATE TABLE " + mixed_table +
+    " (\"ID\" BIGINT NOT NULL PRIMARY KEY, \"NAME\" VARCHAR(64) NOT NULL,"
+    " \"EXTRA\" INT)");
+  db.execute_update("INSERT INTO " + mixed_table +
+    " (\"ID\", \"NAME\") VALUES (11, 'exact')");
+  db.resolve_identifiers(catalog_name, schema_name);
+  CHECK(db.meta<CaseUser>().resolved->table.name == mixed_name);
+  CHECK(db.meta<CaseUser>().resolved->columns[0] == "ID");
+  db.validate();
+  auto exact = db.query().of<CaseUser>().one();
+  CHECK(exact && exact->id == 11 && exact->name == "exact");
+
+  db.execute_update("CREATE TEMP TABLE " +
+    dialect.quote_exact_identifier(mixed_name) +
+    " (\"ID\" BIGINT, \"NAME\" VARCHAR(64))");
+  db.execute_update("INSERT INTO " + dialect.quote_exact_identifier(mixed_name) +
+    " VALUES (99, 'shadow')");
+  db.resolve_identifiers(catalog_name, schema_name);
+  auto qualified = db.query().of<CaseUser>().one();
+  CHECK(qualified && qualified->id == 11 && qualified->name == "exact");
+
+  struct AmbiguousUser { std::int64_t id; };
+  db.map<AmbiguousUser>(detail::fold_upper(mixed_name))
+    .primary_key("ID", &AmbiguousUser::id);
+  CHECK_THROWS(db.resolve_identifiers(catalog_name, schema_name), mapping_error);
+  CHECK(!db.meta<AmbiguousUser>().resolved);
+  CHECK(db.meta<CaseUser>().resolved->table.name == mixed_name);
+  transaction.rollback();
 }
 
 void test_query_builder(orm& db) {
@@ -1305,6 +1398,7 @@ int main() {
     test_converter_round_trip(db);
     test_validate(conn_string);
     test_identifier_spelling(conn_string);
+    test_identifier_case_twins(conn_string);
 
     test_query_builder(db);
     test_transaction(db);

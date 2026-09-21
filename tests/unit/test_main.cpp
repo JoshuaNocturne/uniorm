@@ -9,6 +9,7 @@ void test_expression();
 void test_registry();
 void test_orm_crud_helpers();
 void test_orm_validate();
+void test_identifier_resolution();
 void test_backend_registry();
 void test_pool();
 #ifdef UNIORM_TEST_GEN
@@ -27,6 +28,7 @@ int main() {
   test_registry();
   test_orm_crud_helpers();
   test_orm_validate();
+  test_identifier_resolution();
   test_backend_registry();
   test_pool();
 #ifdef UNIORM_TEST_GEN

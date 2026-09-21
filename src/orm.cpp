@@ -49,12 +49,14 @@ orm::orm(orm&&) noexcept = default;
 orm& orm::operator=(orm&&) noexcept = default;
 
 void orm::connect(std::string_view connection_string) {
+  clear_identifier_resolution();
   pooled_conn_ =
     connection_pool_registry::instance().acquire(std::string(connection_string));
   adopt_connection(native_connection(), auto_commit_, identifiers_);
 }
 
 void orm::disconnect() {
+  clear_identifier_resolution();
   ensure_connected();
   pooled_conn_.reset();  // returns connection to pool
 }
@@ -85,13 +87,59 @@ std::size_t orm::size() const noexcept {
   return entities_.size();
 }
 
+void orm::resolve_identifiers(
+  std::string_view catalog_name, std::string_view schema_name) {
+  auto& connection = native_connection();
+  auto const qualification = connection.sql_dialect().table_qualification;
+  if (qualification == dialect::qualification::unsupported) {
+    throw backend::capability_not_supported(
+      "identifier resolution is unsupported for " + connection.dbms_name());
+  }
+  if (catalog_name.empty() ||
+      catalog_name.find('\0') != std::string_view::npos ||
+      schema_name.find('\0') != std::string_view::npos) {
+    throw mapping_error("identifier resolution requires an explicit catalog "
+      "and names without NUL bytes");
+  }
+  auto& metadata = connection.schema();
+  if (qualification == dialect::qualification::schema) {
+    if (schema_name.empty() || catalog_name != metadata.database_name()) {
+      throw mapping_error("PostgreSQL identifier resolution requires the "
+        "current database and an explicit schema");
+    }
+  } else if (!schema_name.empty()) {
+    throw mapping_error("MySQL identifier resolution requires a database "
+      "and an empty schema");
+  }
+  detail::identifier_catalog catalog(metadata, catalog_name, schema_name);
+  using pending_resolution =
+    std::pair<entity_meta*, std::optional<identifier_resolution>>;
+  std::vector<pending_resolution> pending;
+  pending.reserve(entities_.size());
+  for (auto& [type, entity] : entities_) {
+    pending.emplace_back(&entity, catalog.resolve(entity));
+  }
+  static_assert(std::is_nothrow_swappable_v<
+    std::optional<identifier_resolution>>);
+  for (auto& [entity, resolution] : pending) {
+    entity->resolved.swap(resolution);
+  }
+}
+
+void orm::clear_identifier_resolution() noexcept {
+  for (auto& [type, entity] : entities_) {
+    entity.resolved.reset();
+  }
+}
+
 // --- Validation ---
 
 void orm::validate(validation_mode mode) {
-  auto& conn = native_connection();
-  dialect const& d = conn.sql_dialect();
-  for (auto const& [type, meta] : entities_) {
-    detail::validate_entity(conn.schema(), meta, mode, d);
+  auto& connection = native_connection();
+  dialect const& dialect = connection.sql_dialect();
+  detail::catalog catalog(connection.schema());
+  for (auto const& [type, entity] : entities_) {
+    detail::validate_entity(catalog, entity, mode, dialect);
   }
 }
 
@@ -275,17 +323,17 @@ void orm::identifier_case(dialect::identifier_case policy) {
 namespace {
 
 std::string build_insert_sql(
-  dialect const& d, entity_meta const& m) {
-  std::size_t const n = m.columns.size();
-  std::string sql = "INSERT INTO " + d.quote_identifier(m.table) + " (";
-  for (std::size_t i = 0; i < n; ++i) {
-    if (i != 0) {
+  dialect const& dialect, entity_meta const& entity) {
+  std::size_t const count = entity.columns.size();
+  std::string sql = "INSERT INTO " + entity.table_sql(dialect) + " (";
+  for (std::size_t index = 0; index < count; ++index) {
+    if (index != 0) {
       sql += ", ";
     }
-    sql += d.quote_identifier(m.columns[i].column);
+    sql += entity.column_sql(index, dialect);
   }
   sql += ") VALUES (?";
-  for (std::size_t i = 1; i < n; ++i) {
+  for (std::size_t index = 1; index < count; ++index) {
     sql += ", ?";
   }
   sql += ")";
@@ -340,15 +388,15 @@ std::vector<std::size_t> concat_columns(
 
 // `<col> = ?` for each index, joined by sep. Statement text and bound
 // parameters are both spelled from one index list, so the two cannot drift.
-std::string placeholder_group(entity_meta const& m,
-  std::vector<std::size_t> const& col_indices, dialect const& d,
-  std::string_view sep) {
+std::string placeholder_group(entity_meta const& entity,
+  std::vector<std::size_t> const& col_indices, dialect const& dialect,
+  std::string_view separator) {
   std::string out;
-  for (std::size_t i = 0; i < col_indices.size(); ++i) {
-    if (i != 0) {
-      out += sep;
+  for (std::size_t index = 0; index < col_indices.size(); ++index) {
+    if (index != 0) {
+      out += separator;
     }
-    out += d.quote_identifier(m.columns[col_indices[i]].column) + " = ?";
+    out += entity.column_sql(col_indices[index], dialect) + " = ?";
   }
   return out;
 }
@@ -365,18 +413,19 @@ std::vector<sql_value> extract_row(entity_meta const& m, void const* entity,
 
 // One statement text per operation, so the rowwise and columnar channels of
 // the same write also share a statement-cache key.
-std::string update_statement(entity_meta const& m, dialect const& d,
-  std::vector<std::size_t> const& set_col_indices,
+std::string update_statement(entity_meta const& entity,
+  dialect const& dialect, std::vector<std::size_t> const& set_col_indices,
   std::vector<std::size_t> const& where_col_indices) {
-  return "UPDATE " + d.quote_identifier(m.table) + " SET " +
-    placeholder_group(m, set_col_indices, d, ", ") + " WHERE " +
-    placeholder_group(m, where_col_indices, d, " AND ");
+  return "UPDATE " + entity.table_sql(dialect) + " SET " +
+    placeholder_group(entity, set_col_indices, dialect, ", ") + " WHERE " +
+    placeholder_group(entity, where_col_indices, dialect, " AND ");
 }
 
-std::string delete_statement(entity_meta const& m, dialect const& d,
+std::string delete_statement(entity_meta const& entity,
+  dialect const& dialect,
   std::vector<std::size_t> const& where_col_indices) {
-  return "DELETE FROM " + d.quote_identifier(m.table) + " WHERE " +
-    placeholder_group(m, where_col_indices, d, " AND ");
+  return "DELETE FROM " + entity.table_sql(dialect) + " WHERE " +
+    placeholder_group(entity, where_col_indices, dialect, " AND ");
 }
 
 // What a batch adds up per execute(): the rows it bound, or what the driver

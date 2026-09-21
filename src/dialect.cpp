@@ -1,8 +1,7 @@
 #include "uniorm/dialect.hpp"
 
-#include <algorithm>
-
 #include <uniorm/detail/identifier.hpp>
+#include <uniorm/error.hpp>
 
 namespace uniorm {
 
@@ -19,13 +18,25 @@ std::string dialect::fold_identifier(std::string_view identifier) const {
 }
 
 std::string dialect::quote_identifier(std::string_view identifier) const {
-  std::string const folded = fold_identifier(identifier);
-  std::string out;
-  out.reserve(folded.size() + 2);
-  out.push_back(quote_open);
-  out += folded;
-  out.push_back(quote_close);
-  return out;
+  return quote_exact_identifier(fold_identifier(identifier));
+}
+
+std::string dialect::quote_exact_identifier(
+  std::string_view identifier) const {
+  if (identifier.find('\0') != std::string_view::npos) {
+    throw uniorm_error("identifier contains a NUL byte");
+  }
+  std::string quoted;
+  quoted.reserve(identifier.size() + 2);
+  quoted.push_back(quote_open);
+  for (char character : identifier) {
+    quoted.push_back(character);
+    if (character == quote_close) {
+      quoted.push_back(quote_close);
+    }
+  }
+  quoted.push_back(quote_close);
+  return quoted;
 }
 
 std::string dialect::pagination(
@@ -55,17 +66,18 @@ std::string dialect::pagination(
 }
 
 dialect dialect::detect(std::string_view dbms_name) {
-  std::string lower(dbms_name);
-  std::transform(lower.begin(), lower.end(), lower.begin(),
-    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-  dialect d;
+  std::string lower = detail::fold_lower(dbms_name);
+  dialect detected;
   if (lower.find("mysql") != std::string::npos ||
       lower.find("mariadb") != std::string::npos) {
-    d.quote_open = '`';
-    d.quote_close = '`';
-    d.ansi_pagination = false;
+    detected.quote_open = '`';
+    detected.quote_close = '`';
+    detected.ansi_pagination = false;
+    detected.table_qualification = qualification::catalog;
+  } else if (lower.find("postgresql") != std::string::npos) {
+    detected.table_qualification = qualification::schema;
   }
-  return d;
+  return detected;
 }
 
 }  // namespace uniorm

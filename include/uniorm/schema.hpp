@@ -11,6 +11,7 @@
 #include <utility>
 #include <vector>
 
+#include <uniorm/backend/error.hpp>
 #include <uniorm/types.hpp>
 
 namespace uniorm {
@@ -90,6 +91,15 @@ struct schema_meta {
   virtual std::vector<table_row> tables(
     std::string_view catalog, std::string_view schema) = 0;
   virtual std::vector<column_row> table_columns(table_ref const&) = 0;
+  virtual std::vector<table_row> exact_tables(
+    std::string_view, std::string_view) {
+    throw backend::capability_not_supported(
+      "exact namespace table enumeration is not supported");
+  }
+  virtual std::vector<column_row> exact_table_columns(table_ref const&) {
+    throw backend::capability_not_supported(
+      "exact table column metadata is not supported");
+  }
   virtual std::vector<std::string> primary_key(table_ref const&) = 0;
   virtual std::vector<foreign_key_row> foreign_keys(table_ref const&) = 0;
   virtual std::vector<index_row> indexes(table_ref const&) = 0;

@@ -367,8 +367,8 @@ jobs:
         run: |
           set -o pipefail
           # Verbose because the integration case records how this leg's server
-          # stores the names it was given, and ctest swallows the output of a
-          # test that passes. Nothing but this log answers that question.
+          # stores the names it was given. A failing test's output ctest prints
+          # anyway; a passing one it prints only here.
           ctest --test-dir build -LE perf --output-on-failure -V | tee ctest.log
           # A skip is this job failing: the database tests return 77 when they
           # cannot connect, and ctest counts that as a pass. pipefail covers

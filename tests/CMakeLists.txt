@@ -33,6 +33,15 @@ endif()
 add_test(NAME unit_tests COMMAND uniorm_unit_tests)
 
 if(UNIORM_BACKEND_ODBC)
+    # The white-box targets below still link uniorm::odbc so a driver-side
+    # symbol is reachable at build time. Under the plugin shape (design.md
+    # §5.1) that linkage does not register "odbc" -- registration goes through
+    # uniorm_plugin_register, which the core's loader calls after dlopen. In
+    # the build tree the loader's baked UNIORM_PLUGIN_DIR points at the
+    # install prefix and does not exist yet; UNIORM_PLUGIN_PATH redirects it
+    # at the .so CMake just built here.
+    set(UNIORM_BUILD_TREE_PLUGIN_DIR "$<TARGET_FILE_DIR:uniorm_odbc>")
+
     add_executable(uniorm_odbc_unit_tests
         unit/test_odbc_main.cpp
         unit/test_odbc_handles.cpp
@@ -51,7 +60,9 @@ if(UNIORM_BACKEND_ODBC)
     )
     target_link_libraries(uniorm_integration_tests PRIVATE uniorm::odbc)
     add_test(NAME integration_tests COMMAND uniorm_integration_tests)
-    set_tests_properties(integration_tests PROPERTIES SKIP_RETURN_CODE 77)
+    set_tests_properties(integration_tests PROPERTIES
+        SKIP_RETURN_CODE 77
+        ENVIRONMENT "UNIORM_PLUGIN_PATH=${UNIORM_BUILD_TREE_PLUGIN_DIR}")
 
     add_executable(uniorm_perf_tests
         perf/test_perf.cpp
@@ -59,7 +70,9 @@ if(UNIORM_BACKEND_ODBC)
     # The perf case opens a driver handle directly for its timing loop.
     target_link_libraries(uniorm_perf_tests PRIVATE uniorm::odbc ODBC::ODBC)
     add_test(NAME perf_tests COMMAND uniorm_perf_tests)
-    set_tests_properties(perf_tests PROPERTIES SKIP_RETURN_CODE 77 LABELS perf)
+    set_tests_properties(perf_tests PROPERTIES
+        SKIP_RETURN_CODE 77 LABELS perf
+        ENVIRONMENT "UNIORM_PLUGIN_PATH=${UNIORM_BUILD_TREE_PLUGIN_DIR}")
 
     if(UNIORM_BUILD_TOOLS)
         add_executable(uniorm_gen_e2e_tests
@@ -74,7 +87,9 @@ if(UNIORM_BACKEND_ODBC)
             UNIORM_GEN_CONFIG="${CMAKE_CURRENT_SOURCE_DIR}/integration/golden/gen_it.toml"
         )
         add_test(NAME gen_e2e_tests COMMAND uniorm_gen_e2e_tests)
-        set_tests_properties(gen_e2e_tests PROPERTIES SKIP_RETURN_CODE 77)
+        set_tests_properties(gen_e2e_tests PROPERTIES
+            SKIP_RETURN_CODE 77
+            ENVIRONMENT "UNIORM_PLUGIN_PATH=${UNIORM_BUILD_TREE_PLUGIN_DIR}")
     endif()
 endif()
 

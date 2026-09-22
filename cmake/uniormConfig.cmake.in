@@ -1,9 +1,27 @@
 @PACKAGE_INIT@
 
-# uniorm::uniorm is the only exported target. Its own dependencies -- the ODBC
-# driver manager and threads -- are PRIVATE to the shared library and get
-# resolved when libuniorm loads, so there is nothing to find_dependency here: a
-# consumer must not have to locate a driver manager it does not link against.
+# uniorm::uniorm is the core library, exported on its own. A consumer that
+# talks to no server can link just it: libuniorm carries no driver dependency,
+# so ldd stays clean and only the backends it explicitly links load anything.
 include("${CMAKE_CURRENT_LIST_DIR}/uniormTargets.cmake")
+
+# Each backend is a shared library with its own export set, opt-in via
+# COMPONENTS. If a required component is missing from this install, the
+# *_NOT_FOUND_MESSAGE below tells the caller why (an OFF build of uniorm)
+# rather than leaving find_package to say only "not found".
+foreach(_uniorm_component IN LISTS uniorm_FIND_COMPONENTS)
+    if(_uniorm_component STREQUAL "odbc")
+        set(_uniorm_odbc_export "${CMAKE_CURRENT_LIST_DIR}/uniormOdbcTargets.cmake")
+        if(EXISTS "${_uniorm_odbc_export}")
+            include("${_uniorm_odbc_export}")
+            set(uniorm_odbc_FOUND TRUE)
+        else()
+            set(uniorm_odbc_FOUND FALSE)
+            set(uniorm_odbc_NOT_FOUND_MESSAGE
+                "this uniorm install carries no ODBC backend; rebuild uniorm "
+                "with -DUNIORM_BACKEND_ODBC=ON to obtain uniorm::odbc")
+        endif()
+    endif()
+endforeach()
 
 check_required_components(uniorm)

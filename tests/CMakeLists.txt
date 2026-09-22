@@ -19,9 +19,6 @@ target_link_libraries(uniorm_unit_tests PRIVATE uniorm::uniorm)
 # test_orm_crud_helpers exercises a private header that sits beside its
 # source; src/ is on the include path for no other reason.
 target_include_directories(uniorm_unit_tests PRIVATE ${PROJECT_SOURCE_DIR}/src)
-if(UNIORM_BACKEND_ODBC)
-    target_compile_definitions(uniorm_unit_tests PRIVATE UNIORM_TEST_BACKEND_ODBC)
-endif()
 if(UNIORM_BUILD_TOOLS)
     # The generator's own logic names no driver any more, so it is tested in
     # the target that links none.
@@ -41,22 +38,26 @@ if(UNIORM_BACKEND_ODBC)
         unit/test_odbc_handles.cpp
         unit/test_odbc_catalog.cpp
     )
-    target_link_libraries(uniorm_odbc_unit_tests PRIVATE uniorm::uniorm ODBC::ODBC)
-    # White-box test of the private ODBC handle layer (src/odbc/).
+    # White-box test of the backend's own layer: link uniorm::odbc for the
+    # symbols under test and ODBC::ODBC for the SQL* headers the private
+    # odbc/*.hpp files include.
+    target_link_libraries(uniorm_odbc_unit_tests
+        PRIVATE uniorm::odbc ODBC::ODBC)
     target_include_directories(uniorm_odbc_unit_tests PRIVATE ${PROJECT_SOURCE_DIR}/src)
     add_test(NAME odbc_unit_tests COMMAND uniorm_odbc_unit_tests)
 
     add_executable(uniorm_integration_tests
         integration/test_integration.cpp
     )
-    target_link_libraries(uniorm_integration_tests PRIVATE uniorm::uniorm ODBC::ODBC)
+    target_link_libraries(uniorm_integration_tests PRIVATE uniorm::odbc)
     add_test(NAME integration_tests COMMAND uniorm_integration_tests)
     set_tests_properties(integration_tests PROPERTIES SKIP_RETURN_CODE 77)
 
     add_executable(uniorm_perf_tests
         perf/test_perf.cpp
     )
-    target_link_libraries(uniorm_perf_tests PRIVATE uniorm::uniorm ODBC::ODBC)
+    # The perf case opens a driver handle directly for its timing loop.
+    target_link_libraries(uniorm_perf_tests PRIVATE uniorm::odbc ODBC::ODBC)
     add_test(NAME perf_tests COMMAND uniorm_perf_tests)
     set_tests_properties(perf_tests PROPERTIES SKIP_RETURN_CODE 77 LABELS perf)
 
@@ -64,7 +65,7 @@ if(UNIORM_BACKEND_ODBC)
         add_executable(uniorm_gen_e2e_tests
             integration/test_gen_e2e.cpp
         )
-        target_link_libraries(uniorm_gen_e2e_tests PRIVATE uniorm::uniorm ODBC::ODBC)
+        target_link_libraries(uniorm_gen_e2e_tests PRIVATE uniorm::odbc)
         add_dependencies(uniorm_gen_e2e_tests uniorm-gen)
         target_compile_definitions(uniorm_gen_e2e_tests PRIVATE
             UNIORM_GEN_PATH="$<TARGET_FILE:uniorm-gen>"

@@ -20,7 +20,8 @@ set(SMOKE_HAS_ODBC "@UNIORM_BACKEND_ODBC@")
 set(SMOKE_ROOT "${SMOKE_BUILD_DIR}/install_smoke")
 set(SMOKE_PREFIX "${SMOKE_ROOT}/prefix")
 set(SMOKE_PACKAGE_DIR "${SMOKE_PREFIX}/${SMOKE_LIBDIR}/cmake/uniorm")
-set(SMOKE_CONSUMER "${SMOKE_ROOT}/consumer")
+set(SMOKE_CONSUMER_CORE "${SMOKE_ROOT}/consumer_core")
+set(SMOKE_CONSUMER_ODBC "${SMOKE_ROOT}/consumer_odbc")
 
 file(REMOVE_RECURSE "${SMOKE_ROOT}")
 
@@ -49,6 +50,13 @@ if(shipped_libs STREQUAL "")
   message(FATAL_ERROR "no library landed in ${SMOKE_PREFIX}/${SMOKE_LIBDIR}")
 endif()
 
+if(SMOKE_HAS_ODBC)
+  if(NOT EXISTS "${SMOKE_PACKAGE_DIR}/uniormOdbcTargets.cmake")
+    message(FATAL_ERROR
+      "this build carries the ODBC backend but no export set landed")
+  endif()
+endif()
+
 # The whole of include/uniorm is public by construction, so an install rule
 # that starts filtering headers has to show up here.
 file(GLOB_RECURSE shipped_headers RELATIVE "${SMOKE_PREFIX}/${SMOKE_INCLUDEDIR}"
@@ -64,7 +72,30 @@ if(NOT shipped_headers STREQUAL source_headers)
     "  in tree:   ${source_headers}")
 endif()
 
-function(configure_consumer build_dir want_version)
+# The whole point of the split is that the core .so carries no driver NEEDED.
+# Readelf only exists for ELF; other platforms keep the shape check to the
+# consumer's own runtime assertions below.
+if(SMOKE_HAS_ODBC AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  file(GLOB core_so_files "${SMOKE_PREFIX}/${SMOKE_LIBDIR}/libuniorm.so.*")
+  list(FILTER core_so_files EXCLUDE REGEX "libuniorm_odbc")
+  list(LENGTH core_so_files core_so_count)
+  if(core_so_count GREATER 0)
+    list(GET core_so_files 0 core_so)
+    find_program(READELF_EXECUTABLE NAMES readelf objdump)
+    if(READELF_EXECUTABLE)
+      execute_process(
+        COMMAND "${READELF_EXECUTABLE}" -d "${core_so}"
+        OUTPUT_VARIABLE core_dump)
+      if(core_dump MATCHES "NEEDED[^\n]*libodbc")
+        message(FATAL_ERROR
+          "after the backend split, ${core_so} still NEEDs a driver manager:\n"
+          "${core_dump}")
+      endif()
+    endif()
+  endif()
+endif()
+
+function(configure_consumer build_dir want_version components)
   execute_process(
     COMMAND ${SMOKE_CMAKE} -S "${SMOKE_SOURCE_DIR}/tests/install"
             -B "${build_dir}" -G "${SMOKE_GENERATOR}"
@@ -72,7 +103,7 @@ function(configure_consumer build_dir want_version)
             "-DCMAKE_CXX_COMPILER=${SMOKE_COMPILER}"
             "-Duniorm_DIR=${SMOKE_PACKAGE_DIR}"
             "-DSMOKE_UNIORM_VERSION=${want_version}"
-            "-DSMOKE_HAS_ODBC=${SMOKE_HAS_ODBC}"
+            "-DSMOKE_UNIORM_COMPONENTS=${components}"
     RESULT_VARIABLE rc
     OUTPUT_VARIABLE out
     ERROR_VARIABLE err
@@ -81,37 +112,59 @@ function(configure_consumer build_dir want_version)
   set(configure_log "${out}${err}" PARENT_SCOPE)
 endfunction()
 
-configure_consumer("${SMOKE_CONSUMER}" "${SMOKE_VERSION}")
+function(build_and_run_consumer build_dir label)
+  execute_process(
+    COMMAND ${SMOKE_CMAKE} --build "${build_dir}"
+    RESULT_VARIABLE rc
+    ERROR_VARIABLE err
+  )
+  if(NOT rc EQUAL 0)
+    message(FATAL_ERROR "the ${label} consumer did not build:\n${err}")
+  endif()
+  execute_process(
+    COMMAND ${SMOKE_CTEST} --test-dir "${build_dir}" -C Debug
+            --output-on-failure
+    RESULT_VARIABLE rc
+    OUTPUT_VARIABLE out
+    ERROR_VARIABLE err
+  )
+  if(NOT rc EQUAL 0)
+    message(FATAL_ERROR
+      "the ${label} consumer did not run:\n${out}\n${err}")
+  endif()
+endfunction()
+
+# Shape 1: core only. The consumer asks for no components, links only
+# uniorm::uniorm, and main.cpp asserts that no odbc scheme is registered and a
+# bare DSN throws unknown_scheme. This is what a downstream project gets if it
+# distributes prebuilt uniorm to a deployment that talks to no database.
+configure_consumer("${SMOKE_CONSUMER_CORE}" "${SMOKE_VERSION}" "")
 if(NOT configure_rc EQUAL 0)
   message(FATAL_ERROR
     "find_package(uniorm ${SMOKE_VERSION}) rejected the installed package "
     "(rc=${configure_rc}):\n${configure_log}")
 endif()
+build_and_run_consumer("${SMOKE_CONSUMER_CORE}" "core-only")
 
-execute_process(
-  COMMAND ${SMOKE_CMAKE} --build "${SMOKE_CONSUMER}"
-  RESULT_VARIABLE rc
-  ERROR_VARIABLE err
-)
-if(NOT rc EQUAL 0)
-  message(FATAL_ERROR "the consumer did not build:\n${err}")
-endif()
-
-execute_process(
-  COMMAND ${SMOKE_CTEST} --test-dir "${SMOKE_CONSUMER}" -C Debug
-          --output-on-failure
-  RESULT_VARIABLE rc
-  OUTPUT_VARIABLE out
-  ERROR_VARIABLE err
-)
-if(NOT rc EQUAL 0)
-  message(FATAL_ERROR
-    "the consumer did not run:\n${out}\n${err}")
+# Shape 2: core plus the ODBC backend, exactly the way an out-of-tree
+# consumer picks a backend -- by asking for it as a component and linking
+# the imported target. main.cpp then asserts the "odbc" scheme is registered.
+# This is also where the --no-as-needed guard earns its keep: without it a
+# linker that defaults to --as-needed drops libuniorm_odbc.so from NEEDED
+# (no one calls a symbol in it) and the run below fails with unknown_scheme.
+if(SMOKE_HAS_ODBC)
+  configure_consumer("${SMOKE_CONSUMER_ODBC}" "${SMOKE_VERSION}" "odbc")
+  if(NOT configure_rc EQUAL 0)
+    message(FATAL_ERROR
+      "find_package(uniorm COMPONENTS odbc) rejected the installed package "
+      "(rc=${configure_rc}):\n${configure_log}")
+  endif()
+  build_and_run_consumer("${SMOKE_CONSUMER_ODBC}" "odbc-linked")
 endif()
 
 # SameMinorVersion has to bite: a consumer asking for another minor must be
 # turned away at configure time, not build against an API it cannot have.
-configure_consumer("${SMOKE_ROOT}/gate" "99.0.0")
+configure_consumer("${SMOKE_ROOT}/gate" "99.0.0" "")
 if(configure_rc EQUAL 0)
   message(FATAL_ERROR
     "find_package(uniorm 99.0.0) succeeded against ${SMOKE_VERSION}")

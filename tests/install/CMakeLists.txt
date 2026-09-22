@@ -10,11 +10,17 @@ if(CMAKE_CXX_STANDARD)
         "the consumer must not set a standard; the imported target carries it")
 endif()
 
-find_package(uniorm ${SMOKE_UNIORM_VERSION} CONFIG REQUIRED)
+# SMOKE_UNIORM_COMPONENTS is empty for the core-only shape and "odbc" for the
+# backend shape. The find_package call is the same either way: a missing
+# component would fail through check_required_components with a message naming
+# why, not silently.
+find_package(uniorm ${SMOKE_UNIORM_VERSION} CONFIG REQUIRED
+    ${SMOKE_UNIORM_COMPONENTS})
 
 add_executable(consumer main.cpp)
 target_link_libraries(consumer PRIVATE uniorm::uniorm)
-if(SMOKE_HAS_ODBC)
+if("odbc" IN_LIST SMOKE_UNIORM_COMPONENTS)
+    target_link_libraries(consumer PRIVATE uniorm::odbc)
     target_compile_definitions(consumer PRIVATE UNIORM_SMOKE_HAS_ODBC)
 endif()
 

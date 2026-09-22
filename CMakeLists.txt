@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(uniorm VERSION 0.3.0 LANGUAGES CXX)
+project(uniorm VERSION 0.4.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -20,9 +20,6 @@ option(UNIORM_BUILD_TESTS "Build uniorm tests" ON)
 option(UNIORM_BUILD_TOOLS "Build uniorm tools (uniorm-gen)" ON)
 option(UNIORM_BACKEND_ODBC "Build the ODBC backend" ON)
 
-if(UNIORM_BACKEND_ODBC)
-    find_package(ODBC REQUIRED)
-endif()
 find_package(Threads REQUIRED)
 
 add_library(uniorm SHARED
@@ -51,19 +48,11 @@ target_include_directories(uniorm PUBLIC
 )
 # Private headers sit beside their sources in src/ and are included by relative
 # name, so src/ is on no include path; consumers cannot reach them.
-# ODBC is PRIVATE: the backend contract keeps driver types out of the
-# installed headers, so consumers never see them.
+# The core carries no driver dependency: each backend is its own shared
+# library and pulls in the driver it needs (see src/odbc/CMakeLists.txt).
 target_link_libraries(uniorm PRIVATE Threads::Threads)
 if(UNIORM_BACKEND_ODBC)
-    target_sources(uniorm PRIVATE
-        src/odbc/error.cpp
-        src/odbc/environment.cpp
-        src/odbc/connection.cpp
-        src/odbc/statement.cpp
-        src/odbc/schema_catalog.cpp
-        src/odbc/backend.cpp
-    )
-    target_link_libraries(uniorm PRIVATE ODBC::ODBC)
+    add_subdirectory(src/odbc)
 endif()
 target_compile_definitions(uniorm PRIVATE UNIORM_BUILDING_DLL)
 

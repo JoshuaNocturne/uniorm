@@ -4,11 +4,12 @@
 
 #include "handles.hpp"
 #include "error.hpp"
+#include "export.hpp"
 
 namespace uniorm::odbc {
 
 // RAII wrapper for SQLHENV. Typically one per process.
-class UNIORM_API environment {
+class UNIORM_ODBC_API environment {
 public:
   environment();
   ~environment();
@@ -28,6 +29,6 @@ private:
 };
 
 // Process-wide shared environment, created on first use.
-UNIORM_API environment& shared_environment();
+UNIORM_ODBC_API environment& shared_environment();
 
 }  // namespace uniorm::odbc

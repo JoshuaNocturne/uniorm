@@ -73,11 +73,11 @@ struct dummy_connection : uniorm::backend::connection_iface {
 void test_registry() {
   registry& reg = registry::instance();
 
-#ifdef UNIORM_TEST_BACKEND_ODBC
-  // The ODBC backend compiled into libuniorm self-registers at load.
-  CHECK(reg.contains("odbc"));
-#endif
-
+  // This target deliberately links no backend, so the registry starts empty
+  // here whatever the build had compiled; the split is exactly what makes
+  // that visible. The install smoke is where a linked backend's
+  // self-registration gets asserted.
+  CHECK(!reg.contains("odbc"));
   CHECK(!reg.contains("dummy"));
   reg.register_backend(
     "dummy", [] { return std::make_unique<dummy_connection>(); });

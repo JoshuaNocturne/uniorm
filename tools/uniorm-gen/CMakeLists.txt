@@ -11,4 +11,8 @@ target_link_libraries(uniorm_gen_core PUBLIC uniorm::uniorm)
 target_include_directories(uniorm_gen_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
 add_executable(uniorm-gen main.cpp)
-target_link_libraries(uniorm-gen PRIVATE uniorm_gen_core)
+# The generator opens a connection through registry::create, so it needs the
+# ODBC backend loaded as a sibling NEEDED entry on this exe -- the core alone
+# carries no scheme. uniorm_gen_core stays driver-free so its unit tests can
+# link no backend at all.
+target_link_libraries(uniorm-gen PRIVATE uniorm_gen_core uniorm::odbc)

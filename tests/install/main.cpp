@@ -55,6 +55,22 @@ int main() {
 #ifdef UNIORM_SMOKE_HAS_ODBC
   expect(uniorm::backend::registry::instance().contains("odbc"),
     "the ODBC backend self-registered on load");
+#else
+  // Core-only shape: no backend is linked, so the "odbc" scheme a bare
+  // connection string parses to must fail at registry::create, not by
+  // silently falling back to anything.
+  expect(!uniorm::backend::registry::instance().contains("odbc"),
+    "with no backend linked, the odbc scheme is unregistered");
+  bool bare_rejected = false;
+  try {
+    uniorm::connection c("DSN=whatever;UID=u;PWD=p");
+  } catch (uniorm::backend::unknown_scheme const&) {
+    bare_rejected = true;
+  } catch (std::exception const& e) {
+    std::cerr << "bare DSN threw the wrong type: " << e.what() << '\n';
+    ++failures;
+  }
+  expect(bare_rejected, "a bare DSN without a linked backend is unknown_scheme");
 #endif
 
   if (failures != 0) {

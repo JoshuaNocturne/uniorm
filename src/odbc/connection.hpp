@@ -11,7 +11,7 @@
 namespace uniorm::odbc {
 
 // RAII wrapper for SQLHDBC. Move-only.
-class UNIORM_API connection {
+class UNIORM_ODBC_API connection {
 public:
   explicit connection(environment& env);
   ~connection();

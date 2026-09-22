@@ -13,7 +13,7 @@ namespace uniorm::odbc {
 
 // RAII wrapper for SQLHSTMT. Move-only. Exposes raw bind primitives; the
 // typed binding layer above wraps these.
-class UNIORM_API statement {
+class UNIORM_ODBC_API statement {
 public:
   explicit statement(connection& conn);
   ~statement();

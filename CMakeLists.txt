@@ -22,6 +22,12 @@ option(UNIORM_BACKEND_ODBC "Build the ODBC backend" ON)
 
 find_package(Threads REQUIRED)
 
+# A plugin's uniorm_plugin_abi_version must return this to be accepted
+# by the core's loader. Derived from PROJECT_VERSION so SONAME and the
+# plugin ABI gate move together; major*1000+minor keeps 0.10 distinguishable.
+math(EXPR UNIORM_ABI_VERSION_INT
+    "${PROJECT_VERSION_MAJOR} * 1000 + ${PROJECT_VERSION_MINOR}")
+
 add_library(uniorm SHARED
     src/types.cpp
     src/decimal.cpp
@@ -32,6 +38,7 @@ add_library(uniorm SHARED
     src/transaction.cpp
     src/pool.cpp
     src/backend/error.cpp
+    src/backend/plugin_loader.cpp
     src/backend/registry.cpp
     src/builder/expression.cpp
     src/mapping/registry.cpp
@@ -50,11 +57,14 @@ target_include_directories(uniorm PUBLIC
 # name, so src/ is on no include path; consumers cannot reach them.
 # The core carries no driver dependency: each backend is its own shared
 # library and pulls in the driver it needs (see src/odbc/CMakeLists.txt).
-target_link_libraries(uniorm PRIVATE Threads::Threads)
+target_link_libraries(uniorm PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
 if(UNIORM_BACKEND_ODBC)
     add_subdirectory(src/odbc)
 endif()
-target_compile_definitions(uniorm PRIVATE UNIORM_BUILDING_DLL)
+target_compile_definitions(uniorm
+    PRIVATE UNIORM_BUILDING_DLL
+    PUBLIC UNIORM_ABI_VERSION=${UNIORM_ABI_VERSION_INT}
+)
 
 if(UNIORM_BUILD_TOOLS AND NOT UNIORM_BACKEND_ODBC)
     message(FATAL_ERROR
@@ -78,6 +88,13 @@ endif()
 if(PROJECT_IS_TOP_LEVEL)
     include(GNUInstallDirs)
     include(CMakePackageConfigHelpers)
+
+    # Where the core looks for libuniorm_<scheme>.so when a scheme is not
+    # registered. Baked in as an absolute path so an installed core finds
+    # installed plugins without any environment setup; UNIORM_PLUGIN_PATH
+    # at run time overrides this for container/relocatable layouts.
+    target_compile_definitions(uniorm PRIVATE
+        UNIORM_PLUGIN_DIR="${CMAKE_INSTALL_FULL_LIBDIR}/uniorm/backends")
 
     # A pre-1.0 library has no ABI promise to keep, and this one has already
     # broken silently once (adding a member to connection changed its size).

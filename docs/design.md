@@ -121,12 +121,14 @@ uniorm/
 │   └── builder/
 │       ├── builder.hpp          # query_gateway / query<T> / update_builder / remove_builder
 │       └── expression.hpp       # member_key / predicate / 谓词构造器
-├── src/                         # 对应实现（编译进 libuniorm）；私有头贴着 .cpp 存放
+├── src/                         # 核心实现（编译进 libuniorm）；私有头贴着 .cpp 存放
 │   ├── orm_mapping.hpp          # 实体写的 WHERE 解析与 SET/WHERE 列划分（纯映射规则）
 │   ├── statement_cache.hpp      # LRU 预编译语句缓存（存 statement_iface，容量固定 64）
-│   ├── backend/                 # scheme 解析与注册表实现（含 plugin_loader.cpp：
-│   │                            #  按 scheme 从 <libdir>/uniorm/backends dlopen）
-│   └── odbc/                    # ODBC backend（libuniorm_odbc.so，导出 plugin 契约）
+│   └── backend/                 # scheme 解析与注册表实现（含 plugin_loader.cpp：
+│                                #  按 scheme 从 <libdir>/uniorm/backends dlopen）
+├── backends/                    # 每家 backend 一个独立 shared library，与 src/
+│                                #  同级：链接形状与"是不是核心的一部分"一眼可辨
+│   └── odbc/                    # libuniorm_odbc.so，导出 plugin 契约
 │       ├── CMakeLists.txt       # 独立 shared 目标，PRIVATE 链 ODBC::ODBC，
 │       │                        #  装到 <libdir>/uniorm/backends/
 │       ├── export.hpp           # 私有 UNIORM_ODBC_API 宏（跨 DSO 的可见性）
@@ -164,13 +166,15 @@ uniorm/
 
 公开/私有边界按"外部消费者是否需要"判定：凡出现在 `uniorm/uniorm.hpp` 或
 `uniorm/mapping/registry.hpp`（生成代码的唯一依赖）传递闭包内的头文件留在 `include/`，
-其余下沉到 `src/`，与自己的实现 `.cpp` 贴邻，用引号相对名互相引用。于是 `src/`
-不在 `uniorm` 目标的任何 include 路径上（同目录引用无需路径），只有两个白盒单测
-目标显式 `-I src`（PRIVATE），为的是够到 `src/odbc/` 的句柄层。`uniorm-gen`
+其余下沉：核心的私有头与实现贴邻放在 `src/`，backend 的私有头贴邻放在 `backends/<scheme>/`，
+都用引号相对名互相引用。于是 `src/` 不在 `uniorm` 目标的任何 include 路径上（同目录
+引用无需路径），只有两个白盒单测目标显式带 `-I`：核心侧的 `uniorm_unit_tests`
+用 `-I src` 读 `src/orm_mapping.hpp` 一类私有头，backend 侧的 `uniorm_odbc_unit_tests`
+用 `-I backends` 读 `backends/odbc/*.hpp` 的句柄层。`uniorm-gen`
 曾在其列——它自己调 `SQLTables` / `SQLColumns` 这些目录函数，就得请出它们的声明；
 那些读取挪进 ODBC backend 后，工具只剩公开头可用，也就回到了公开边界这一侧。
 公开头一旦 `#include` 私有头便无法解析，边界由编译器强制；库内的 `<sql.h>`
-只出现在 `src/odbc/` 之下，对外头文件既不带驱动类型，也不带 ODBC 链接依赖
+只出现在 `backends/odbc/` 之下，对外头文件既不带驱动类型，也不带 ODBC 链接依赖
 （`ODBC::ODBC` 是 PRIVATE）。
 
 公开头只留声明：非模板成员的定义一律进同名 `.cpp`（`orm.cpp`、`decimal.cpp` 都按
@@ -363,7 +367,7 @@ using sql_value = std::variant<
 
 映射不靠单一 traits，而是三条独立通道（下表是它们的合成结果）：
 native code 归一为中立 `sql_type` 发生在 backend 之内（ODBC 是
-`src/odbc/native_types.hpp`，核心库的任何一处都不再出现驱动编码）；
+`backends/odbc/native_types.hpp`，核心库的任何一处都不再出现驱动编码）；
 动态行按 `sql_type` 选槽位种类（`src/result_set.cpp` 的 `kind_for`）；实体/投影侧由
 成员类型决定绑哪种 `backend::buffer_type`（`readable_member` / `plain_sql_member`
 concept 约束可声明的成员类型，`column_meta::buffer_type` 记录之），buffer_type 再在
@@ -1216,7 +1220,7 @@ backend 接口已在里程碑 1 落地（§5.2），下列纪律从约定变成�
 
 - ODBC 类型（`SQLH*`、`SQLLEN`、indicator、SQLSTATE）不得出现在语句层及以上层级的
   公共 API 中：`include/` 下没有任何文件包含 `sql.h` 或写出 `SQL*` 类型，驱动类型
-  只活在 `src/odbc/`；
+  只活在 `backends/odbc/`；
 - SQL 方言差异集中在 `dialect`，占位符统一以 `?` 语义表达，backend 负责翻译成各自风格（libpq `$1`、OCI `:1`）；
 - `transaction`、`connection_pool`、`result_set`、`orm`、`query<T>` 只依赖 `backend::*`；
 - 核心单测目标 `uniorm_unit_tests` 只链 `uniorm::uniorm`，不链 ODBC：驱动类型一旦漏进
@@ -1257,7 +1261,7 @@ env 可覆盖成单一目录，用于测试和非常规部署。
   把这颗异常当作"另一线程已装好"处理，重新查一次 map，两条路径都拿到同一份
   `factory`。
 
-`UNIORM_BACKEND_ODBC=OFF` 时 `src/odbc/` 整个子目录不参与构建，也就没有任何 plugin
+`UNIORM_BACKEND_ODBC=OFF` 时 `backends/odbc/` 整个子目录不参与构建，也就没有任何 plugin
 文件装到 `<libdir>/uniorm/backends/`：`registry::create` 遇到 `odbc://…` 或裸 DSN
 时 loader 找不到 `libuniorm_odbc.so`，抛 `unknown_scheme` 并在 message 里附上
 `dlopen` 的失败原因（`No such file or directory` 一类），消费者若之前用
@@ -1270,7 +1274,7 @@ env 可覆盖成单一目录，用于测试和非常规部署。
 ### 5.2 backend 接口（v2 里程碑 1，已实现）
 
 接口位于 `include/uniorm/backend/backend.hpp`，ODBC 是唯一内置实现——不在核心库里，
-而是自己一份 `libuniorm_odbc.so`（`src/odbc/backend.cpp`，见 §5.1）。核心 API（查询
+而是自己一份 `libuniorm_odbc.so`（`backends/odbc/backend.cpp`，见 §5.1）。核心 API（查询
 构建器、映射、池、事务）只依赖接口；能力缺失时应当抛清晰错误而非静默降级。
 `capabilities` 上只有两条真分岔——
 `columnar_batch` 与 `array_rowcount_totals`——各有一条更慢的退路可走，其余缺什么
@@ -1404,7 +1408,7 @@ backend，要在自己的 `reset()` 重写里清干净。
 （backend 名固定 "odbc"），故现有 catch 站点不受影响；另有
 `capability_not_supported` 与 `unknown_scheme`。
 
-**构建门禁**：`option(UNIORM_BACKEND_ODBC ON)`；启用时 `src/odbc/` 出一个独立
+**构建门禁**：`option(UNIORM_BACKEND_ODBC ON)`；启用时 `backends/odbc/` 出一个独立
 shared 目标 `uniorm::odbc`，PRIVATE 链 `ODBC::ODBC`（§5.1）；`uniorm-gen` 向
 `orm::schema()` 要活库元数据，而目前只有 ODBC backend 提供它，故
 `UNIORM_BUILD_TOOLS` 依赖该选项。
@@ -1562,7 +1566,7 @@ uniorm_error : std::runtime_error    // 基类（error.hpp）
 
 backend::backend_error : uniorm_error    // backend 层（backend/error.hpp），
 │                                        // backend 名 + context + diagnostics
-└── odbc::odbc_error                     // ODBC 句柄层（src/odbc/error.hpp，私有头），
+└── odbc::odbc_error                     // ODBC 句柄层（backends/odbc/error.hpp，私有头），
                                          // backend 名固定 "odbc"
 
 backend::capability_not_supported : uniorm_error   // 无路可退的读取遇上做不到
@@ -1790,9 +1794,9 @@ commit/rollback/析构回滚、批量插入（含空 optional 写 NULL、1500 �
   抓的泄漏：那张 `SQL_*` → `sql_type` 的映射表以 `UNIORM_API` 的资格住在公开头和核心库里，
   而 runner 的镜像不装 `unixodbc-dev`。本地那趟重放是绿的，只因为仿 runner 的容器为了编驱动
   早已把那些头装上了：一条断言的成败取决于某个包在不在，它不配叫守卫。映射表因此搬去
-  `src/odbc/native_types.hpp`（`inline` 头，不进 ABI），`column_model` 改存中立 `sql_type`、
+  `backends/odbc/native_types.hpp`（`inline` 头，不进 ABI），`column_model` 改存中立 `sql_type`、
   由 `schema_reader` 当时那条 ODBC 边界归一（那些读取现已挪进
-  `src/odbc/schema_catalog.cpp`），公开头不再声明 `sql_type_from_native`；`core`
+  `backends/odbc/schema_catalog.cpp`），公开头不再声明 `sql_type_from_native`；`core`
   作业另加一道 shadow：往 include 路径最前放一对读下去即报错的 `sql.h`/`sqlext.h`，再用一次
   反面编译确认它们确实抢在了系统头之前——且要求那次编译非报我们那句 `#error` 不可，编不动
   的编译器同样会"失败"，而那不算守卫生效。两处都改完后再提交一趟，三支作业在 runner 上全绿：

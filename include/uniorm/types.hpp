@@ -10,7 +10,7 @@ namespace uniorm {
 
 // Backend-neutral SQL type classification. Every backend translates its own
 // native type codes to these values behind the interface; the ODBC one keeps
-// that table in src/odbc/native_types.hpp.
+// that table in backends/odbc/native_types.hpp.
 enum class sql_type {
   boolean,
   smallint,

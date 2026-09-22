@@ -52,7 +52,10 @@ if(UNIORM_BACKEND_ODBC)
     # odbc/*.hpp files include.
     target_link_libraries(uniorm_odbc_unit_tests
         PRIVATE uniorm::odbc ODBC::ODBC)
-    target_include_directories(uniorm_odbc_unit_tests PRIVATE ${PROJECT_SOURCE_DIR}/src)
+    # Reaching the backend's private headers by name ("odbc/error.hpp") is
+    # exactly what the plugin-shape split makes the source of truth for
+    # visibility, so -I here is the whole surface the tests can peek at.
+    target_include_directories(uniorm_odbc_unit_tests PRIVATE ${PROJECT_SOURCE_DIR}/backends)
     add_test(NAME odbc_unit_tests COMMAND uniorm_odbc_unit_tests)
 
     add_executable(uniorm_integration_tests

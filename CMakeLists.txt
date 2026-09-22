@@ -56,10 +56,11 @@ target_include_directories(uniorm PUBLIC
 # Private headers sit beside their sources in src/ and are included by relative
 # name, so src/ is on no include path; consumers cannot reach them.
 # The core carries no driver dependency: each backend is its own shared
-# library and pulls in the driver it needs (see src/odbc/CMakeLists.txt).
+# library, sitting outside src/ so its build shape is obvious at a glance
+# (see backends/odbc/CMakeLists.txt), and pulls in the driver it needs.
 target_link_libraries(uniorm PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
 if(UNIORM_BACKEND_ODBC)
-    add_subdirectory(src/odbc)
+    add_subdirectory(backends/odbc)
 endif()
 target_compile_definitions(uniorm
     PRIVATE UNIORM_BUILDING_DLL

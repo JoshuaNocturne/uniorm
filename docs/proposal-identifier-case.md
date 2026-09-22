@@ -167,7 +167,7 @@ B、C 都不改 DDL，也不生成任何迁移脚本：它们只让"已经存在
 ## 5. 一处前置修复（B 与 D 需要，C 不需要）
 
 `SQLColumns` 的表名参数按 ODBC 是 pattern value，`_` 与 `%` 是通配符，而
-`src/odbc/schema_catalog.cpp:119-128` 原样传入（列名传 `nullptr`，即该表全部列）。
+`backends/odbc/schema_catalog.cpp:119-128` 原样传入（列名传 `nullptr`，即该表全部列）。
 `md.shape()` 把返回行串成 `table_shape`，于是声明 `user_id` 这张表的读取可以顺带命中
 `userXid` 的列，把两张表的列约进同一个 shape；`tables(catalog, schema)` 的两个参数同
 理（`schema_catalog.cpp:76-83`）。现状已在文档里承认了合并（`table_ref` 留空
@@ -364,7 +364,7 @@ MySQL 的 `INT` 报 integer，成员是 `std::int32_t`。把后一份头拿到�
 3. **主键标记跨两次目录读取用 `==` 联结，全不命中时零输出。**
    `read_primary_keys()`（`schema_reader.cpp:83-91`）拿 `SQLPrimaryKeys` 的名字与
    `SQLColumns` 的名字精确比，而 `primary_key()` 还会跳过 NULL 名列
-   （`src/odbc/schema_catalog.cpp:181-207`）。一家驱动报出的 PK 名与列目录只差大小
+   （`backends/odbc/schema_catalog.cpp:181-207`）。一家驱动报出的 PK 名与列目录只差大小
    写，结果是该表一列主键都没有，而附近唯一的警告只在 `table.columns.empty()` 时触
    发（`schema_reader.cpp:136-138`）。这与当年 MariaDB 3.1.12 丢 `COLUMN_KEY='pri'`
    是同一类失效：今天只被夹具 golden 挡住（`.column` 还是 `.primary_key`），三家 CI

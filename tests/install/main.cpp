@@ -1,7 +1,10 @@
 // Consumes uniorm the way an outside project does: installed headers, the
 // flags the imported target carries, and the shared library as it is loaded at
 // run time. Every call below lands in libuniorm.so rather than in a header, so
-// reaching it proves the link line and the load path both work.
+// reaching it proves the link line and the load path both work. Backends are
+// not linked here at all -- the core dlopens them on scheme miss, so this
+// binary is exactly the same for both smoke shapes and only the plugin
+// directory differs.
 
 #include <exception>
 #include <iostream>
@@ -39,8 +42,9 @@ int main() {
   expect(uniorm::backend::parse_scheme("DSN=x;UID=y").scheme == "odbc",
     "a bare connection string is ODBC");
 
-  // Scheme resolution happens inside the .so; an unregistered scheme must fail
-  // there instead of quietly falling back to the default backend.
+  // Loading is by scheme, not by link: a scheme with no plugin file next to
+  // it must fail at registry::create, not by silently falling back to the
+  // default backend.
   bool rejected = false;
   try {
     uniorm::connection c("nosuchbackend://x");
@@ -53,14 +57,31 @@ int main() {
   expect(rejected, "unknown scheme rejected");
 
 #ifdef UNIORM_SMOKE_HAS_ODBC
-  expect(uniorm::backend::registry::instance().contains("odbc"),
-    "the ODBC backend self-registered on load");
-#else
-  // Core-only shape: no backend is linked, so the "odbc" scheme a bare
-  // connection string parses to must fail at registry::create, not by
-  // silently falling back to anything.
+  // The plugin is on disk. A bare DSN should get past registry::create --
+  // the loader dlopens it, calls register, and the factory then fails on
+  // the missing DSN itself. What matters is that the error is no longer
+  // unknown_scheme and that odbc shows up in the map afterwards.
   expect(!uniorm::backend::registry::instance().contains("odbc"),
-    "with no backend linked, the odbc scheme is unregistered");
+    "before any load, the odbc scheme is not registered");
+  bool reached_odbc = false;
+  bool fell_back_to_unknown = false;
+  try {
+    uniorm::connection c("DSN=nonexistent_dsm_for_smoke;UID=u;PWD=p");
+    reached_odbc = true;
+  } catch (uniorm::backend::unknown_scheme const&) {
+    fell_back_to_unknown = true;
+  } catch (std::exception const&) {
+    reached_odbc = true;
+  }
+  expect(!fell_back_to_unknown,
+    "with the plugin present, a bare DSN is not unknown_scheme");
+  expect(reached_odbc, "the load-on-miss reached the ODBC layer");
+  expect(uniorm::backend::registry::instance().contains("odbc"),
+    "after the load-on-miss, odbc is registered");
+#else
+  // Core-only install: the plugin file is not there, so a bare DSN has to
+  // remain unknown_scheme and odbc has to stay unregistered -- a missing
+  // plugin must never become an implicit fallback to any other backend.
   bool bare_rejected = false;
   try {
     uniorm::connection c("DSN=whatever;UID=u;PWD=p");
@@ -70,7 +91,9 @@ int main() {
     std::cerr << "bare DSN threw the wrong type: " << e.what() << '\n';
     ++failures;
   }
-  expect(bare_rejected, "a bare DSN without a linked backend is unknown_scheme");
+  expect(bare_rejected, "a bare DSN with no plugin installed is unknown_scheme");
+  expect(!uniorm::backend::registry::instance().contains("odbc"),
+    "with no plugin installed, odbc never registers");
 #endif
 
   if (failures != 0) {

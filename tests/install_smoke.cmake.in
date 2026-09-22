@@ -10,6 +10,7 @@ set(SMOKE_SOURCE_DIR "@PROJECT_SOURCE_DIR@")
 set(SMOKE_GENERATOR "@CMAKE_GENERATOR@")
 set(SMOKE_COMPILER "@CMAKE_CXX_COMPILER@")
 set(SMOKE_VERSION "@PROJECT_VERSION@")
+set(SMOKE_ABI_VERSION "@UNIORM_ABI_VERSION_INT@")
 set(SMOKE_EXE_SUFFIX "@CMAKE_EXECUTABLE_SUFFIX@")
 set(SMOKE_LIBDIR "@CMAKE_INSTALL_LIBDIR@")
 set(SMOKE_BINDIR "@CMAKE_INSTALL_BINDIR@")
@@ -20,8 +21,8 @@ set(SMOKE_HAS_ODBC "@UNIORM_BACKEND_ODBC@")
 set(SMOKE_ROOT "${SMOKE_BUILD_DIR}/install_smoke")
 set(SMOKE_PREFIX "${SMOKE_ROOT}/prefix")
 set(SMOKE_PACKAGE_DIR "${SMOKE_PREFIX}/${SMOKE_LIBDIR}/cmake/uniorm")
-set(SMOKE_CONSUMER_CORE "${SMOKE_ROOT}/consumer_core")
-set(SMOKE_CONSUMER_ODBC "${SMOKE_ROOT}/consumer_odbc")
+set(SMOKE_PLUGIN_DIR "${SMOKE_PREFIX}/${SMOKE_LIBDIR}/uniorm/backends")
+set(SMOKE_CONSUMER "${SMOKE_ROOT}/consumer")
 
 file(REMOVE_RECURSE "${SMOKE_ROOT}")
 
@@ -50,10 +51,27 @@ if(shipped_libs STREQUAL "")
   message(FATAL_ERROR "no library landed in ${SMOKE_PREFIX}/${SMOKE_LIBDIR}")
 endif()
 
+# Under Model B the ODBC backend is not part of the consumer's link line; the
+# whole delivery promise is that the plugin file exists where the core will
+# dlopen it, and that the plugin exports the ABI-version check the loader calls
+# on a miss. If the build turned ODBC off, both must be absent.
 if(SMOKE_HAS_ODBC)
+  file(GLOB odbc_plugin "${SMOKE_PLUGIN_DIR}/libuniorm_odbc.so*")
+  list(LENGTH odbc_plugin odbc_plugin_count)
+  if(odbc_plugin_count LESS 2)
+    message(FATAL_ERROR
+      "expected libuniorm_odbc.so and its soname under ${SMOKE_PLUGIN_DIR}, "
+      "found: ${odbc_plugin}")
+  endif()
   if(NOT EXISTS "${SMOKE_PACKAGE_DIR}/uniormOdbcTargets.cmake")
     message(FATAL_ERROR
       "this build carries the ODBC backend but no export set landed")
+  endif()
+else()
+  if(EXISTS "${SMOKE_PLUGIN_DIR}/libuniorm_odbc.so")
+    message(FATAL_ERROR
+      "UNIORM_BACKEND_ODBC=OFF but the plugin installed at "
+      "${SMOKE_PLUGIN_DIR}/libuniorm_odbc.so")
   endif()
 endif()
 
@@ -91,11 +109,16 @@ if(SMOKE_HAS_ODBC AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
           "after the backend split, ${core_so} still NEEDs a driver manager:\n"
           "${core_dump}")
       endif()
+      if(core_dump MATCHES "NEEDED[^\n]*libuniorm_odbc")
+        message(FATAL_ERROR
+          "the core must not NEEDED the odbc plugin; loading is by dlopen:\n"
+          "${core_dump}")
+      endif()
     endif()
   endif()
 endif()
 
-function(configure_consumer build_dir want_version components)
+function(configure_consumer build_dir want_version has_odbc)
   execute_process(
     COMMAND ${SMOKE_CMAKE} -S "${SMOKE_SOURCE_DIR}/tests/install"
             -B "${build_dir}" -G "${SMOKE_GENERATOR}"
@@ -103,7 +126,8 @@ function(configure_consumer build_dir want_version components)
             "-DCMAKE_CXX_COMPILER=${SMOKE_COMPILER}"
             "-Duniorm_DIR=${SMOKE_PACKAGE_DIR}"
             "-DSMOKE_UNIORM_VERSION=${want_version}"
-            "-DSMOKE_UNIORM_COMPONENTS=${components}"
+            "-DSMOKE_UNIORM_HAS_ODBC=${has_odbc}"
+            "-DSMOKE_UNIORM_PLUGIN_DIR=${SMOKE_PLUGIN_DIR}"
     RESULT_VARIABLE rc
     OUTPUT_VARIABLE out
     ERROR_VARIABLE err
@@ -134,37 +158,28 @@ function(build_and_run_consumer build_dir label)
   endif()
 endfunction()
 
-# Shape 1: core only. The consumer asks for no components, links only
-# uniorm::uniorm, and main.cpp asserts that no odbc scheme is registered and a
-# bare DSN throws unknown_scheme. This is what a downstream project gets if it
-# distributes prebuilt uniorm to a deployment that talks to no database.
-configure_consumer("${SMOKE_CONSUMER_CORE}" "${SMOKE_VERSION}" "")
+# One consumer per build, matching the shape the build produced. The link line
+# is the same either way (uniorm::uniorm alone); what changes is whether the
+# plugin file exists on disk, which is what determines whether the loader can
+# resolve a scheme at run time. build-warn exercises the with-plugin path;
+# build-odbc-off exercises the without-plugin path. Together they cover both.
+if(SMOKE_HAS_ODBC)
+  set(SMOKE_CONSUMER_HAS_ODBC ON)
+else()
+  set(SMOKE_CONSUMER_HAS_ODBC OFF)
+endif()
+configure_consumer("${SMOKE_CONSUMER}" "${SMOKE_VERSION}" "${SMOKE_CONSUMER_HAS_ODBC}")
 if(NOT configure_rc EQUAL 0)
   message(FATAL_ERROR
     "find_package(uniorm ${SMOKE_VERSION}) rejected the installed package "
     "(rc=${configure_rc}):\n${configure_log}")
 endif()
-build_and_run_consumer("${SMOKE_CONSUMER_CORE}" "core-only")
-
-# Shape 2: core plus the ODBC backend, exactly the way an out-of-tree
-# consumer picks a backend -- by asking for it as a component and linking
-# the imported target. main.cpp then asserts the "odbc" scheme is registered.
-# This is also where the --no-as-needed guard earns its keep: without it a
-# linker that defaults to --as-needed drops libuniorm_odbc.so from NEEDED
-# (no one calls a symbol in it) and the run below fails with unknown_scheme.
-if(SMOKE_HAS_ODBC)
-  configure_consumer("${SMOKE_CONSUMER_ODBC}" "${SMOKE_VERSION}" "odbc")
-  if(NOT configure_rc EQUAL 0)
-    message(FATAL_ERROR
-      "find_package(uniorm COMPONENTS odbc) rejected the installed package "
-      "(rc=${configure_rc}):\n${configure_log}")
-  endif()
-  build_and_run_consumer("${SMOKE_CONSUMER_ODBC}" "odbc-linked")
-endif()
+build_and_run_consumer("${SMOKE_CONSUMER}"
+  "${SMOKE_CONSUMER_HAS_ODBC}-plugin")
 
 # SameMinorVersion has to bite: a consumer asking for another minor must be
 # turned away at configure time, not build against an API it cannot have.
-configure_consumer("${SMOKE_ROOT}/gate" "99.0.0" "")
+configure_consumer("${SMOKE_ROOT}/gate" "99.0.0" "OFF")
 if(configure_rc EQUAL 0)
   message(FATAL_ERROR
     "find_package(uniorm 99.0.0) succeeded against ${SMOKE_VERSION}")

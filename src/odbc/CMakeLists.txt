@@ -1,8 +1,10 @@
 # The ODBC backend is its own shared library so a consumer that talks to one
 # server does not map drivers it will never touch. The core links no ODBC;
-# libodbc's NEEDED entry lives here instead. Self-registration is a file-scope
-# side effect in backend.cpp; --no-as-needed below keeps the linker from
-# dropping a shared library no one references even though it is on the line.
+# libodbc's NEEDED entry lives here instead. Loading is by dlopen on scheme
+# miss (see src/backend/plugin_loader.cpp): the core searches
+# <libdir>/uniorm/backends/libuniorm_odbc.so, so this library installs there
+# rather than next to the core. The uniormOdbcTargets export remains for the
+# white-box tests that link the backend directly; consumers do not name it.
 
 find_package(ODBC REQUIRED)
 # The imported target FindODBC creates is directory-scoped by default; promote
@@ -33,10 +35,6 @@ set_target_properties(uniorm_odbc PROPERTIES
     VISIBILITY_INLINES_HIDDEN ON
 )
 
-if(UNIX AND NOT APPLE)
-    target_link_options(uniorm_odbc INTERFACE "LINKER:--no-as-needed")
-endif()
-
 set_target_properties(uniorm_odbc PROPERTIES
     EXPORT_NAME odbc
     VERSION ${PROJECT_VERSION}
@@ -46,15 +44,17 @@ set_target_properties(uniorm_odbc PROPERTIES
 if(PROJECT_IS_TOP_LEVEL)
     include(GNUInstallDirs)
     if(UNIX AND NOT APPLE AND NOT CYGWIN)
+        # Installed under <libdir>/uniorm/backends/; the core library is one
+        # directory up from that, so ../.. gets it back to the plain libdir.
         set_target_properties(uniorm_odbc PROPERTIES
-            INSTALL_RPATH "$ORIGIN"
+            INSTALL_RPATH "$ORIGIN/../.."
         )
     endif()
     install(TARGETS uniorm_odbc
         EXPORT uniormOdbcTargets
-        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}/uniorm/backends
+        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}/uniorm/backends
+        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}/uniorm/backends
     )
     install(EXPORT uniormOdbcTargets
         FILE uniormOdbcTargets.cmake

@@ -5,6 +5,8 @@
 
 #include <uniorm/backend/error.hpp>
 
+#include "plugin_loader.hpp"
+
 namespace uniorm::backend {
 
 namespace {
@@ -80,6 +82,25 @@ std::unique_ptr<connection_iface> registry::create(
       make = it->second;
     }
   }
+  std::string load_note;
+  if (!make) {
+    // Loading calls back into register_backend on the singleton; a concurrent
+    // miss on the same scheme loses the race with backend_error, and the map
+    // has the entry either way.
+    bool loaded = false;
+    try {
+      loaded = detail::try_load_plugin(parsed.scheme, load_note);
+    } catch (backend_error const&) {
+      loaded = true;
+    }
+    if (loaded) {
+      std::lock_guard lock(mu_);
+      auto it = backends_.find(parsed.scheme);
+      if (it != backends_.end()) {
+        make = it->second;
+      }
+    }
+  }
   if (!make) {
     std::string msg =
       "no backend registered for scheme '" + parsed.scheme +
@@ -88,6 +109,9 @@ std::unique_ptr<connection_iface> registry::create(
       msg += " " + s;
     }
     msg += ")";
+    if (!load_note.empty()) {
+      msg += "; " + load_note;
+    }
     throw unknown_scheme(msg);
   }
   if (tail != nullptr) {

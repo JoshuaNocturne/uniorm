@@ -673,19 +673,10 @@ schema_meta* backend_connection::schema() noexcept {
   return &metadata_;
 }
 
-namespace {
-
-backend::registrar const registered(
-  "odbc", [] { return std::make_unique<backend_connection>(); });
-
-}  // namespace
-
 }  // namespace uniorm::odbc
 
-// The plugin contract -- see include/uniorm/backend/plugin.hpp. The two
-// extern "C" entry points exist for the core's dlopen loader; the file-
-// scope registrar above is the Model A path and will go away when the
-// registry switches to load-on-miss.
+// The plugin contract -- see include/uniorm/backend/plugin.hpp. The core's
+// dlopen loader calls these on scheme miss; nothing registers at load time.
 extern "C" UNIORM_ODBC_API uint32_t uniorm_plugin_abi_version() {
   return UNIORM_ABI_VERSION;
 }

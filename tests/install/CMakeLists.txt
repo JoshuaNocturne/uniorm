@@ -10,19 +10,25 @@ if(CMAKE_CXX_STANDARD)
         "the consumer must not set a standard; the imported target carries it")
 endif()
 
-# SMOKE_UNIORM_COMPONENTS is empty for the core-only shape and "odbc" for the
-# backend shape. The find_package call is the same either way: a missing
-# component would fail through check_required_components with a message naming
-# why, not silently.
-find_package(uniorm ${SMOKE_UNIORM_VERSION} CONFIG REQUIRED
-    ${SMOKE_UNIORM_COMPONENTS})
+# The link line is the same in both smoke shapes -- uniorm::uniorm alone. The
+# two cases differ only in whether the plugin directory contains
+# libuniorm_odbc.so, and the caller tells us which shape we're in via
+# SMOKE_UNIORM_HAS_ODBC so main.cpp can assert accordingly.
+find_package(uniorm ${SMOKE_UNIORM_VERSION} CONFIG REQUIRED)
 
 add_executable(consumer main.cpp)
 target_link_libraries(consumer PRIVATE uniorm::uniorm)
-if("odbc" IN_LIST SMOKE_UNIORM_COMPONENTS)
-    target_link_libraries(consumer PRIVATE uniorm::odbc)
+if(SMOKE_UNIORM_HAS_ODBC)
     target_compile_definitions(consumer PRIVATE UNIORM_SMOKE_HAS_ODBC)
 endif()
 
 enable_testing()
 add_test(NAME consumer COMMAND consumer)
+if(SMOKE_UNIORM_PLUGIN_DIR)
+    # The core was configured with a bake-time absolute UNIORM_PLUGIN_DIR
+    # pointing at whichever prefix built it, which is not this throwaway
+    # prefix. The env override redirects the loader at the plugin file this
+    # smoke run just installed.
+    set_tests_properties(consumer PROPERTIES
+        ENVIRONMENT "UNIORM_PLUGIN_PATH=${SMOKE_UNIORM_PLUGIN_DIR}")
+endif()

@@ -153,10 +153,12 @@ if(PROJECT_IS_TOP_LEVEL)
         # The binary's NEEDED entry names the versioned soname, and the build
         # tree leaves an absolute RPATH behind: without a prefix-relative load
         # path the installed copy only runs on the machine that built it. RPATH
-        # is ELF-only: elsewhere the DLL already lands next to the exe.
+        # is ELF-only: elsewhere the DLL already lands next to the exe. The
+        # plugin lives under <libdir>/uniorm/backends now, so both search
+        # paths have to be in there.
         if(UNIX AND NOT APPLE AND NOT CYGWIN)
             set_target_properties(uniorm-gen PROPERTIES
-                INSTALL_RPATH "$ORIGIN/../${CMAKE_INSTALL_LIBDIR}"
+                INSTALL_RPATH "$ORIGIN/../${CMAKE_INSTALL_LIBDIR};$ORIGIN/../${CMAKE_INSTALL_LIBDIR}/uniorm/backends"
             )
         endif()
         install(TARGETS uniorm-gen RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})

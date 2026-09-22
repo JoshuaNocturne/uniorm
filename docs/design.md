@@ -124,10 +124,11 @@ uniorm/
 ├── src/                         # 对应实现（编译进 libuniorm）；私有头贴着 .cpp 存放
 │   ├── orm_mapping.hpp          # 实体写的 WHERE 解析与 SET/WHERE 列划分（纯映射规则）
 │   ├── statement_cache.hpp      # LRU 预编译语句缓存（存 statement_iface，容量固定 64）
-│   ├── backend/                 # scheme 解析与注册表实现
-│   └── odbc/                    # ODBC backend（libuniorm_odbc.so，自注册 "odbc"）
+│   ├── backend/                 # scheme 解析与注册表实现（含 plugin_loader.cpp：
+│   │                            #  按 scheme 从 <libdir>/uniorm/backends dlopen）
+│   └── odbc/                    # ODBC backend（libuniorm_odbc.so，导出 plugin 契约）
 │       ├── CMakeLists.txt       # 独立 shared 目标，PRIVATE 链 ODBC::ODBC，
-│       │                        #  --no-as-needed 作为 INTERFACE 传给消费者
+│       │                        #  装到 <libdir>/uniorm/backends/
 │       ├── export.hpp           # 私有 UNIORM_ODBC_API 宏（跨 DSO 的可见性）
 │       ├── backend.hpp          # backend 契约的 ODBC 实现（含 odbc_batch_writer）
 │       ├── environment.hpp / connection.hpp / statement.hpp   # 句柄 RAII
@@ -183,9 +184,10 @@ uniorm/
 
 | 位置 | 内容 |
 |---|---|
-| `<libdir>/` | `libuniorm.so.<VERSION>` 加 `SOVERSION`（`0.4`）与裸名两级符号链接；Windows 下 DLL 走 RUNTIME、导入库走 ARCHIVE。启用的每家 backend 各一份同形状的库（当前 `libuniorm_odbc.so.<VERSION>`） |
+| `<libdir>/` | `libuniorm.so.<VERSION>` 加 `SOVERSION`（`0.4`）与裸名两级符号链接；Windows 下 DLL 走 RUNTIME、导入库走 ARCHIVE |
+| `<libdir>/uniorm/backends/` | 每家启用的 backend 一份 `libuniorm_<scheme>.so.<VERSION>`（当前 `libuniorm_odbc.so.<VERSION>`）；核心按 scheme 在此 dlopen（见 §5.1） |
 | `include/uniorm/` | 全部 public 头文件；私有头贴邻 `.cpp` 留在 `src/`，不参与安装 |
-| `<libdir>/cmake/uniorm/` | `uniormConfig.cmake`、`uniormConfigVersion.cmake`、`uniormTargets.cmake` 与 `uniormTargets-<config>.cmake`；每家启用的 backend 另附一份 `uniormOdbcTargets*.cmake` 供 `find_package(uniorm COMPONENTS odbc)` 消费 |
+| `<libdir>/cmake/uniorm/` | `uniormConfig.cmake`、`uniormConfigVersion.cmake`、`uniormTargets.cmake` 与 `uniormTargets-<config>.cmake`；`uniormOdbcTargets*.cmake` 只为仓内白盒测试保留，消费者不再按组件取用 |
 | `<bindir>/uniorm-gen` | 代码生成 CLI；仅 `UNIORM_BUILD_TOOLS=ON` 时安装（`UNIORM_BACKEND_ODBC=OFF` 时该选项被 CMake 直接拦下） |
 
 消费者 `find_package(uniorm REQUIRED CONFIG)` 后链接 `uniorm::uniorm`，include 路径与
@@ -200,13 +202,16 @@ C++20 标准都由导出目标携带：公开头自己就要用 `concept` 和 `r
   `libuniorm.so.0` 掩盖这种破坏，不如让链接期直接失败；
 - ODBC 与线程对核心都是 PRIVATE 依赖，不进核心的导出接口；且核心 `.so` 根本不链
   ODBC，`libodbc.so.2` 的 `DT_NEEDED` 落在 `libuniorm_odbc.so` 上。消费者不需要
-  `find_dependency(ODBC)`，也不必为链接行了结驱动；用哪家 backend 由
-  `find_package(uniorm COMPONENTS <name>)` 决定（见 §5.1）。
+  `find_dependency(ODBC)`，也不必为链接行了结驱动；消费者的链接行始终只有
+  `uniorm::uniorm`，用哪家 backend 由运行时按 scheme 到 `<libdir>/uniorm/backends/`
+  下 dlopen 决定（见 §5.1）。
 - `uniorm-gen` 走 RUNTIME 安装但不进 `EXPORT`：它是"跑一遍"的程序，不是被链接的
   目标，导出它便等于把 `uniorm_gen_core`（内部静态切分，靠 `-I src` 读私有头）
-  伪装成对外 API。它的 `DT_NEEDED` 写死 `libuniorm.so.<SOVERSION>`（现为 `0.4`），
-  而构建树留下的 `RPATH` 是绝对路径，故 ELF 上以 `INSTALL_RPATH` 改写成
-  `$ORIGIN/../<libdir>`——装到哪个 prefix 就找哪个 prefix，与库同树发布时版本必然对上。
+  伪装成对外 API。它的 `DT_NEEDED` 写死 `libuniorm.so.<SOVERSION>`（现为 `0.4`）
+  与 `libuniorm_odbc.so.<SOVERSION>`——工具仍按白盒路径直链 backend 拿自省——而
+  构建树留下的 `RPATH` 是绝对路径，故 ELF 上以 `INSTALL_RPATH` 改写成
+  `$ORIGIN/../<libdir>;$ORIGIN/../<libdir>/uniorm/backends`——装到哪个 prefix
+  就找哪个 prefix，与库同树发布时版本必然对上。
 
 导出的 CMake 文件不含绝对前缀：`DESTDIR=<stage> cmake --install build --prefix
 /usr/local` 能打到暂存根再整体搬迁（实测装出来的 4 个 CMake 文件里既无 stage 也
@@ -214,9 +219,13 @@ C++20 标准都由导出目标携带：公开头自己就要用 `concept` 和 `r
 要买的就是这一点。
 
 上面这些如今由 `install_smoke`（§8）把关：装进构建树下的临时 prefix，比对装出来的
-头文件集合与 `include/` 一致，用一个刻意不设 `CMAKE_CXX_STANDARD` 的外部工程
-`find_package` + 编译 + 运行，再故意以 `99.0.0` 配置一次要求被拒，最后跑装出来的
-`uniorm-gen --help` 证明 `$ORIGIN/../<libdir>` 真的载到了同 prefix 的库。
+头文件集合与 `include/` 一致，核对 `<libdir>/uniorm/backends/` 下 plugin 文件随
+`UNIORM_BACKEND_ODBC` 该有则有、该无则无，用一个刻意不设 `CMAKE_CXX_STANDARD`
+的外部工程 `find_package` + 编译 + 运行，再以 `UNIORM_PLUGIN_PATH` env 把 loader
+指到本次装的 plugin 上，跑通"裸 DSN 载到 ODBC 层"或"无 plugin 时保持
+`unknown_scheme`"，故意以 `99.0.0` 配置一次要求被拒，最后跑装出来的
+`uniorm-gen --help` 证明 `$ORIGIN/../<libdir>` 与 `$ORIGIN/../<libdir>/uniorm/backends`
+都真的载到了同 prefix 的库。
 
 ## 4. 核心模块设计
 
@@ -1220,27 +1229,43 @@ backend 接口已在里程碑 1 落地（§5.2），下列纪律从约定变成�
   压住 include 路径，再编（见 §8）。
 
 **这条保证不再只到链接行为止**：每家 backend 是一个独立的共享库（当前只有
-`uniorm::odbc`，产出 `libuniorm_odbc.so.<SOVERSION>`），核心 `libuniorm.so` 不链
-任何驱动，`ldd` 只列 `libstdc++` / `libm` / `libgcc_s` / `libc`；`libodbc.so.2`
-的 `DT_NEEDED` 落在 `libuniorm_odbc.so` 自己身上。消费者按
-`find_package(uniorm COMPONENTS odbc)` 取哪个 backend，运行时便只映射那一家驱动，
-"只用一家"的部署不必为另外几家的驱动留地址空间。拆分的两条硬约束：
+`uniorm::odbc`，产出 `libuniorm_odbc.so.<SOVERSION>`，装到
+`<libdir>/uniorm/backends/`），核心 `libuniorm.so` 不链任何驱动，`ldd` 只列
+`libstdc++` / `libm` / `libgcc_s` / `libc`；`libodbc.so.2` 的 `DT_NEEDED` 落在
+`libuniorm_odbc.so` 自己身上。消费者的链接行始终只有 `uniorm::uniorm`，用哪家
+backend 在运行时决定：`registry::create` 按 scheme 未命中时，`src/backend/plugin_loader.cpp`
+`dlopen(<plugin_dir>/libuniorm_<scheme>.so, RTLD_NOW | RTLD_GLOBAL)`，验 ABI，
+再调用 plugin 导出的 `uniorm_plugin_register(registry&)` 让它把 scheme 装上。
+"只用一家"的部署因此连不上其它 backend 的驱动映射，也无需在构建期选组件。
+`<plugin_dir>` 默认为 `UNIORM_PLUGIN_DIR` 编译期常量（top-level 构建时被设成
+`${CMAKE_INSTALL_FULL_LIBDIR}/uniorm/backends`），运行期 `UNIORM_PLUGIN_PATH`
+env 可覆盖成单一目录，用于测试和非常规部署。
 
-- backend 必须是 shared 而非 static：自注册是文件作用域 `static registrar`，静态库
-  只要没有符号被引用，归档成员便整个不参与链接，注册不执行；
-- 消费者链接行须带 `--no-as-needed`（`uniorm::odbc` 以
-  `target_link_options(... INTERFACE "LINKER:--no-as-needed")` 把它作为 INTERFACE
-  要求带过去）。GNU ld 在 as-needed（现代发行版默认）下会把"没人引用符号"的 shared
-  库整块丢弃，DT_NEEDED 消失，注册随之哑火——构建、安装、`--help` 全过，只在
-  打开 `odbc://…` 时抛 `unknown_scheme`。
+拆分与 dlopen 协同的三条硬约束：
 
-`UNIORM_BACKEND_ODBC=OFF` 时 `src/odbc/` 整个子目录不参与构建，也就没有任何 backend
-实现被装进 prefix：`find_package(uniorm COMPONENTS odbc)` 会因 export 集缺失而
-被 `check_required_components` 拒掉（附消息），消费者若绕过 components 直接编，运行时
-`registry::create` 一律抛 `unknown_scheme`。`uniorm_odbc_unit_tests`、集成测试、
-perf、`uniorm-gen` 都不生成，`UNIORM_BUILD_TOOLS` 直接被 CMake 拦下；
-`uniorm_unit_tests` 只链核心，`test_backend_registry` 因此断言 `"odbc"` 未注册
-——这条断言在 ON / OFF 两种构建里都成立，不再需要按选项加宏。
+- backend 必须是 shared 而非 static：静态归档成员在没人引用符号时根本不会被
+  解出，`dlopen` 也拿不到 handle；只有 shared library 才谈得上运行时按名字加载；
+- plugin 必须导出 `extern "C"` 的两个符号：`uniorm_plugin_abi_version()` 返回
+  编译期常量 `UNIORM_ABI_VERSION`（`<major> * 1000 + <minor>`），
+  `uniorm_plugin_register(registry&)` 在传入的单例上调用 `register_backend`。
+  ABI 值不等时 loader 拒绝调用 register 并 `dlclose`；错误消息里带着 plugin
+  报的 ABI 与核心期望的 ABI，避免半装状态；
+- loader 只在 scheme 未命中时触发，且成功后不再 `dlclose`：backend 里的
+  vtable / 静态成员地址会活过 `create()`，进程生命周期结束前不能卸载。同一
+  scheme 在两个线程上同时未命中时，`dlopen` 的第二次 handle 只是 refcount
+  加一，`register_backend` 会因重复 scheme 抛 `backend_error`；`create()`
+  把这颗异常当作"另一线程已装好"处理，重新查一次 map，两条路径都拿到同一份
+  `factory`。
+
+`UNIORM_BACKEND_ODBC=OFF` 时 `src/odbc/` 整个子目录不参与构建，也就没有任何 plugin
+文件装到 `<libdir>/uniorm/backends/`：`registry::create` 遇到 `odbc://…` 或裸 DSN
+时 loader 找不到 `libuniorm_odbc.so`，抛 `unknown_scheme` 并在 message 里附上
+`dlopen` 的失败原因（`No such file or directory` 一类），消费者若之前用
+`UNIORM_PLUGIN_PATH` 指过别的目录，也能从这条消息看出 loader 究竟找了哪里。
+`uniorm_odbc_unit_tests`、集成测试、perf、`uniorm-gen` 都不生成，
+`UNIORM_BUILD_TOOLS` 直接被 CMake 拦下；`uniorm_unit_tests` 只链核心，
+`test_backend_registry` 因此断言 `"odbc"` 未注册——这条断言在 ON / OFF 两种构建里
+都成立，不再需要按选项加宏。
 
 ### 5.2 backend 接口（v2 里程碑 1，已实现）
 
@@ -1365,12 +1390,14 @@ backend，要在自己的 `reset()` 重写里清干净。
 - 无 scheme 的裸串（`DSN=...`）默认 ODBC，保持向后兼容；候选 scheme 须
   匹配 `[a-z][a-z0-9+.-]*`，否则视为裸 ODBC 串（兼容 `SERVER=tcp://host`
   这类怪串）；
-- 注册表为 Meyers 单例 + mutex；重复注册抛 `backend_error`，未注册 scheme
-  抛 `unknown_scheme` 并列出已注册项；
-- ODBC backend 以文件作用域 `static registrar` 自注册，注册编进
-  `libuniorm_odbc.so`——载入那一家库才注册那一家 scheme；未链任何 backend 的
-  进程里 `"odbc"` 未注册，连接一律 `unknown_scheme`（拆分与 `--no-as-needed`
-  的约束见 §5.1）。
+- 注册表为 Meyers 单例 + mutex；`register_backend` 重复注册抛 `backend_error`；
+  `create()` 在 scheme 未命中时调 `plugin_loader::try_load_plugin`，仍拿不到
+  factory 才抛 `unknown_scheme`，message 里附上已注册 scheme 列表与 loader 的
+  失败原因；
+- ODBC backend 不自注册：注册发生在 `dlopen` 之后由 `uniorm_plugin_register`
+  显式调用，进程没走到那个 scheme 就不会载入那一家库。未装任何 plugin 的部署
+  里 `"odbc"` 未注册，连接一律 `unknown_scheme`；拆分与 loader 的三条硬约束
+  （shared、`extern "C"` plugin 契约、成功后不 `dlclose`）见 §5.1。
 
 **错误体系**：`backend_error : uniorm_error`（backend 名 + context +
 `diagnostic{state, native_code, message}`）；`odbc_error` 为其派生
@@ -1658,16 +1685,24 @@ commit/rollback/析构回滚、批量插入（含空 optional 写 NULL、1500 �
 - **安装冒烟**（已实现，`install_smoke`，`cmake -P` 脚本，只在 top-level 且非交叉编译
   时注册，不需要数据库）：`cmake --install` 到 `<build>/install_smoke/prefix` → 核对
   config/targets/头文件/库都已就位，且装出的头文件集合与 `include/uniorm` 逐一相符；
-  在 Linux 上还 `readelf -d` 装出来的 `libuniorm.so.<major>.<minor>` 断言 `DT_NEEDED`
-  里没有 `libodbc`（拆分是否真的落到链接期，只在这一步说数）→ 分两趟配置并构建
-  `tests/install/` 这个外部工程（刻意不设 `CMAKE_CXX_STANDARD`，靠导出目标携带）：
-  一趟 `find_package(uniorm COMPONENTS "")` 只链核心，消费者调用 .so 里的
-  `dialect::detect`、`parse_scheme`，核对未链 backend 时 `"odbc"` 未注册且裸 DSN 抛
-  `unknown_scheme`；ODBC 构建下再跑一趟 `COMPONENTS odbc`，消费者额外核对
-  `"odbc"` 已随 `libuniorm_odbc.so` 载入自注册（这一趟同时验证了 `--no-as-needed`
-  的 INTERFACE 要求确实把自注册留在了链接行里）→ 再以 `99.0.0` 配置一次，要求被
+  核对 `<libdir>/uniorm/backends/libuniorm_odbc.so*` 随 `UNIORM_BACKEND_ODBC` 该
+  有则有（两级 soname 文件都在）、该无则无；在 Linux 上还 `readelf -d` 装出来的
+  `libuniorm.so.<major>.<minor>` 断言 `DT_NEEDED` 里既无 `libodbc` 也无
+  `libuniorm_odbc`（拆分是否真的落到链接期，只在这一步说数）→ 按本次构建的形状
+  配置并构建 `tests/install/` 这个外部工程（刻意不设 `CMAKE_CXX_STANDARD`，链接
+  行始终是 `uniorm::uniorm` 一家，靠 `SMOKE_UNIORM_HAS_ODBC` 决定消费者断言
+  哪一侧）：ON 时装出的 plugin 存在，消费者以 `UNIORM_PLUGIN_PATH` env 把 loader
+  指到本次 prefix 的 backends 目录，核对调用前 `"odbc"` 未注册、一次裸 DSN
+  跨过 `registry::create` 到 ODBC 层（错误类型不再是 `unknown_scheme`）、调用后
+  `"odbc"` 出现在注册表里；OFF 时不装 plugin，`UNIORM_PLUGIN_PATH` 指向一个空
+  目录，核对裸 DSN 依然 `unknown_scheme` 且 `"odbc"` 从未注册；这一趟同时验了
+  plugin 契约里 ABI 校验真的会拦下不兼容的库——`UNIORM_ABI_VERSION` 由
+  `PROJECT_VERSION_MAJOR * 1000 + PROJECT_VERSION_MINOR` 导出，两侧编的是同一份
+  CMakeLists，若数字不匹配 loader 立即 `dlclose` 并抛 `unknown_scheme`，消费者
+  那条"跨过 create"的断言当场翻红 → 再以 `99.0.0` 配置一次，要求被
   `SameMinorVersion` 拒掉 → 最后运行装出来的 `uniorm-gen --help`，它只可能
-  经 `$ORIGIN/../<libdir>` 载到库，故 RPATH 改写一并验了。
+  经 `$ORIGIN/../<libdir>` 与 `$ORIGIN/../<libdir>/uniorm/backends` 两条
+  RPATH 一起载到库与 plugin，故 RPATH 改写一并验了。
 - **CI**（已写入 `.github/workflows/ci.yml`；GitHub 上跑绿过的那副形状是三支作业——
   `core` 与两条驱动腿，三支都按作业原样在 ubuntu:24.04 容器里重放过，服务端用的是一只照抄作业
   `services` 块起出的 `mariadb:11`（实测 11.8.9），连 `MARIADB_DATABASE`/`MARIADB_USER`
@@ -1875,11 +1910,18 @@ commit/rollback/析构回滚、批量插入（含空 optional 写 NULL、1500 �
 6. 离线 schema 快照输入（DDL 解析）
 7. 迁移脚本生成
 8. ~~backend 拆成独立链接目标（如 `uniorm_odbc` / `uniorm_pq`）：多 backend 共存时
-   让"只用一家"的部署不必在运行时载入其余驱动（见 §5.1）~~ **已完成**：ODBC 落地为
-   `uniorm::odbc`（`libuniorm_odbc.so`），核心 `libuniorm.so` 不再链任何驱动；消费者
-   按 `find_package(uniorm COMPONENTS odbc)` 取用，两条硬约束（backend 必须是
-   shared、`--no-as-needed` 保自注册）见 §5.1。**待做**：libpq/OCI 各自落地时按
-   同一形状再加一个 component 与 export 集。
+   让"只用一家"的部署不必在运行时载入其余驱动（见 §5.1）~~ **已完成**：每家
+   backend 一份 `libuniorm_<scheme>.so`，装到 `<libdir>/uniorm/backends/`；核心
+   `libuniorm.so` 不再链任何驱动，消费者链接行始终只有 `uniorm::uniorm`——选
+   backend 由运行时按 scheme `dlopen` 完成（`registry::create` miss 时经
+   `plugin_loader::try_load_plugin` 载入并 `uniorm_plugin_register` 注册），
+   三条硬约束（backend 必须 shared、`extern "C"` plugin 契约带 `UNIORM_ABI_VERSION`
+   校验、成功后不 `dlclose`）见 §5.1。ABI 校验从 0.4.0 起把 `SONAME` 与
+   `UNIORM_ABI_VERSION` 绑到同一份 `major.minor`：核心与 plugin 不同 minor 直接
+   拒载，链接期失败不足以覆盖 dlopen 期的错配。`find_package(uniorm COMPONENTS
+   odbc)` 那条路已废；`uniormOdbcTargets.cmake` 仍安装，只为仓内白盒测试直链
+   `uniorm::odbc` 保留。**待做**：libpq/OCI 各自落地时按同一形状再加一份 plugin
+   与一份白盒 export 集；Windows 的 `LoadLibrary` 路径留待独立一次改动。
 9. ~~能力清单落地：`capabilities` 的四个未读标志各自找到真实消费点~~ **已完成**：
    四个占位已删，清单只剩 `columnar_batch` 与 `array_rowcount_totals`，两条各有
    读者（§5.2）；后者随 §8 那条 PostgreSQL 腿落地。

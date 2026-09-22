@@ -23,9 +23,10 @@ struct parsed_scheme {
 // quirks like "SERVER=tcp://host") are treated as bare ODBC strings.
 UNIORM_API parsed_scheme parse_scheme(std::string_view connection_string);
 
-// Runtime registry mapping schemes to backend factories. Backends
-// compiled into libuniorm self-register at library load; out-of-tree
-// backends call register_backend at startup.
+// Runtime registry mapping schemes to backend factories. In-tree backends
+// install as plugins under <libdir>/uniorm/backends/ and register on scheme
+// miss (see design.md §5.1); out-of-tree code that wants a scheme available
+// without shipping a plugin calls register_backend at startup.
 class UNIORM_API registry {
 public:
   using factory = std::function<std::unique_ptr<connection_iface>()>;
@@ -37,9 +38,11 @@ public:
   bool contains(std::string_view scheme) const;
   std::vector<std::string> schemes() const;
 
-  // Parses the scheme, constructs an unopened backend connection, and
-  // writes the scheme-specific tail to *tail (when non-null). Throws
-  // unknown_scheme listing the registered schemes when unregistered.
+  // Parses the scheme, constructs an unopened backend connection, and writes
+  // the scheme-specific tail to *tail (when non-null). On a miss the loader
+  // first tries to dlopen <plugin_dir>/libuniorm_<scheme>.so; if that still
+  // yields no factory, throws unknown_scheme naming the registered schemes
+  // and the loader's reason.
   std::unique_ptr<connection_iface> create(
     std::string_view connection_string, std::string* tail) const;
 
@@ -48,8 +51,9 @@ private:
   std::unordered_map<std::string, factory> backends_;
 };
 
-// File-scope registration helper:
-//   static backend::registrar reg("odbc", [] { return ...; });
+// Convenience wrapper for a translation unit that wants to register a scheme
+// at static-init time. Plugins do not need it -- the core's loader calls
+// uniorm_plugin_register on the passed-in singleton.
 struct UNIORM_API registrar {
   registrar(std::string scheme, registry::factory f);
 };

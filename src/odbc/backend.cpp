@@ -9,6 +9,7 @@
 #include <sqlext.h>
 
 #include <uniorm/backend/error.hpp>
+#include <uniorm/backend/plugin.hpp>
 #include <uniorm/backend/registry.hpp>
 
 #include "uniorm/detail/time.hpp"
@@ -680,3 +681,18 @@ backend::registrar const registered(
 }  // namespace
 
 }  // namespace uniorm::odbc
+
+// The plugin contract -- see include/uniorm/backend/plugin.hpp. The two
+// extern "C" entry points exist for the core's dlopen loader; the file-
+// scope registrar above is the Model A path and will go away when the
+// registry switches to load-on-miss.
+extern "C" UNIORM_ODBC_API uint32_t uniorm_plugin_abi_version() {
+  return UNIORM_ABI_VERSION;
+}
+
+extern "C" UNIORM_ODBC_API void uniorm_plugin_register(
+  uniorm::backend::registry& reg) {
+  reg.register_backend("odbc", [] {
+    return std::make_unique<uniorm::odbc::backend_connection>();
+  });
+}

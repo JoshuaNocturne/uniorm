@@ -24,7 +24,7 @@ ODBC 驱动的数据库，而不依赖特定厂商的 C 客户端。实体映射
 - **三种使用层次**：
   - 裸 SQL：`execute` / `execute_update` + `params`
   - 聚合投影：`db.query<Row>(sql)` 零注册按列序映射到 struct
-  - 实体映射：注册表 + 类型安全的成员指针谓词构建器 `db.query().of<T>()`
+  - 实体映射：注册表 + 类型安全的成员指针谓词构建器 `db.query<T>()`
 - **实体直接绑定**：`query<T>::all()/one()` 将结果列直接绑到实体字段
   （`SQLBindCol`），跳过行物化
 - **自定义类型映射**：特化 `uniorm::converter<T>` 即命名域类型所绑定的 SQL
@@ -173,8 +173,7 @@ db.validate();  // 与活库 schema 对账（可选）；默认 strict：表或�
 // db.validate(uniorm::validation_mode::lenient);  // 只查存在性
 
 using namespace uniorm;
-auto adults = db.query()
-                .of<User>()
+auto adults = db.query<User>()
                 .where(gt(&User::age, 18) && like(&User::name, "a%"))
                 .order_by(&User::id, direction::desc)
                 .limit(10)

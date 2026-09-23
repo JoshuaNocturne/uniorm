@@ -119,7 +119,7 @@ uniorm/
 │   ├── orm.hpp                  # 实体注册与 CRUD 入口：除模板外只有声明，实现全在 src/orm.cpp
 │   ├── mapping/registry.hpp     # 实体映射注册表（含 mapping_builder；uniorm-gen 产物唯一依赖）
 │   └── builder/
-│       ├── builder.hpp          # query_gateway / query<T> / update_builder / remove_builder
+│       ├── builder.hpp          # query<T> / update<T> / remove<T> / update_builder / remove_builder
 │       └── expression.hpp       # member_key / predicate / 谓词构造器
 ├── src/                         # 核心实现（编译进 libuniorm）；私有头贴着 .cpp 存放
 │   ├── orm_mapping.hpp          # 实体写的 WHERE 解析与 SET/WHERE 列划分（纯映射规则）
@@ -707,7 +707,7 @@ struct user_row {
     std::optional<int32_t> age;
 };
 
-// orm 上的模板重载（connection 没有 query 成员）；实体查询走 db.query().of<T>()
+// orm 上的模板重载（connection 没有 query 成员）；实体查询走 db.query<T>()
 auto rows = db.query<user_row>(
     "SELECT id, name, age FROM users WHERE age > ?", {18});   // std::vector<user_row>
 for (auto const& u : rows) { /* ... */ }
@@ -830,7 +830,10 @@ class orm {                             // 非线程安全，按线程/会话持
     std::size_t remove(std::vector<Entity> const&, /*可选 where_fields*/);
     // where_fields 先对映射解析：未命中抛 mapping_error，空列表与
     // "全部列都进了 WHERE" 抛 uniorm_error（见 4.5.2）
-    query_gateway query();                                  // 实体查询：db.query().of<T>()
+    template <class T>
+    ::uniorm::query<T> query();                               // 实体查询：db.query<T>()
+    template <class T> ::uniorm::update<T> update();          // 类型化 UPDATE builder
+    template <class T> ::uniorm::remove<T> remove();          // 类型化 DELETE builder
     template <detail::aggregate_projection T>
     std::vector<T> query(std::string_view sql, params const& p = {});    // 投影
     update_builder update(std::string_view table);          // 无映射表的动态 UPDATE
@@ -875,18 +878,17 @@ std::string_view>)` 与动态表名版区分；无主键又没给 `where_fields`
 ### 4.8 成员指针查询构建器
 
 ```cpp
-auto users = db.query()
-    .of<User>()
+auto users = db.query<User>()
     .where(gt(&User::age, 18) && eq(&User::status, Status::Active))
     .order_by(&User::name, direction::desc)
     .limit(50)
     .all();                        // std::vector<User>
 
-auto count = db.query().of<User>()
+auto count = db.query<User>()
     .where(col(&User::age) > 18)
     .count();
 
-auto opt = db.query().of<User>()
+auto opt = db.query<User>()
     .where(col(&User::id) == 42)
     .one();                        // std::optional<User>
 ```
@@ -898,11 +900,10 @@ auto opt = db.query().of<User>()
 `&&` / `||` / `in` / `is_null` / `like` 作用于 `predicate` 本身，不受影响。
 
 入口在 `orm` 上而非 `connection` 上（`connection` 没有 `query` 成员）：
-`db.query()` 返回轻量网关 `query_gateway`，只持一个 `orm*`，`.of<T>()` 产出
-`query<T>` 构建器；连接经 `orm::native_connection()` 取得，事务语义因此跟随
-`orm` 当前持有的连接（`orm` 内部持 `std::optional<pooled_connection>`，见 §4.10）。
-构建器只存网关的指针，网关是表达式里的临时对象——链式调用没问题，不要把
-`of<T>()` 的结果跨语句存下来。
+`db.query<T>()` 直接产出 `query<T>` 构建器，构建器只持一个 `orm*`；连接经
+`orm::native_connection()` 取得，事务语义因此跟随 `orm` 当前持有的连接
+（`orm` 内部持 `std::optional<pooled_connection>`，见 §4.10）。构建器可以在
+语句之间存下来，因为它不再依赖一个中间网关的生命周期。
 
 物化路径：`all()`/`one()` 不经过 `result_set`/`row`/`sql_value`，而是把结果列
 **一次 `bind_column` 到暂存缓冲（ODBC 下即一次 `SQLBindCol`），再按字段偏移直写
@@ -1022,7 +1023,7 @@ SQL 字符串是缓存键，因此名称变化不要求额外清空 statement ca
 enum class direction { asc, desc };
 
 template <class T>
-class query {                                  // 只能由 query_gateway::of<T>() 产出
+class query {                                  // 由 orm::query<T>() 产出
 public:
     query& where(predicate p);                       // 多个 where 以 AND 连接
     template <class M> query& order_by(M T::*member, direction dir = direction::asc);
@@ -1032,18 +1033,21 @@ public:
     std::vector<T> all();
     std::optional<T> one();                          // 渲染时强制 limit 1
     std::int64_t count();                            // SELECT COUNT(*)，走 result_set
-    template <class M, class V> query& set(M T::*member, V&& value);  // 暂存赋值，nullptr 写 NULL
-    std::size_t update();                            // 无 set() 或无 where() 抛 uniorm_error
-    std::size_t remove();                            // 无 where() 抛；两者忽略 order_by/limit/offset
 };
 
-class query_gateway {                                // orm::query() 的返回值，只持一个 orm*
+template <class T>
+class update {                                 // 由 orm::update<T>() 产出
 public:
-    template <class T> query<T> of();                // 未注册实体抛 mapping_error
-    connection& conn() const;                        // 转发 orm::native_connection()
-    orm& get_orm() const;
-    std::size_t row_array_size() const noexcept;     // 转发 orm::row_array_size()，即块取行大小
-    dialect const& sql_dialect() const;              // 转给连接的同一份，网关不自建缓存
+    template <class M, class V> update& set(M T::*member, V&& value);  // nullptr 写 NULL
+    update& where(predicate p);                      // 累加，AND 连接
+    std::size_t execute();                           // 无 set 或无 where 抛 uniorm_error
+};
+
+template <class T>
+class remove {                                 // 由 orm::remove<T>() 产出
+public:
+    remove& where(predicate p);
+    std::size_t execute();                           // 无 where 抛
 };
 
 // 无实体映射的表上的动态 UPDATE / DELETE：orm::update(table) / orm::remove(table)
@@ -1060,6 +1064,10 @@ public:
     std::size_t execute();                           // 未调用过 where 即抛
 };
 ```
+
+类型化 `update<T>` / `remove<T>` 与动态 `update_builder` / `remove_builder` 都
+以 `.execute()` 收尾：前者用成员指针指定 SET 列和 WHERE 谓词，后者按列名和
+`?`-参数对无映射的表下手写片段。两者是各自独立的两套 `where`。
 
 `update_builder` / `remove_builder` 的 `where(clause, p)` 与 `query<T>::where(predicate)`
 是两套东西：前者把 `clause` **原样拼进 SQL**（表名与列名经 `dialect::quote_identifier`，
@@ -1952,7 +1960,7 @@ commit/rollback/析构回滚、批量插入（含空 optional 写 NULL、1500 �
    生成器的 `[types]` / `cpp_type` / `converter` 按列承担（§6.4/§4.4）。
    `decimal_t` 也已落地：`uniorm::decimal_t` 以自带 converter 接入，正走的就是这条
    按列覆写（§4.3 第 2 条）；
-3. ~~`orm`（注册表）与 `connection` 的组合方式~~ **已定：`orm` 作为中心入口，内部持有 `connection`**，`db.query().of<T>()`、`db.insert()`、`db.update()` 等统一经 `orm` 调用（见 §4.8）；
+3. ~~`orm`（注册表）与 `connection` 的组合方式~~ **已定：`orm` 作为中心入口，内部持有 `connection`**，`db.query<T>()`、`db.insert()`、`db.update()` 等统一经 `orm` 调用（见 §4.8）；
 4. ~~头文件-only 还是编译库~~ **已定：动态库**（避免 header-only 升级后全量重编），非模板实现进 `libuniorm`，模板代码留头文件（见 §1）。
 
 **四项决策均已定，且都已落到实现。**"决策定了"与"实现到位"此前在第 2 项上分叉

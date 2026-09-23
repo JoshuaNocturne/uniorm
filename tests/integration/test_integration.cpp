@@ -239,7 +239,7 @@ void test_decimal_mapped(orm& db) {
   };
   CHECK(db.insert(batch) == 2);
 
-  auto back = db.query().of<Money>().order_by(&Money::id).all();
+  auto back = db.query<Money>().order_by(&Money::id).all();
   CHECK(back.size() == 2);
   CHECK(back[0].amount.to_literal() == "12345678901234.5678");
   CHECK(back[0].whole.to_int64() == 42);
@@ -266,8 +266,7 @@ void test_decimal_mapped(orm& db) {
   CHECK(r.get<std::string>("amount") == "-0.0500");
 
   // A decimal_t query value reaches the driver as that same literal.
-  CHECK(db.query()
-          .of<Money>()
+  CHECK(db.query<Money>()
           .where(gt(&Money::amount, decimal_t::from_literal("1")))
           .count() == 1);
 }
@@ -347,22 +346,20 @@ void test_converter_round_trip(orm& db) {
     CHECK(r.is_null("note"));
   }
 
-  auto second = db.query()
-                  .of<Order>()
+  auto second = db.query<Order>()
                   .where(eq(&Order::id, std::int64_t{ 2 }))
                   .one();
   CHECK(second.has_value());
   CHECK(second->state == grade::silver);
   CHECK(second->note && *second->note == grade::bronze);
 
-  auto listed = db.query().of<Order>().order_by(&Order::id).all();
+  auto listed = db.query<Order>().order_by(&Order::id).all();
   CHECK(listed.size() == 3);
   CHECK(listed[0].state == grade::gold);
   CHECK(!listed[0].note.has_value());  // NULL through the decoding stage
   CHECK(listed[2].note && *listed[2].note == grade::gold);
 
-  auto in_list = db.query()
-                   .of<Order>()
+  auto in_list = db.query<Order>()
                    .where(in(&Order::state, { grade::bronze, grade::silver }))
                    .all();
   CHECK(in_list.size() == 2);
@@ -373,14 +370,12 @@ void test_converter_round_trip(orm& db) {
   CHECK(rows[1].state == grade::silver && rows[1].note == grade::bronze);
   CHECK(!rows[0].note.has_value());
 
-  CHECK(db.query()
-          .of<Order>()
+  CHECK(db.update<Order>()
           .where(eq(&Order::id, std::int64_t{ 3 }))
           .set(&Order::state, grade::silver)
           .set(&Order::note, nullptr)
-          .update() == 1);
-  auto edited = db.query()
-                  .of<Order>()
+          .execute() == 1);
+  auto edited = db.query<Order>()
                   .where(eq(&Order::id, std::int64_t{ 3 }))
                   .one();
   CHECK(edited && edited->state == grade::silver);
@@ -396,7 +391,7 @@ void test_converter_round_trip(orm& db) {
   orders[2].note = grade::bronze;
   CHECK(db.update(orders) == 3);
 
-  auto after = db.query().of<Order>().order_by(&Order::id).all();
+  auto after = db.query<Order>().order_by(&Order::id).all();
   CHECK(after[0].state == grade::bronze);
   CHECK(after[0].note && *after[0].note == grade::silver);
   CHECK(after[1].state == grade::silver);
@@ -408,8 +403,7 @@ void test_converter_round_trip(orm& db) {
           .set("state", grade::gold)
           .where("id = ?", params{ std::int64_t{ 1 } })
           .execute() == 1);
-  CHECK(db.query()
-          .of<Order>()
+  CHECK(db.query<Order>()
           .where(eq(&Order::state, grade::gold))
           .count() == 1);
 
@@ -596,7 +590,7 @@ void test_identifier_spelling(std::string_view conn_string) {
   if (table_fold && table_fold == column_fold) {
     db.identifier_case(*table_fold);
     db.validate();
-    CHECK(db.query().of<CaseUser>().count() == 1);
+    CHECK(db.query<CaseUser>().count() == 1);
   } else if (table_fold) {
     db.identifier_case(*table_fold);
     CHECK_THROWS(db.validate(), mapping_error);
@@ -607,7 +601,7 @@ void test_identifier_spelling(std::string_view conn_string) {
   db.validate();
   CHECK(db.meta<CaseUser>().table == declared);
   CHECK(db.meta<CaseUser>().columns[0].column == id_column);
-  auto rows = db.query().of<CaseUser>().all();
+  auto rows = db.query<CaseUser>().all();
   CHECK(rows.size() == 1);
   if (rows.size() == 1) {
     CHECK(rows[0].id == 1);
@@ -624,9 +618,9 @@ void test_identifier_spelling(std::string_view conn_string) {
   added[0].name = "second again";
   added[1].name = "third";
   CHECK(db.update(added) == 2);
-  CHECK(db.query().of<CaseUser>().where(eq(&CaseUser::id, std::int64_t{ 3 }))
-    .set(&CaseUser::name, "changed").update() == 1);
-  auto selected = db.query().of<CaseUser>()
+  CHECK(db.update<CaseUser>().where(eq(&CaseUser::id, std::int64_t{ 3 }))
+    .set(&CaseUser::name, "changed").execute() == 1);
+  auto selected = db.query<CaseUser>()
     .where(ge(&CaseUser::id, std::int64_t{ 2 }))
     .order_by(&CaseUser::id).all();
   CHECK(selected.size() == 2);
@@ -637,9 +631,9 @@ void test_identifier_spelling(std::string_view conn_string) {
   CHECK(db.remove(added[0], { id_column }) == 1);
   CHECK(db.remove(std::vector<CaseUser>{ added[1] }) == 1);
   CHECK(db.insert(std::vector<CaseUser>{ { 4, "four" } }) == 1);
-  CHECK(db.query().of<CaseUser>().where(eq(&CaseUser::id, std::int64_t{ 4 }))
-    .remove() == 1);
-  CHECK(db.query().of<CaseUser>().count() == 1);
+  CHECK(db.remove<CaseUser>().where(eq(&CaseUser::id, std::int64_t{ 4 }))
+    .execute() == 1);
+  CHECK(db.query<CaseUser>().count() == 1);
   transaction.rollback();
 }
 
@@ -671,7 +665,7 @@ void test_identifier_case_twins(std::string_view conn_string) {
     .primary_key("Id", &CaseUser::id).column("Name", &CaseUser::name);
   db.resolve_identifiers(catalog_name, schema_name);
   CHECK(db.meta<CaseUser>().resolved->table.name == lower_name);
-  auto first = db.query().of<CaseUser>().one();
+  auto first = db.query<CaseUser>().one();
   CHECK(first && first->id == 22 && first->name == "lower");
 
   db.execute_update("CREATE TABLE " + mixed_table +
@@ -683,7 +677,7 @@ void test_identifier_case_twins(std::string_view conn_string) {
   CHECK(db.meta<CaseUser>().resolved->table.name == mixed_name);
   CHECK(db.meta<CaseUser>().resolved->columns[0] == "ID");
   db.validate();
-  auto exact = db.query().of<CaseUser>().one();
+  auto exact = db.query<CaseUser>().one();
   CHECK(exact && exact->id == 11 && exact->name == "exact");
 
   db.execute_update("CREATE TEMP TABLE " +
@@ -692,7 +686,7 @@ void test_identifier_case_twins(std::string_view conn_string) {
   db.execute_update("INSERT INTO " + dialect.quote_exact_identifier(mixed_name) +
     " VALUES (99, 'shadow')");
   db.resolve_identifiers(catalog_name, schema_name);
-  auto qualified = db.query().of<CaseUser>().one();
+  auto qualified = db.query<CaseUser>().one();
   CHECK(qualified && qualified->id == 11 && qualified->name == "exact");
 
   struct AmbiguousUser { std::int64_t id; };
@@ -705,58 +699,52 @@ void test_identifier_case_twins(std::string_view conn_string) {
 }
 
 void test_query_builder(orm& db) {
-  CHECK(db.query().of<User>().count() == 3);
+  CHECK(db.query<User>().count() == 3);
 
-  auto all = db.query().of<User>().all();
+  auto all = db.query<User>().all();
   CHECK(all.size() == 3);
 
-  auto one = db.query()
-               .of<User>()
+  auto one = db.query<User>()
                .where(eq(&User::name, std::string("alice")))
                .one();
   CHECK(one.has_value() && one->id == 1 && one->age.value_or(0) == 30);
   CHECK(one->created.has_value());
 
-  auto none = db.query()
-                .of<User>()
+  auto none = db.query<User>()
                 .where(eq(&User::name, std::string("nobody")))
                 .one();
   CHECK(!none.has_value());
 
-  auto adults = db.query().of<User>().where(gt(&User::age, 26)).all();
+  auto adults = db.query<User>().where(gt(&User::age, 26)).all();
   CHECK(adults.size() == 1 && adults[0].id == 1);  // NULL age excluded
 
-  auto nulls = db.query().of<User>().where(is_null(&User::age)).all();
+  auto nulls = db.query<User>().where(is_null(&User::age)).all();
   CHECK(nulls.size() == 1 && nulls[0].id == 2);
 
   auto picked =
-    db.query()
-      .of<User>()
+    db.query<User>()
       .where(in(&User::id, { std::int64_t{ 1 }, std::int64_t{ 3 } }))
       .all();
   CHECK(picked.size() == 2);
 
   auto liked =
-    db.query().of<User>().where(like(&User::name, "a%")).all();
+    db.query<User>().where(like(&User::name, "a%")).all();
   CHECK(liked.size() == 1 && liked[0].name == "alice");
 
   auto combined =
-    db.query()
-      .of<User>()
+    db.query<User>()
       .where(gt(&User::age, 20) && ne(&User::name, std::string("carol")))
       .all();
   CHECK(combined.size() == 1 && combined[0].id == 1);
 
-  auto page = db.query()
-                .of<User>()
+  auto page = db.query<User>()
                 .order_by(&User::id, direction::desc)
                 .limit(2)
                 .offset(1)
                 .all();
   CHECK(page.size() == 2 && page[0].id == 2 && page[1].id == 1);
 
-  std::string sql = db.query()
-                      .of<User>()
+  std::string sql = db.query<User>()
                       .where(eq(&User::id, std::int64_t{ 1 }))
                       .build_select();
   // Which quote character lands here is the server's own doing: the dialect is
@@ -768,8 +756,7 @@ void test_query_builder(orm& db) {
   // The spelling policy rides the same emission point, so one mapping can
   // serve a server that stores its names the other way.
   db.identifier_case(dialect::identifier_case::upper);
-  std::string raised = db.query()
-                         .of<User>()
+  std::string raised = db.query<User>()
                          .where(eq(&User::id, std::int64_t{ 1 }))
                          .build_select();
   CHECK(raised.find(d.quote_identifier("UNIORM_IT_USER")) != std::string::npos);
@@ -787,7 +774,7 @@ void test_transaction(orm& db) {
     tx.rollback();
     CHECK(!tx.active());
   }
-  CHECK(db.query().of<User>().count() == 3);
+  CHECK(db.query<User>().count() == 3);
 
   {
     transaction tx = db.begin();
@@ -796,7 +783,7 @@ void test_transaction(orm& db) {
       params{ std::int64_t{ 101 }, std::string("kept"), nullptr, 0.0 });
     tx.commit();
   }
-  CHECK(db.query().of<User>().count() == 4);
+  CHECK(db.query<User>().count() == 4);
 
   {
     transaction tx = db.begin();  // destructor must roll back
@@ -804,11 +791,11 @@ void test_transaction(orm& db) {
                         " VALUES (?, ?, ?, ?)",
       params{ std::int64_t{ 102 }, std::string("dropped"), nullptr, 0.0 });
   }
-  CHECK(db.query().of<User>().count() == 4);
+  CHECK(db.query<User>().count() == 4);
 
   db.execute_update(
     "DELETE FROM uniorm_it_user WHERE id = ?", params{ std::int64_t{ 101 } });
-  CHECK(db.query().of<User>().count() == 3);
+  CHECK(db.query<User>().count() == 3);
 }
 
 // auto_commit is the connection's commit mode, so it governs every write here:
@@ -819,8 +806,7 @@ void test_auto_commit_scope(orm& db, std::string const& conn_string) {
   db.execute_update("DELETE FROM uniorm_it_user WHERE id >= 700");
   CHECK(db.auto_commit());
   auto mine = [&db] {
-    return db.query()
-      .of<User>()
+    return db.query<User>()
       .where(ge(&User::id, std::int64_t{ 700 }))
       .count();
   };
@@ -954,10 +940,9 @@ void test_insert(orm& db) {
     User{ 202, "frank", std::int32_t{ 51 }, -2.0, std::nullopt, std::nullopt });
 
   CHECK(db.insert(users) == 3);
-  CHECK(db.query().of<User>().count() == 6);
+  CHECK(db.query<User>().count() == 6);
 
-  auto erin = db.query()
-                .of<User>()
+  auto erin = db.query<User>()
                 .where(eq(&User::id, std::int64_t{ 201 }))
                 .one();
   CHECK(erin.has_value());
@@ -975,11 +960,11 @@ void test_insert(orm& db) {
       User{ id, "bulk", std::nullopt, 0.0, std::nullopt, std::nullopt });
   }
   CHECK(db.insert(many) == 1500);
-  CHECK(db.query().of<User>().count() == 6 + 1500);
+  CHECK(db.query<User>().count() == 6 + 1500);
 
   db.execute_update(
     "DELETE FROM uniorm_it_user WHERE id >= ?", params{ std::int64_t{ 200 } });
-  CHECK(db.query().of<User>().count() == 3);
+  CHECK(db.query<User>().count() == 3);
 }
 
 void test_update(orm& db) {
@@ -988,7 +973,7 @@ void test_update(orm& db) {
     User{ 401, "jack", std::nullopt, 2.0, std::string("orig"), std::nullopt }
   };
   db.insert(users);
-  CHECK(db.query().of<User>().count() == 5);
+  CHECK(db.query<User>().count() == 5);
 
   // Dynamic update: bound values, including a NULL write.
   CHECK(db.update(k_table)
@@ -996,22 +981,19 @@ void test_update(orm& db) {
           .set("note", nullptr)
           .where("id = ?", params{ std::int64_t{ 400 } })
           .execute() == 1);
-  auto ivy = db.query()
-               .of<User>()
+  auto ivy = db.query<User>()
                .where(eq(&User::id, std::int64_t{ 400 }))
                .one();
   CHECK(ivy.has_value() && ivy->age.value_or(0) == 34);
   CHECK(!ivy->note.has_value());
 
   // Entity update through the builder.
-  CHECK(db.query()
-          .of<User>()
+  CHECK(db.update<User>()
           .where(eq(&User::id, std::int64_t{ 401 }))
           .set(&User::note, std::string("edited"))
           .set(&User::balance, 2.5)
-          .update() == 1);
-  auto jack = db.query()
-                .of<User>()
+          .execute() == 1);
+  auto jack = db.query<User>()
                 .where(eq(&User::id, std::int64_t{ 401 }))
                 .one();
   CHECK(jack.has_value() && jack->note.value_or("") == "edited");
@@ -1024,18 +1006,16 @@ void test_update(orm& db) {
     uniorm_error);
   CHECK_THROWS(
     db.update(k_table).set("age", std::int32_t{ 1 }).execute(), uniorm_error);
-  CHECK_THROWS(db.query()
-                 .of<User>()
-                 .where(eq(&User::id, std::int64_t{ 400 }))
-                 .update(),
+  CHECK_THROWS(
+    db.update<User>().where(eq(&User::id, std::int64_t{ 400 })).execute(),
     uniorm_error);
   CHECK_THROWS(
-    db.query().of<User>().set(&User::age, std::int32_t{ 1 }).update(),
+    db.update<User>().set(&User::age, std::int32_t{ 1 }).execute(),
     uniorm_error);
 
   db.execute_update(
     "DELETE FROM uniorm_it_user WHERE id >= ?", params{ std::int64_t{ 400 } });
-  CHECK(db.query().of<User>().count() == 3);
+  CHECK(db.query<User>().count() == 3);
 }
 
 void test_remove(orm& db) {
@@ -1044,24 +1024,23 @@ void test_remove(orm& db) {
     User{ 401, "jack", std::nullopt, 2.0, std::nullopt, std::nullopt }
   };
   db.insert(users);
-  CHECK(db.query().of<User>().count() == 5);
+  CHECK(db.query<User>().count() == 5);
 
   // Entity delete through the builder.
-  CHECK(db.query()
-          .of<User>()
+  CHECK(db.remove<User>()
           .where(eq(&User::id, std::int64_t{ 400 }))
-          .remove() == 1);
-  CHECK(db.query().of<User>().count() == 4);
+          .execute() == 1);
+  CHECK(db.query<User>().count() == 4);
 
   // Dynamic delete.
   CHECK(db.remove(k_table)
           .where("id = ?", params{ std::int64_t{ 401 } })
           .execute() == 1);
-  CHECK(db.query().of<User>().count() == 3);
+  CHECK(db.query<User>().count() == 3);
 
   // Guards: blank where must throw.
   CHECK_THROWS(db.remove(k_table).execute(), uniorm_error);
-  CHECK_THROWS(db.query().of<User>().remove(), uniorm_error);
+  CHECK_THROWS(db.remove<User>().execute(), uniorm_error);
 }
 
 void test_entity_update(orm& db) {
@@ -1069,14 +1048,13 @@ void test_entity_update(orm& db) {
   User u{ 500, "eve", std::int32_t{ 28 }, 10.0, std::string("original"),
     std::nullopt };
   db.insert(std::vector<User>{ u });
-  CHECK(db.query().of<User>().count() == 4);
+  CHECK(db.query<User>().count() == 4);
 
   // Update using primary key as WHERE.
   User u2{ 500, "eve_updated", std::int32_t{ 29 }, 11.5, std::string("modified"),
     std::nullopt };
   CHECK(db.update(u2) == 1);
-  auto row = db.query()
-               .of<User>()
+  auto row = db.query<User>()
                .where(eq(&User::id, std::int64_t{ 500 }))
                .one();
   CHECK(row.has_value());
@@ -1089,8 +1067,7 @@ void test_entity_update(orm& db) {
   User u3{ 501, "eve_updated", std::int32_t{ 30 }, 12.0, std::string("again"),
     std::nullopt };
   CHECK(db.update(u3, { "name" }) == 1);
-  auto row2 = db.query()
-                .of<User>()
+  auto row2 = db.query<User>()
                 .where(eq(&User::name, std::string("eve_updated")))
                 .one();
   CHECK(row2.has_value());
@@ -1104,7 +1081,7 @@ void test_entity_update(orm& db) {
   // Cleanup.
   db.execute_update(
     "DELETE FROM uniorm_it_user WHERE id >= ?", params{ std::int64_t{ 500 } });
-  CHECK(db.query().of<User>().count() == 3);
+  CHECK(db.query<User>().count() == 3);
 }
 
 void test_composite_key_and_where_fields(orm& db) {
@@ -1200,8 +1177,8 @@ void test_statement_cache(orm& db) {
   db.clear_statement_cache();
   CHECK(db.statement_cache_size() == 0);
   hits = db.statement_cache_hits();
-  CHECK(db.query().of<User>().all().size() == 3);
-  CHECK(db.query().of<User>().all().size() == 3);
+  CHECK(db.query<User>().all().size() == 3);
+  CHECK(db.query<User>().all().size() == 3);
   CHECK(db.statement_cache_hits() == hits + 1);
   CHECK(db.statement_cache_size() > 0);
 }

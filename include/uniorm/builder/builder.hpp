@@ -1,6 +1,7 @@
 #pragma once
 
-// Member-pointer query builder: conn.query(orm).of<T>()...
+// Entity-path builders: db.query<T>() / db.update<T>() / db.remove<T>().
+// The dynamic (untyped-table) builders live alongside for a shared header.
 
 #include <cstddef>
 #include <cstdint>
@@ -76,9 +77,6 @@ private:
 
 }  // namespace detail
 
-template <class T>
-class query;
-
 // Fluent dynamic UPDATE for tables without an entity mapping, obtained via
 // orm::update(table). Every set value is bound through a `?` placeholder;
 // repeated where() calls accumulate and AND at execute(), matching the
@@ -132,38 +130,12 @@ private:
   std::vector<where_clause> wheres_;
 };
 
-// Entry point returned by orm::query(); owns nothing.
-class UNIORM_API query_gateway {
-public:
-  explicit query_gateway(orm& db) : orm_(&db) {}
-
-  template <class T>
-  query<T> of() {
-    return query<T>(*this, orm_->meta<T>());
-  }
-
-  connection& conn() const {
-    return orm_->native_connection();
-  }
-  orm& get_orm() const {
-    return *orm_;
-  }
-  std::size_t row_array_size() const noexcept {
-    return orm_->row_array_size();
-  }
-  // The connection's, so every statement spells its names the same way.
-  dialect const& sql_dialect() const {
-    return conn().sql_dialect();
-  }
-
-private:
-  orm* orm_;
-};
-
+// Read builder obtained via orm::query<T>(). Chained where() accumulates and
+// ANDs; order_by/limit/offset decorate the SELECT; terminals are all/one/count.
 template <class T>
 class query {
 public:
-  query(query_gateway& gw, entity_meta const& meta) : gw_(&gw), meta_(&meta) {}
+  query(orm& db, entity_meta const& meta) : db_(&db), meta_(&meta) {}
 
   query& where(predicate p) {
     wheres_.push_back(std::move(p));
@@ -194,13 +166,13 @@ public:
   std::vector<T> all() {
     std::vector<sql_value> bound;
     std::string sql = render_select(limit_, bound);
-    auto& c = gw_->conn();
+    auto& c = db_->native_connection();
     std::string key(sql);
     auto stmt = c.acquire_statement(key);
     params p(std::move(bound));
     stmt->bind_params(p);
     stmt->execute();
-    std::size_t ras = gw_->row_array_size();
+    std::size_t ras = db_->row_array_size();
     stmt->set_row_array_size(ras);
     detail::entity_binding<T> binding(*meta_);
     binding.set_row_array_size(ras);
@@ -229,7 +201,7 @@ public:
   std::optional<T> one() {
     std::vector<sql_value> bound;
     std::string sql = render_select(std::size_t{ 1 }, bound);
-    auto& c = gw_->conn();
+    auto& c = db_->native_connection();
     std::string key(sql);
     auto stmt = c.acquire_statement(key);
     params p(std::move(bound));
@@ -250,56 +222,12 @@ public:
   std::int64_t count() {
     std::vector<sql_value> bound;
     std::string sql = render_count(bound);
-    result_set rs = gw_->conn().execute(sql, params(std::move(bound)));
+    result_set rs = db_->native_connection().execute(
+      sql, params(std::move(bound)));
     if (!rs.next()) {
       return 0;
     }
     return rs.current().get<std::int64_t>(0);
-  }
-
-  // Stage a column assignment for update(); nullptr writes NULL.
-  template <class M, class V>
-  query& set(M T::* member, V&& value) {
-    sets_.emplace_back(
-      make_member_key(member), detail::make_sql_value(std::forward<V>(value)));
-    return *this;
-  }
-
-  // UPDATE ... SET <staged> WHERE <wheres>. Requires at least one set()
-  // and one where(); order_by/limit/offset are ignored.
-  std::size_t update() {
-    if (sets_.empty()) {
-      throw uniorm_error("update: no columns to set");
-    }
-    if (wheres_.empty()) {
-      throw uniorm_error("update: refusing to run without a WHERE predicate");
-    }
-    auto resolve = make_resolver();
-    std::vector<sql_value> bound;
-    bound.reserve(sets_.size());
-    std::string sql =
-      "UPDATE " + meta_->table_sql(gw_->sql_dialect()) + " SET ";
-    for (std::size_t index = 0; index < sets_.size(); ++index) {
-      if (index != 0) {
-        sql += ", ";
-      }
-      sql += resolve(sets_[index].first) + " = ?";
-      bound.push_back(sets_[index].second);
-    }
-    sql += " WHERE " + where_sql(resolve, bound);
-    return gw_->conn().execute_update(sql, params(std::move(bound)));
-  }
-
-  // DELETE FROM ... WHERE <wheres>. Requires at least one where();
-  // order_by/limit/offset are ignored.
-  std::size_t remove() {
-    if (wheres_.empty()) {
-      throw uniorm_error("remove: refusing to run without a WHERE predicate");
-    }
-    std::vector<sql_value> bound;
-    std::string sql = "DELETE FROM " + meta_->table_sql(gw_->sql_dialect()) +
-                      " WHERE " + where_sql(make_resolver(), bound);
-    return gw_->conn().execute_update(sql, params(std::move(bound)));
   }
 
 private:
@@ -308,27 +236,31 @@ private:
     direction dir;
   };
 
+  dialect const& sql_dialect() const {
+    return db_->native_connection().sql_dialect();
+  }
+
   predicate::resolver make_resolver() const {
     return [this](member_key const& key) {
-      return meta_->column_sql(key, gw_->sql_dialect());
+      return meta_->column_sql(key, sql_dialect());
     };
   }
 
   std::string where_sql(
     predicate::resolver const& resolve, std::vector<sql_value>& bound) const {
     std::string sql;
-    for (std::size_t i = 0; i < wheres_.size(); ++i) {
-      if (i != 0) {
+    for (std::size_t index = 0; index < wheres_.size(); ++index) {
+      if (index != 0) {
         sql += " AND ";
       }
-      sql += wheres_[i].to_sql(resolve, bound);
+      sql += wheres_[index].to_sql(resolve, bound);
     }
     return sql;
   }
 
   std::string render_select(
     std::optional<std::size_t> lim, std::vector<sql_value>& bound) const {
-    auto const& sql_dialect = gw_->sql_dialect();
+    auto const& dialect_ref = sql_dialect();
     auto resolve = make_resolver();
 
     std::string sql = "SELECT ";
@@ -336,9 +268,9 @@ private:
       if (index != 0) {
         sql += ", ";
       }
-      sql += meta_->column_sql(index, sql_dialect);
+      sql += meta_->column_sql(index, dialect_ref);
     }
-    sql += " FROM " + meta_->table_sql(sql_dialect);
+    sql += " FROM " + meta_->table_sql(dialect_ref);
 
     if (!wheres_.empty()) {
       sql += " WHERE " + where_sql(resolve, bound);
@@ -353,27 +285,170 @@ private:
         sql += orders_[index].dir == direction::asc ? " ASC" : " DESC";
       }
     }
-    sql += sql_dialect.pagination(lim, offset_);
+    sql += dialect_ref.pagination(lim, offset_);
     return sql;
   }
 
   std::string render_count(std::vector<sql_value>& bound) const {
-    auto const& sql_dialect = gw_->sql_dialect();
     std::string sql =
-      "SELECT COUNT(*) FROM " + meta_->table_sql(sql_dialect);
+      "SELECT COUNT(*) FROM " + meta_->table_sql(sql_dialect());
     if (!wheres_.empty()) {
       sql += " WHERE " + where_sql(make_resolver(), bound);
     }
     return sql;
   }
 
-  query_gateway* gw_;
+  orm* db_;
   entity_meta const* meta_;
   std::vector<predicate> wheres_;
-  std::vector<std::pair<member_key, sql_value>> sets_;
   std::vector<order_clause> orders_;
   std::optional<std::size_t> limit_;
   std::size_t offset_ = 0;
 };
+
+// Typed UPDATE builder obtained via orm::update<T>(). Chained set() stages
+// one column assignment each; chained where() accumulates and ANDs at
+// execute(). execute() throws rather than firing a table-wide UPDATE.
+template <class T>
+class update {
+public:
+  update(orm& db, entity_meta const& meta) : db_(&db), meta_(&meta) {}
+
+  // Stage a column assignment; nullptr writes NULL.
+  template <class M, class V>
+  update& set(M T::* member, V&& value) {
+    sets_.emplace_back(
+      make_member_key(member), detail::make_sql_value(std::forward<V>(value)));
+    return *this;
+  }
+
+  update& where(predicate p) {
+    wheres_.push_back(std::move(p));
+    return *this;
+  }
+
+  std::size_t execute() {
+    if (sets_.empty()) {
+      throw uniorm_error("update: no columns to set");
+    }
+    if (wheres_.empty()) {
+      throw uniorm_error("update: refusing to run without a WHERE predicate");
+    }
+    auto resolve = make_resolver();
+    std::vector<sql_value> bound;
+    bound.reserve(sets_.size());
+    std::string sql = "UPDATE " + meta_->table_sql(sql_dialect()) + " SET ";
+    for (std::size_t index = 0; index < sets_.size(); ++index) {
+      if (index != 0) {
+        sql += ", ";
+      }
+      sql += resolve(sets_[index].first) + " = ?";
+      bound.push_back(sets_[index].second);
+    }
+    sql += " WHERE " + where_sql(resolve, bound);
+    return db_->native_connection().execute_update(
+      sql, params(std::move(bound)));
+  }
+
+private:
+  dialect const& sql_dialect() const {
+    return db_->native_connection().sql_dialect();
+  }
+
+  predicate::resolver make_resolver() const {
+    return [this](member_key const& key) {
+      return meta_->column_sql(key, sql_dialect());
+    };
+  }
+
+  std::string where_sql(
+    predicate::resolver const& resolve, std::vector<sql_value>& bound) const {
+    std::string sql;
+    for (std::size_t index = 0; index < wheres_.size(); ++index) {
+      if (index != 0) {
+        sql += " AND ";
+      }
+      sql += wheres_[index].to_sql(resolve, bound);
+    }
+    return sql;
+  }
+
+  orm* db_;
+  entity_meta const* meta_;
+  std::vector<std::pair<member_key, sql_value>> sets_;
+  std::vector<predicate> wheres_;
+};
+
+// Typed DELETE builder obtained via orm::remove<T>(). Chained where()
+// accumulates and ANDs at execute().
+template <class T>
+class remove {
+public:
+  remove(orm& db, entity_meta const& meta) : db_(&db), meta_(&meta) {}
+
+  remove& where(predicate p) {
+    wheres_.push_back(std::move(p));
+    return *this;
+  }
+
+  std::size_t execute() {
+    if (wheres_.empty()) {
+      throw uniorm_error("remove: refusing to run without a WHERE predicate");
+    }
+    std::vector<sql_value> bound;
+    std::string sql = "DELETE FROM " + meta_->table_sql(sql_dialect()) +
+                      " WHERE " + where_sql(make_resolver(), bound);
+    return db_->native_connection().execute_update(
+      sql, params(std::move(bound)));
+  }
+
+private:
+  dialect const& sql_dialect() const {
+    return db_->native_connection().sql_dialect();
+  }
+
+  predicate::resolver make_resolver() const {
+    return [this](member_key const& key) {
+      return meta_->column_sql(key, sql_dialect());
+    };
+  }
+
+  std::string where_sql(
+    predicate::resolver const& resolve, std::vector<sql_value>& bound) const {
+    std::string sql;
+    for (std::size_t index = 0; index < wheres_.size(); ++index) {
+      if (index != 0) {
+        sql += " AND ";
+      }
+      sql += wheres_[index].to_sql(resolve, bound);
+    }
+    return sql;
+  }
+
+  orm* db_;
+  entity_meta const* meta_;
+  std::vector<predicate> wheres_;
+};
+
+// --- Builder factory methods on orm, out-of-class so that query<T> /
+// update<T> / remove<T> are complete by the time their bodies instantiate.
+
+template <class T>
+inline ::uniorm::query<T> orm::query() {
+  native_connection();
+  return ::uniorm::query<T>(*this, meta<T>());
+}
+
+template <class T>
+inline ::uniorm::update<T> orm::update() {
+  native_connection();
+  return ::uniorm::update<T>(*this, meta<T>());
+}
+
+template <class T>
+inline ::uniorm::remove<T> orm::remove() {
+  native_connection();
+  return ::uniorm::remove<T>(*this, meta<T>());
+}
 
 }  // namespace uniorm

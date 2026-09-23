@@ -95,7 +95,7 @@ void test_golden(std::string_view conn_string) {
   gen_it::register_gen_it_schema(db);
   CHECK(db.size() == 2);
   db.validate(validation_mode::strict);
-  CHECK(db.query().of<gen_it::UniormGenUser>().count() == 0);
+  CHECK(db.query<gen_it::UniormGenUser>().count() == 0);
 
   // The generated entity carries both a converter-backed column and a
   // decimal_t one, so a write and a materialized read here cover the whole
@@ -111,7 +111,7 @@ void test_golden(std::string_view conn_string) {
   order.note = order_state::shipped;
   CHECK(db.insert(std::vector<gen_it::UniormGenOrder>{ order }) == 1);
 
-  auto back = db.query().of<gen_it::UniormGenOrder>().one();
+  auto back = db.query<gen_it::UniormGenOrder>().one();
   CHECK(back.has_value());
   CHECK(back->amount == decimal_t::from_literal("10.5"));
   CHECK(back->amount.to_literal() == "10.50");  // the column's scale

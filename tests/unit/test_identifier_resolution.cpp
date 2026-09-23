@@ -517,8 +517,7 @@ void test_resolution_failures_are_atomic() {
   auto const* account_address = &database.meta<account>();
   auto const* event_address = &database.meta<event>();
   auto const* columns_address = account_address->columns.data();
-  auto gateway = database.query();
-  auto retained = gateway.of<account>();
+  auto retained = database.query<account>();
   database.resolve_identifiers("Tenant", "App");
   CHECK(account_address->columns.data() == columns_address);
   std::string const previous_sql = retained.build_select();
@@ -651,8 +650,7 @@ void test_new_registration_and_retained_builders() {
   orm database(fixture.pool);
   auto mapping = map_account(database);
   auto const* address = &database.meta<account>();
-  auto gateway = database.query();
-  auto retained = gateway.of<account>();
+  auto retained = database.query<account>();
   CHECK(retained.build_select() ==
     "SELECT \"TENANT_ID\", \"DISPLAY_NAME\", \"USER_ID\", \"BALANCE\" "
     "FROM \"ACCOUNTS\"");
@@ -750,8 +748,7 @@ void test_non_ascii_names_are_byte_preserving() {
   database.resolve_identifiers("Tenant", "App");
   check_resolution(database.meta<event>(),
     { "Tenant", "App", "\xc3\x84_Table" }, { "\xc3\x84_Id" });
-  auto gateway = database.query();
-  auto query = gateway.of<event>();
+  auto query = database.query<event>();
   CHECK(query.build_select() ==
     "SELECT \"\xc3\x84_Id\" FROM \"App\".\"\xc3\x84_Table\"");
   catalog.entries[0].columns[1].shape.name = "\xc3\xa4_Id";
@@ -834,8 +831,7 @@ void test_lifecycle_and_pool_reuse() {
     map_account(reused);
     CHECK(fixture.state->opens == 1);
     CHECK(!reused.meta<account>().resolved);
-    auto gateway = reused.query();
-    auto query = gateway.of<account>();
+    auto query = reused.query<account>();
     CHECK(query.build_select() ==
       "SELECT \"TENANT_ID\", \"DISPLAY_NAME\", \"USER_ID\", \"BALANCE\" "
       "FROM \"ACCOUNTS\"");
@@ -872,8 +868,7 @@ void test_queries_and_statement_cache() {
   orm database(fixture.pool);
   map_account(database);
   database.row_array_size(1);
-  auto gateway = database.query();
-  auto retained = gateway.of<account>();
+  auto retained = database.query<account>();
   retained.where(eq(&account::id, std::int64_t{ 17 }))
     .order_by(&account::name, direction::desc);
   database.resolve_identifiers("Tenant", "App");
@@ -925,18 +920,18 @@ void test_queries_and_statement_cache() {
   check_executions(state, select + " OFFSET 0 ROWS FETCH NEXT 1 ROWS ONLY",
     predicate_params);
 
-  auto update = gateway.of<account>();
+  auto update = database.update<account>();
   CHECK(update.set(&account::name, "Grace")
     .set(&account::balance, nullptr)
     .where(eq(&account::tenant, std::int64_t{ 8 }))
-    .where(eq(&account::id, std::int64_t{ 17 })).update() == 1);
+    .where(eq(&account::id, std::int64_t{ 17 })).execute() == 1);
   check_executions(state,
     "UPDATE \"App\".\"Accounts\" SET \"Display_Name\" = ?, \"Balance\" = ? "
     "WHERE \"Tenant_Id\" = ? AND \"User_Id\" = ?",
     { params("Grace", nullptr,
       std::int64_t{ 8 }, std::int64_t{ 17 }).values() });
-  auto remove = gateway.of<account>();
-  CHECK(remove.where(eq(&account::id, std::int64_t{ 17 })).remove() == 1);
+  auto remove = database.remove<account>();
+  CHECK(remove.where(eq(&account::id, std::int64_t{ 17 })).execute() == 1);
   check_executions(state,
     "DELETE FROM \"App\".\"Accounts\" WHERE \"User_Id\" = ?", predicate_params);
 
@@ -1061,8 +1056,7 @@ void test_mysql_and_literal_namespace_quoting() {
   database.resolve_identifiers("Ware.house`x", {});
   check_resolution(database.meta<event>(),
     { "Ware.house`x", {}, "Account`Book" }, { "User`Id" });
-  auto gateway = database.query();
-  auto query = gateway.of<event>();
+  auto query = database.query<event>();
   CHECK(query.build_select() ==
     "SELECT `User``Id` FROM `Ware.house``x`.`Account``Book`");
   CHECK(database.remove(event{ 7 }) == 1);

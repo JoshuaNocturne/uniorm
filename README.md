@@ -31,7 +31,7 @@ See [docs/design.md](docs/design.md) for the full design.
   - Aggregate projection: `db.query<Row>(sql)` maps columns onto a plain
     struct with zero registration
   - Entity mapping: explicit registry plus a type-safe member-pointer query
-    builder, `db.query().of<T>()`
+    builder, `db.query<T>()`
 - **Direct entity binding** — `query<T>::all()/one()` bind result columns
   straight onto entity fields (`SQLBindCol`), bypassing row materialization
 - **Custom type mapping** — specializing `uniorm::converter<T>` names the SQL
@@ -200,8 +200,7 @@ db.validate();  // against the live schema; strict by default: a table or
 // db.validate(uniorm::validation_mode::lenient);  // existence only
 
 using namespace uniorm;
-auto adults = db.query()
-                .of<User>()
+auto adults = db.query<User>()
                 .where(gt(&User::age, 18) && like(&User::name, "a%"))
                 .order_by(&User::id, direction::desc)
                 .limit(10)

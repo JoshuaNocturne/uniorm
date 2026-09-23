@@ -354,7 +354,7 @@ std::vector<bench_result> run_benchmarks(connection& conn, orm& registry,
   std::size_t entity_rows = 0;
   report("query entity all() (direct bind)", n,
     best_of(
-      [&] { entity_rows = registry.query().of<Bench>().all().size(); },
+      [&] { entity_rows = registry.query<Bench>().all().size(); },
       runs),
     runs, &results);
   if (entity_rows != n) {
@@ -416,7 +416,7 @@ std::vector<bench_result> run_benchmarks(connection& conn, orm& registry,
   report("query one() (direct bind)", 1,
     best_of(
       [&] {
-        auto one = registry.query().of<Bench>().limit(1).one();
+        auto one = registry.query<Bench>().limit(1).one();
         if (!one) {
           std::exit(1);
         }
@@ -426,7 +426,7 @@ std::vector<bench_result> run_benchmarks(connection& conn, orm& registry,
 
   std::int64_t count = 0;
   report("query count()", 1,
-    best_of([&] { count = registry.query().of<Bench>().count(); }, runs),
+    best_of([&] { count = registry.query<Bench>().count(); }, runs),
     runs, &results);
   if (count != static_cast<std::int64_t>(n)) {
     std::printf("FATAL: count() returned %" PRId64 "\n", count);
@@ -460,7 +460,7 @@ std::vector<bench_result> run_benchmarks(connection& conn, orm& registry,
   report("query entity all (converter field)", n,
     best_of(
       [&] {
-        conv_read = conv_registry.query().of<BenchConv>().all().size();
+        conv_read = conv_registry.query<BenchConv>().all().size();
       },
       runs),
     runs, &results);
@@ -470,7 +470,7 @@ std::vector<bench_result> run_benchmarks(connection& conn, orm& registry,
   }
   // Untimed, and a read of its own: a decode that quietly produced nothing
   // would still have counted n rows above.
-  for (auto const& b : conv_registry.query().of<BenchConv>().all()) {
+  for (auto const& b : conv_registry.query<BenchConv>().all()) {
     bool const written = b.id % 4 != 0;
     if (!b.note != !written ||
         (b.note && b.note->text != "note-" + std::to_string(b.id))) {

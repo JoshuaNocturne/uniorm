@@ -143,13 +143,6 @@ void orm::validate(validation_mode mode) {
   }
 }
 
-// --- Entity query entry point ---
-
-query_gateway orm::query() {
-  ensure_connected();
-  return query_gateway(*this);
-}
-
 // --- Raw SQL operations ---
 
 result_set orm::execute(std::string_view sql, params const& p) {

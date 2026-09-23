@@ -27,9 +27,12 @@ class result_set;
 class transaction;
 class update_builder;
 class remove_builder;
-class query_gateway;
 template <class T>
 class query;
+template <class T>
+class update;
+template <class T>
+class remove;
 
 // Central entry point for uniorm: owns a database connection and entity
 // mappings, provides all database operations.
@@ -120,8 +123,10 @@ public:
   // READ (Query)
   // ========================================================================
 
-  // --- Entity query entry point ---
-  query_gateway query();
+  // --- Entity query builder: db.query<User>().where(...).one() ---
+  // Bodies live in <uniorm/builder/builder.hpp>; include it before use.
+  template <class T>
+  ::uniorm::query<T> query();
 
   // Typed aggregate projection query
   template <detail::aggregate_projection T>
@@ -159,6 +164,10 @@ public:
   // ========================================================================
   // UPDATE
   // ========================================================================
+
+  // Typed builder: db.update<User>().set(&User::age, 31).where(...).execute()
+  template <class T>
+  ::uniorm::update<T> update();
 
   // Dynamic update builder for tables without entity mapping
   update_builder update(std::string_view table);
@@ -204,6 +213,10 @@ public:
   // ========================================================================
   // DELETE (Remove)
   // ========================================================================
+
+  // Typed builder: db.remove<User>().where(...).execute()
+  template <class T>
+  ::uniorm::remove<T> remove();
 
   // Dynamic remove builder for tables without entity mapping
   remove_builder remove(std::string_view table);
@@ -289,7 +302,6 @@ public:
   connection& native_connection();
 
 private:
-  friend class query_gateway;
   friend class update_builder;
   friend class remove_builder;
 
@@ -331,3 +343,7 @@ private:
 };
 
 }  // namespace uniorm
+
+// Builder classes and the bodies of orm::query<T> / orm::update<T> /
+// orm::remove<T> live here; included last so orm is complete for them.
+#include <uniorm/builder/builder.hpp>

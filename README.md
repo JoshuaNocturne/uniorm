@@ -311,9 +311,11 @@ std::size_t one = db.remove(users.front(), { "name" });  // name alone
 
 // Writes to a table with no entity mapping go through the dynamic builders.
 // There is no dynamic insert: a table nobody maps has no column set to take.
+// Chained where() calls accumulate and AND, matching query<T>::where.
 std::size_t m = db.update("users")
                   .set("age", 31)
                   .where("id = ?", uniorm::params{ std::int64_t{ 2 } })
+                  .where("name = ?", uniorm::params{ std::string("bob") })
                   .execute();
 std::size_t d = db.remove("users")
                   .where("id = ?", uniorm::params{ std::int64_t{ 2 } })

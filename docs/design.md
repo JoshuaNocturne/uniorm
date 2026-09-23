@@ -1050,20 +1050,21 @@ public:
 class update_builder {
 public:
     template <class V> update_builder& set(std::string_view column, V&& value);
-    update_builder& where(std::string_view clause, params p = {});
-    std::size_t execute();                           // set 空或 where 空白即抛，不放全表火
+    update_builder& where(std::string_view clause, params p = {});  // 空白 clause 即抛；多次调用累加
+    std::size_t execute();                           // set 空或未调用过 where 即抛，不放全表火
 };
 
 class remove_builder {
 public:
-    remove_builder& where(std::string_view clause, params p = {});
-    std::size_t execute();                           // where 空白即抛
+    remove_builder& where(std::string_view clause, params p = {});  // 同上
+    std::size_t execute();                           // 未调用过 where 即抛
 };
 ```
 
 `update_builder` / `remove_builder` 的 `where(clause, p)` 与 `query<T>::where(predicate)`
 是两套东西：前者把 `clause` **原样拼进 SQL**（表名与列名经 `dialect::quote_identifier`，
 WHERE 片段本身不解析也不引用，值仍以 `?` 绑定，参数排在 SET 值之后）。
+多次 `where()` 按调用顺序 `AND` 起来，绑定参数依次排在后面，语义与 `query<T>::where` 累加对齐。
 
 v1 支持的谓词：`= != < <= > >=`、`&&`、`||`、`in(...)`、`is_null` / `is_not_null`、`like`；不支持子查询、join（join 场景引导用户走原生 SQL + 投影）。
 

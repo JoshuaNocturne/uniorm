@@ -80,8 +80,10 @@ template <class T>
 class query;
 
 // Fluent dynamic UPDATE for tables without an entity mapping, obtained via
-// orm::update(table). Every set value is bound through a `?`
-// placeholder; execute() throws instead of firing a table-wide UPDATE.
+// orm::update(table). Every set value is bound through a `?` placeholder;
+// repeated where() calls accumulate and AND at execute(), matching the
+// semantic of query<T>::where. execute() throws instead of firing a
+// table-wide UPDATE.
 class UNIORM_API update_builder {
 public:
   template <class V>
@@ -98,14 +100,19 @@ private:
   friend class orm;
   update_builder(orm& db, std::string table);
 
+  struct where_clause {
+    std::string sql;
+    params bound;
+  };
+
   orm* orm_;
   std::string table_;
   std::vector<std::pair<std::string, sql_value>> set_;
-  std::string where_;
-  params where_params_;
+  std::vector<where_clause> wheres_;
 };
 
-// Fluent dynamic DELETE, obtained via orm::remove(table).
+// Fluent dynamic DELETE, obtained via orm::remove(table). Repeated where()
+// calls accumulate and AND at execute().
 class UNIORM_API remove_builder {
 public:
   remove_builder& where(std::string_view clause, params p = {});
@@ -115,10 +122,14 @@ private:
   friend class orm;
   remove_builder(orm& db, std::string table);
 
+  struct where_clause {
+    std::string sql;
+    params bound;
+  };
+
   orm* orm_;
   std::string table_;
-  std::string where_;
-  params where_params_;
+  std::vector<where_clause> wheres_;
 };
 
 // Entry point returned by orm::query(); owns nothing.

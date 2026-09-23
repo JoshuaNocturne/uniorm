@@ -171,14 +171,37 @@ bool blank(std::string_view s) {
     s.begin(), s.end(), [](unsigned char c) { return std::isspace(c) != 0; });
 }
 
+// Joins the accumulated WHERE clauses with " AND " and copies their
+// parameters in the same order, so a caller who chained
+// .where("a = ?", { 1 }).where("b = ?", { 2 }) gets the parameter positions
+// they expect regardless of how many clauses there are. update_builder and
+// remove_builder each keep a private where_clause; the shape -- { sql,
+// bound } -- is the only thing this helper needs.
+template <class Clause>
+std::string render_where(
+  std::vector<Clause> const& clauses, std::vector<sql_value>& bound) {
+  std::string sql;
+  for (std::size_t index = 0; index < clauses.size(); ++index) {
+    if (index != 0) {
+      sql += " AND ";
+    }
+    sql += clauses[index].sql;
+    auto const& values = clauses[index].bound.values();
+    bound.insert(bound.end(), values.begin(), values.end());
+  }
+  return sql;
+}
+
 }  // namespace
 
 update_builder::update_builder(orm& db, std::string table)
   : orm_(&db), table_(std::move(table)) {}
 
 update_builder& update_builder::where(std::string_view clause, params p) {
-  where_ = std::string(clause);
-  where_params_ = std::move(p);
+  if (blank(clause)) {
+    throw uniorm_error("update: where() requires a non-blank clause");
+  }
+  wheres_.push_back({ std::string(clause), std::move(p) });
   return *this;
 }
 
@@ -186,13 +209,13 @@ std::size_t update_builder::execute() {
   if (set_.empty()) {
     throw uniorm_error("update: no columns to set");
   }
-  if (blank(where_)) {
+  if (wheres_.empty()) {
     throw uniorm_error("update: refusing to execute without a WHERE clause");
   }
   dialect const& d = orm_->native_connection().sql_dialect();
   std::string sql = "UPDATE " + d.quote_identifier(table_) + " SET ";
   std::vector<sql_value> values;
-  values.reserve(set_.size() + where_params_.size());
+  values.reserve(set_.size());
   for (std::size_t i = 0; i < set_.size(); ++i) {
     if (i != 0) {
       sql += ", ";
@@ -200,9 +223,7 @@ std::size_t update_builder::execute() {
     sql += d.quote_identifier(set_[i].first) + " = ?";
     values.push_back(set_[i].second);
   }
-  sql += " WHERE " + where_;
-  auto const& wp = where_params_.values();
-  values.insert(values.end(), wp.begin(), wp.end());
+  sql += " WHERE " + render_where(wheres_, values);
   return orm_->execute_update(sql, params(std::move(values)));
 }
 
@@ -210,19 +231,23 @@ remove_builder::remove_builder(orm& db, std::string table)
   : orm_(&db), table_(std::move(table)) {}
 
 remove_builder& remove_builder::where(std::string_view clause, params p) {
-  where_ = std::string(clause);
-  where_params_ = std::move(p);
+  if (blank(clause)) {
+    throw uniorm_error("remove: where() requires a non-blank clause");
+  }
+  wheres_.push_back({ std::string(clause), std::move(p) });
   return *this;
 }
 
 std::size_t remove_builder::execute() {
-  if (blank(where_)) {
+  if (wheres_.empty()) {
     throw uniorm_error("remove: refusing to execute without a WHERE clause");
   }
   dialect const& d = orm_->native_connection().sql_dialect();
-  std::string sql =
-    "DELETE FROM " + d.quote_identifier(table_) + " WHERE " + where_;
-  return orm_->execute_update(sql, where_params_);
+  std::vector<sql_value> values;
+  std::string where = render_where(wheres_, values);
+  std::string sql = "DELETE FROM " + d.quote_identifier(table_) +
+                    " WHERE " + where;
+  return orm_->execute_update(sql, params(std::move(values)));
 }
 
 update_builder orm::update(std::string_view table) {

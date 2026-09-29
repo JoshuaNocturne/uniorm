@@ -50,8 +50,7 @@ void test_registry() {
   };
   CHECK_THROWS(meta.column_name(make_member_key(&Other::x)), mapping_error);
 
-  auto names = std::make_shared<column_names>(
-    std::vector<std::string>{ "id", "owner", "nickname", "balance" });
+  std::vector<std::string> names{ "id", "owner", "nickname", "balance" };
   {
     row r(
       names, { sql_value(std::int64_t{ 42 }), sql_value(std::string("alice")),
@@ -86,10 +85,10 @@ void test_registry() {
     CHECK(acc.nickname.has_value() && *acc.nickname == "bobby");
   }
   {
-    auto short_names = std::make_shared<column_names>(
-      std::vector<std::string>{ "id", "owner", "balance" });
+    std::vector<std::string> short_names{ "id", "owner", "balance" };
     row r(
-      short_names, { sql_value(std::int64_t{ 1 }), sql_value(std::string("x")),
+      short_names, { sql_value(std::int64_t{ 1 }),
+                     sql_value(std::string("x")),
                      sql_value(std::int32_t{ 2 }) });
     Account acc{};
     CHECK_THROWS(meta.populate(&acc, r), column_not_found);

@@ -200,10 +200,8 @@ void test_expression() {
     CHECK(meta.column_sql(id_key, dialect{}) == "\"Declared_Id\"");
     CHECK_THROWS(meta.column_sql(email_key, postgres), mapping_error);
 
-    auto declared_labels = std::make_shared<column_names>(
-      std::vector<std::string>{ "Declared_Name", "Declared_Id" });
-    row declared_row(declared_labels, { std::string("Before"),
-                                       std::int32_t{ 7 } });
+    row declared_row({"Declared_Name", "Declared_Id"},
+      { std::string("Before"), std::int32_t{ 7 } });
     User user{};
     meta.populate(&user, declared_row);
     CHECK(user.id == 7);
@@ -233,10 +231,8 @@ void test_expression() {
     CHECK_THROWS(meta.column_sql(name_key, dialect{}),
       backend::capability_not_supported);
 
-    auto resolved_labels = std::make_shared<column_names>(
-      std::vector<std::string>{ "Display\"Name", "User_Id" });
-    row resolved_row(resolved_labels, { std::string("After"),
-                                       std::int32_t{ 8 } });
+    row resolved_row({"Display\"Name", "User_Id"},
+      { std::string("After"), std::int32_t{ 8 } });
     meta.populate(&user, resolved_row);
     CHECK(user.id == 8);
     CHECK(user.name == "After");

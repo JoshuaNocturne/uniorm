@@ -20,24 +20,20 @@ column_names::column_names(column_names&&) noexcept = default;
 column_names& column_names::operator=(column_names const&) = default;
 column_names& column_names::operator=(column_names&&) noexcept = default;
 
-std::shared_ptr<column_names> column_names::create(std::vector<std::string> column_list) {
-  // Allocate in the DLL to ensure deletion also happens in the DLL
-  return std::shared_ptr<column_names>(new column_names(std::move(column_list)));
-}
-
 struct row::impl {
   std::shared_ptr<column_names> names;
   std::vector<sql_value> values;
 
-  impl() : names(column_names::create({})) {}
-  impl(std::shared_ptr<column_names> n, std::vector<sql_value> v)
-    : names(std::move(n)), values(std::move(v)) {}
+  impl() : names(std::make_shared<column_names>()) {}
+  impl(std::vector<std::string> column_list, std::vector<sql_value> v)
+    : names(std::make_shared<column_names>(std::move(column_list))),
+      values(std::move(v)) {}
 };
 
 row::row() : impl_(new impl()) {}
 
-row::row(std::shared_ptr<column_names> names, std::vector<sql_value> values)
-  : impl_(new impl(std::move(names), std::move(values))) {}
+row::row(std::vector<std::string> column_list, std::vector<sql_value> values)
+  : impl_(new impl(std::move(column_list), std::move(values))) {}
 
 row::~row() {
   destroy();

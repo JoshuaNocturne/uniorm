@@ -408,9 +408,7 @@ void test_converter_column() {
   CHECK(std::get<std::string>(m.columns[1].read(&paid)) == "paid");
   CHECK(std::holds_alternative<std::monostate>(m.columns[2].read(&paid)));
 
-  auto names = std::make_shared<column_names>(
-    std::vector<std::string>{ "id", "state", "note" });
-  row source(names,
+  row source({"id", "state", "note"},
     { sql_value(std::int64_t{ 5 }), sql_value(std::string("shipped")),
         sql_value(std::monostate{}) });
   order decoded{};

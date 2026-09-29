@@ -250,7 +250,7 @@ row result_set::current() {
   for (std::size_t i = 0; i < impl_->slots.size(); ++i) {
     values.push_back(impl_->value_of(i, impl_->current_row_ - 1));
   }
-  return row(impl_->names, std::move(values));
+  return row(impl_->names->names, std::move(values));
 }
 
 std::size_t result_set::column_count() const {

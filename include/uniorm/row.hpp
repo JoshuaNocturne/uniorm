@@ -145,6 +145,9 @@ struct UNIORM_API column_names {
   column_names(column_names&&) noexcept;
   column_names& operator=(column_names const&);
   column_names& operator=(column_names&&) noexcept;
+  
+  // Factory function to ensure allocation happens in the DLL
+  static std::shared_ptr<column_names> create(std::vector<std::string> column_list);
 };
 
 // A materialized row: owned values plus a shared column-name table.

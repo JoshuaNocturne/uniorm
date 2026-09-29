@@ -11,7 +11,7 @@ using namespace uniorm;
 namespace {
 
 row make_row() {
-  auto names = std::make_shared<column_names>(
+  auto names = column_names::create(
     std::vector<std::string>{ "id", "name", "age", "data" });
   std::vector<sql_value> values;
   values.push_back(std::int64_t{ 42 });
@@ -58,8 +58,7 @@ void test_row() {
   std::fflush(stdout);
   // out-of-range narrowing must throw
   std::vector<sql_value> values{ std::int64_t{ 5'000'000'000LL } };
-  auto names =
-    std::make_shared<column_names>(std::vector<std::string>{ "big" });
+  auto names = column_names::create(std::vector<std::string>{ "big" });
   row big(std::move(names), std::move(values));
   std::printf("  test_row: big row created\n");
   std::fflush(stdout);
@@ -72,7 +71,7 @@ void test_row() {
   // a DECIMAL column arrives as its exact literal text
   std::vector<sql_value> text{ std::string{ "12345678901234.5678" },
     std::string{ "42" }, std::string{ "alice" } };
-  auto text_names = std::make_shared<column_names>(
+  auto text_names = column_names::create(
     std::vector<std::string>{ "amount", "whole", "label" });
   row dec(std::move(text_names), std::move(text));
   std::printf("  test_row: dec row created\n");

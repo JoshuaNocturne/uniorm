@@ -31,10 +31,16 @@ struct row::impl {
       values(std::move(v)) {}
 };
 
-row::row() : impl_(new impl()) {}
+row::row() : impl_(new impl()) {
+  std::printf("    ctor default: impl_=%p\n", static_cast<void*>(impl_));
+  std::fflush(stdout);
+}
 
 row::row(std::vector<std::string> column_list, std::vector<sql_value> values)
-  : impl_(new impl(std::move(column_list), std::move(values))) {}
+  : impl_(new impl(std::move(column_list), std::move(values))) {
+  std::printf("    ctor params: impl_=%p\n", static_cast<void*>(impl_));
+  std::fflush(stdout);
+}
 
 row::~row() {
   destroy();
@@ -42,27 +48,30 @@ row::~row() {
 
 void row::destroy() noexcept {
   if (impl_) {
-    std::printf("    d1: clear values\n");
+    std::printf("    d1: impl_=%p\n", static_cast<void*>(impl_));
     std::fflush(stdout);
     impl_->values.clear();
     impl_->values.shrink_to_fit();
-    std::printf("    d2: reset names\n");
-    std::fflush(stdout);
     impl_->names.reset();
-    std::printf("    d3: delete impl\n");
+    std::printf("    d2: about to delete impl_=%p\n", static_cast<void*>(impl_));
     std::fflush(stdout);
     delete impl_;
     impl_ = nullptr;
-    std::printf("    d4: done\n");
+    std::printf("    d3: done\n");
     std::fflush(stdout);
   }
 }
 
 row::row(row const& other)
-  : impl_(new impl(*other.impl_)) {}
+  : impl_(new impl(*other.impl_)) {
+  std::printf("    ctor copy: impl_=%p\n", static_cast<void*>(impl_));
+  std::fflush(stdout);
+}
 
 row::row(row&& other) noexcept : impl_(other.impl_) {
   other.impl_ = nullptr;
+  std::printf("    ctor move: impl_=%p\n", static_cast<void*>(impl_));
+  std::fflush(stdout);
 }
 
 row& row::operator=(row const& other) {

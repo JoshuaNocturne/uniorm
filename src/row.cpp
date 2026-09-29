@@ -29,7 +29,7 @@ struct row::impl {
   std::shared_ptr<column_names> names;
   std::vector<sql_value> values;
 
-  impl() : names(std::make_shared<column_names>()) {}
+  impl() : names(column_names::create({})) {}
   impl(std::shared_ptr<column_names> n, std::vector<sql_value> v)
     : names(std::move(n)), values(std::move(v)) {}
 };

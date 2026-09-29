@@ -21,7 +21,8 @@ column_names& column_names::operator=(column_names const&) = default;
 column_names& column_names::operator=(column_names&&) noexcept = default;
 
 std::shared_ptr<column_names> column_names::create(std::vector<std::string> column_list) {
-  return std::make_shared<column_names>(std::move(column_list));
+  // Allocate in the DLL to ensure deletion also happens in the DLL
+  return std::shared_ptr<column_names>(new column_names(std::move(column_list)));
 }
 
 struct row::impl {

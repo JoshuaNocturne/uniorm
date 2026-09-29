@@ -170,27 +170,15 @@ public:
     return value_cast<T>(at(index));
   }
 
-  bool is_null(std::string_view name) const {
-    return is_null_value(at(name));
-  }
-  bool is_null(std::size_t index) const {
-    return is_null_value(at(index));
-  }
+  bool is_null(std::string_view name) const;
+  bool is_null(std::size_t index) const;
 
-  std::size_t size() const noexcept {
-    return values_.size();
-  }
-  std::vector<std::string> const& names() const noexcept {
-    return names_->names;
-  }
+  std::size_t size() const noexcept;
+  std::vector<std::string> const& names() const noexcept;
 
 private:
-  static bool is_null_value(sql_value const& v) noexcept {
-    return uniorm::is_null(v);
-  }
-
-  std::shared_ptr<column_names> names_ = std::make_shared<column_names>();
-  std::vector<sql_value> values_;
+  struct impl;
+  std::unique_ptr<impl> impl_;
 };
 
 }  // namespace uniorm

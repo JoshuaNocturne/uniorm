@@ -13,79 +13,73 @@ column_names::column_names(std::vector<std::string> column_list)
   }
 }
 
-column_names::~column_names() {
-  names.clear();
-  index.clear();
-}
+column_names::~column_names() = default;
 
-column_names::column_names(column_names const& other)
-  : names(other.names), index(other.index) {}
+column_names::column_names(column_names const&) = default;
+column_names::column_names(column_names&&) noexcept = default;
+column_names& column_names::operator=(column_names const&) = default;
+column_names& column_names::operator=(column_names&&) noexcept = default;
 
-column_names::column_names(column_names&& other) noexcept
-  : names(std::move(other.names)), index(std::move(other.index)) {}
+struct row::impl {
+  std::shared_ptr<column_names> names;
+  std::vector<sql_value> values;
 
-column_names& column_names::operator=(column_names const& other) {
-  if (this != &other) {
-    names = other.names;
-    index = other.index;
-  }
-  return *this;
-}
+  impl() : names(std::make_shared<column_names>()) {}
+  impl(std::shared_ptr<column_names> n, std::vector<sql_value> v)
+    : names(std::move(n)), values(std::move(v)) {}
+};
 
-column_names& column_names::operator=(column_names&& other) noexcept {
-  if (this != &other) {
-    names = std::move(other.names);
-    index = std::move(other.index);
-  }
-  return *this;
-}
-
-row::row() = default;
+row::row() : impl_(std::make_unique<impl>()) {}
 
 row::row(std::shared_ptr<column_names> names, std::vector<sql_value> values)
-  : names_(std::move(names)), values_(std::move(values)) {}
+  : impl_(std::make_unique<impl>(std::move(names), std::move(values))) {}
 
-row::~row() {
-  names_.reset();
-  values_.clear();
-}
+row::~row() = default;
 
 row::row(row const& other)
-  : names_(other.names_), values_(other.values_) {}
+  : impl_(std::make_unique<impl>(*other.impl_)) {}
 
-row::row(row&& other) noexcept
-  : names_(std::move(other.names_)), values_(std::move(other.values_)) {}
+row::row(row&& other) noexcept = default;
 
 row& row::operator=(row const& other) {
   if (this != &other) {
-    names_ = other.names_;
-    values_ = other.values_;
+    impl_ = std::make_unique<impl>(*other.impl_);
   }
   return *this;
 }
 
-row& row::operator=(row&& other) noexcept {
-  if (this != &other) {
-    names_ = std::move(other.names_);
-    values_ = std::move(other.values_);
-  }
-  return *this;
-}
+row& row::operator=(row&& other) noexcept = default;
 
 sql_value const& row::at(std::string_view name) const {
-  auto it = names_->index.find(std::string(name));
-  if (it == names_->index.end()) {
+  auto it = impl_->names->index.find(std::string(name));
+  if (it == impl_->names->index.end()) {
     throw column_not_found("column not found: " + std::string(name));
   }
-  return values_[it->second];
+  return impl_->values[it->second];
 }
 
 sql_value const& row::at(std::size_t index) const {
-  if (index >= values_.size()) {
+  if (index >= impl_->values.size()) {
     throw column_not_found(
       "column index out of range: " + std::to_string(index));
   }
-  return values_[index];
+  return impl_->values[index];
+}
+
+bool row::is_null(std::string_view name) const {
+  return uniorm::is_null(at(name));
+}
+
+bool row::is_null(std::size_t index) const {
+  return uniorm::is_null(at(index));
+}
+
+std::size_t row::size() const noexcept {
+  return impl_->values.size();
+}
+
+std::vector<std::string> const& row::names() const noexcept {
+  return impl_->names->names;
 }
 
 }  // namespace uniorm

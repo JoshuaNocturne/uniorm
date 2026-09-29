@@ -27,9 +27,13 @@ int main() {
   std::printf("Running test_row...\n");
   std::fflush(stdout);
   test_row();
+  std::printf("test_row completed\n");
+  std::fflush(stdout);
   std::printf("Running test_decimal...\n");
   std::fflush(stdout);
   test_decimal();
+  std::printf("test_decimal completed\n");
+  std::fflush(stdout);
   std::printf("Running test_params...\n");
   std::fflush(stdout);
   test_params();

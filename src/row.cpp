@@ -1,5 +1,6 @@
 #include "uniorm/row.hpp"
 
+#include <cstdio>
 #include <utility>
 
 namespace uniorm {
@@ -40,8 +41,21 @@ row::~row() {
 }
 
 void row::destroy() noexcept {
-  // Temporarily leak impl to confirm crash is in delete
-  impl_ = nullptr;
+  if (impl_) {
+    std::printf("    d1: clear values\n");
+    std::fflush(stdout);
+    impl_->values.clear();
+    impl_->values.shrink_to_fit();
+    std::printf("    d2: reset names\n");
+    std::fflush(stdout);
+    impl_->names.reset();
+    std::printf("    d3: delete impl\n");
+    std::fflush(stdout);
+    delete impl_;
+    impl_ = nullptr;
+    std::printf("    d4: done\n");
+    std::fflush(stdout);
+  }
 }
 
 row::row(row const& other)

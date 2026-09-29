@@ -27,6 +27,8 @@ void test_row() {
   std::printf("  test_row: creating row...\n");
   std::fflush(stdout);
   row r = make_row();
+  std::printf("  test_row: row created\n");
+  std::fflush(stdout);
   std::printf("  test_row: checking size...\n");
   std::fflush(stdout);
   CHECK(r.size() == 4);
@@ -59,7 +61,11 @@ void test_row() {
   auto names =
     std::make_shared<column_names>(std::vector<std::string>{ "big" });
   row big(std::move(names), std::move(values));
+  std::printf("  test_row: big row created\n");
+  std::fflush(stdout);
   CHECK_THROWS(big.get<std::int32_t>("big"), type_mismatch);
+  std::printf("  test_row: narrowing test done\n");
+  std::fflush(stdout);
 
   std::printf("  test_row: decimal tests...\n");
   std::fflush(stdout);
@@ -69,6 +75,8 @@ void test_row() {
   auto text_names = std::make_shared<column_names>(
     std::vector<std::string>{ "amount", "whole", "label" });
   row dec(std::move(text_names), std::move(text));
+  std::printf("  test_row: dec row created\n");
+  std::fflush(stdout);
   CHECK(dec.get<std::string>("amount") == "12345678901234.5678");
   CHECK(dec.get<double>("amount") > 12345678901234.56);
   CHECK(dec.get<double>("amount") < 12345678901234.57);

@@ -146,6 +146,8 @@ jobs:
         uses: ilammy/msvc-dev-cmd@v1
 
       - name: Configure
+        env:
+          MSYS_NO_PATHCONV: 1
         run: >
           cmake -S . -B build
           -DUNIORM_BACKEND_ODBC=OFF

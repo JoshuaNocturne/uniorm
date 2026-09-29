@@ -40,7 +40,7 @@ row::~row() {
 }
 
 void row::destroy() noexcept {
-  delete impl_;
+  // Temporarily leak impl to confirm crash is in delete
   impl_ = nullptr;
 }
 

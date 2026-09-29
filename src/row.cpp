@@ -4,8 +4,21 @@
 
 namespace uniorm {
 
+column_names::column_names() = default;
+
+column_names::column_names(std::vector<std::string> column_list)
+  : names(std::move(column_list)) {
+  for (std::size_t i = 0; i < names.size(); ++i) {
+    index.emplace(names[i], i);
+  }
+}
+
+column_names::~column_names() = default;
+
 row::row(std::shared_ptr<column_names> names, std::vector<sql_value> values)
   : names_(std::move(names)), values_(std::move(values)) {}
+
+row::~row() = default;
 
 sql_value const& row::at(std::string_view name) const {
   auto it = names_->index.find(std::string(name));

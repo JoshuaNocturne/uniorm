@@ -18,12 +18,58 @@ column_names::~column_names() {
   index.clear();
 }
 
+column_names::column_names(column_names const& other)
+  : names(other.names), index(other.index) {}
+
+column_names::column_names(column_names&& other) noexcept
+  : names(std::move(other.names)), index(std::move(other.index)) {}
+
+column_names& column_names::operator=(column_names const& other) {
+  if (this != &other) {
+    names = other.names;
+    index = other.index;
+  }
+  return *this;
+}
+
+column_names& column_names::operator=(column_names&& other) noexcept {
+  if (this != &other) {
+    names = std::move(other.names);
+    index = std::move(other.index);
+  }
+  return *this;
+}
+
+row::row() = default;
+
 row::row(std::shared_ptr<column_names> names, std::vector<sql_value> values)
   : names_(std::move(names)), values_(std::move(values)) {}
 
 row::~row() {
   names_.reset();
   values_.clear();
+}
+
+row::row(row const& other)
+  : names_(other.names_), values_(other.values_) {}
+
+row::row(row&& other) noexcept
+  : names_(std::move(other.names_)), values_(std::move(other.values_)) {}
+
+row& row::operator=(row const& other) {
+  if (this != &other) {
+    names_ = other.names_;
+    values_ = other.values_;
+  }
+  return *this;
+}
+
+row& row::operator=(row&& other) noexcept {
+  if (this != &other) {
+    names_ = std::move(other.names_);
+    values_ = std::move(other.values_);
+  }
+  return *this;
 }
 
 sql_value const& row::at(std::string_view name) const {

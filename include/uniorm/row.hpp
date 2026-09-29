@@ -141,22 +141,22 @@ struct UNIORM_API column_names {
   column_names();
   explicit column_names(std::vector<std::string> column_list);
   ~column_names();
-  column_names(column_names const&) = default;
-  column_names(column_names&&) noexcept = default;
-  column_names& operator=(column_names const&) = default;
-  column_names& operator=(column_names&&) noexcept = default;
+  column_names(column_names const&);
+  column_names(column_names&&) noexcept;
+  column_names& operator=(column_names const&);
+  column_names& operator=(column_names&&) noexcept;
 };
 
 // A materialized row: owned values plus a shared column-name table.
 class UNIORM_API row {
 public:
-  row() = default;
+  row();
   row(std::shared_ptr<column_names> names, std::vector<sql_value> values);
   ~row();
-  row(row const&) = default;
-  row(row&&) noexcept = default;
-  row& operator=(row const&) = default;
-  row& operator=(row&&) noexcept = default;
+  row(row const&);
+  row(row&&) noexcept;
+  row& operator=(row const&);
+  row& operator=(row&&) noexcept;
 
   sql_value const& at(std::string_view name) const;
   sql_value const& at(std::size_t index) const;

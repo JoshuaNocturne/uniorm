@@ -4,7 +4,9 @@ name: ci
 #
 # 1. A build with no ODBC at all still compiles and passes. That is the whole
 #    point of UNIORM_BACKEND_ODBC=OFF -- the moment a driver type reaches a
-#    public header above the statement layer, this job stops building.
+#    public header above the statement layer, this job stops building. This
+#    runs on both Linux and Windows to catch platform-specific assumptions
+#    early (dlfcn.h vs LoadLibrary, path separators, CRT linkage).
 # 2. The suite runs against a live server for each connector paired with the
 #    server it is used against: MariaDB's connector with MariaDB 11,
 #    Connector/ODBC with MySQL 8.4, psqlODBC with PostgreSQL 17. The cross
@@ -129,6 +131,29 @@ jobs:
 
       - name: Build
         run: cmake --build build -j "$(nproc)"
+
+      - name: Test
+        run: ctest --test-dir build -R '^unit_tests$' --output-on-failure
+
+  core-windows:
+    name: core (no ODBC, Windows)
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Configure
+        run: >
+          cmake -S . -B build
+          -DUNIORM_BACKEND_ODBC=OFF
+          -DUNIORM_BUILD_TOOLS=OFF
+          -DCMAKE_CXX_FLAGS="$CXXWARN"
+
+      - name: Build
+        run: cmake --build build
 
       - name: Test
         run: ctest --test-dir build -R '^unit_tests$' --output-on-failure

@@ -31,6 +31,13 @@ if(UNIORM_BUILD_TOOLS)
     target_compile_definitions(uniorm_unit_tests PRIVATE UNIORM_TEST_GEN)
 endif()
 add_test(NAME unit_tests COMMAND uniorm_unit_tests)
+# Windows loads DLLs from the executable's directory and PATH; the build tree
+# puts uniorm.dll beside the core target, not the test, so the test needs help
+# finding it at runtime.
+if(WIN32)
+    set_tests_properties(unit_tests PROPERTIES
+        ENVIRONMENT "PATH=$<TARGET_FILE_DIR:uniorm>;$ENV{PATH}")
+endif()
 
 if(UNIORM_BACKEND_ODBC)
     # The white-box targets below still link uniorm::odbc so a driver-side

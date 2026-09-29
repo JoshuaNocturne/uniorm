@@ -178,7 +178,9 @@ public:
 
 private:
   struct impl;
-  std::unique_ptr<impl> impl_;
+  impl* impl_;
+  
+  void destroy() noexcept;
 };
 
 }  // namespace uniorm

@@ -29,26 +29,43 @@ struct row::impl {
     : names(std::move(n)), values(std::move(v)) {}
 };
 
-row::row() : impl_(std::make_unique<impl>()) {}
+row::row() : impl_(new impl()) {}
 
 row::row(std::shared_ptr<column_names> names, std::vector<sql_value> values)
-  : impl_(std::make_unique<impl>(std::move(names), std::move(values))) {}
+  : impl_(new impl(std::move(names), std::move(values))) {}
 
-row::~row() = default;
+row::~row() {
+  destroy();
+}
+
+void row::destroy() noexcept {
+  delete impl_;
+  impl_ = nullptr;
+}
 
 row::row(row const& other)
-  : impl_(std::make_unique<impl>(*other.impl_)) {}
+  : impl_(new impl(*other.impl_)) {}
 
-row::row(row&& other) noexcept = default;
+row::row(row&& other) noexcept : impl_(other.impl_) {
+  other.impl_ = nullptr;
+}
 
 row& row::operator=(row const& other) {
   if (this != &other) {
-    impl_ = std::make_unique<impl>(*other.impl_);
+    destroy();
+    impl_ = new impl(*other.impl_);
   }
   return *this;
 }
 
-row& row::operator=(row&& other) noexcept = default;
+row& row::operator=(row&& other) noexcept {
+  if (this != &other) {
+    destroy();
+    impl_ = other.impl_;
+    other.impl_ = nullptr;
+  }
+  return *this;
+}
 
 sql_value const& row::at(std::string_view name) const {
   auto it = impl_->names->index.find(std::string(name));

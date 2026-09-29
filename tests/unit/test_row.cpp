@@ -24,9 +24,15 @@ row make_row() {
 }  // namespace
 
 void test_row() {
+  std::printf("  test_row: creating row...\n");
+  std::fflush(stdout);
   row r = make_row();
+  std::printf("  test_row: checking size...\n");
+  std::fflush(stdout);
   CHECK(r.size() == 4);
 
+  std::printf("  test_row: get by name...\n");
+  std::fflush(stdout);
   CHECK(r.get<std::int64_t>("id") == 42);
   CHECK(r.get<std::int32_t>("id") == 42);  // tolerant numeric narrowing
   CHECK(r.get<std::string>("name") == "alice");
@@ -34,14 +40,20 @@ void test_row() {
   CHECK(!r.is_null("id"));
   CHECK(r.get<std::vector<std::byte>>("data").size() == 2);
 
+  std::printf("  test_row: get by index...\n");
+  std::fflush(stdout);
   CHECK(r.get<std::int64_t>(0) == 42);
   CHECK(r.get<std::string>(1) == "alice");
 
+  std::printf("  test_row: exception tests...\n");
+  std::fflush(stdout);
   CHECK_THROWS(r.at("missing"), column_not_found);
   CHECK_THROWS(r.at(99), column_not_found);
   CHECK_THROWS(r.get<std::string>("id"), type_mismatch);
   CHECK_THROWS(r.get<timestamp>("name"), type_mismatch);
 
+  std::printf("  test_row: narrowing test...\n");
+  std::fflush(stdout);
   // out-of-range narrowing must throw
   std::vector<sql_value> values{ std::int64_t{ 5'000'000'000LL } };
   auto names =
@@ -49,6 +61,8 @@ void test_row() {
   row big(std::move(names), std::move(values));
   CHECK_THROWS(big.get<std::int32_t>("big"), type_mismatch);
 
+  std::printf("  test_row: decimal tests...\n");
+  std::fflush(stdout);
   // a DECIMAL column arrives as its exact literal text
   std::vector<sql_value> text{ std::string{ "12345678901234.5678" },
     std::string{ "42" }, std::string{ "alice" } };
@@ -63,4 +77,6 @@ void test_row() {
   CHECK_THROWS(dec.get<std::int32_t>("amount"), type_mismatch);
   CHECK_THROWS(dec.get<std::int64_t>("label"), type_mismatch);
   CHECK_THROWS(dec.get<bool>("whole"), type_mismatch);
+  std::printf("  test_row: done\n");
+  std::fflush(stdout);
 }

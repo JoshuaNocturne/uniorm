@@ -150,7 +150,7 @@ jobs:
           cmake -S . -B build
           -DUNIORM_BACKEND_ODBC=OFF
           -DUNIORM_BUILD_TOOLS=OFF
-          -DCMAKE_CXX_FLAGS="$CXXWARN"
+          -DCMAKE_CXX_FLAGS="/W4"
 
       - name: Build
         run: cmake --build build

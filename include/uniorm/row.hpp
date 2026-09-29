@@ -145,6 +145,7 @@ struct UNIORM_API column_names {
   column_names(column_names&&) noexcept = default;
   column_names& operator=(column_names const&) = default;
   column_names& operator=(column_names&&) noexcept = default;
+};
 
 // A materialized row: owned values plus a shared column-name table.
 class UNIORM_API row {

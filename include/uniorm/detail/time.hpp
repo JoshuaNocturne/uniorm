@@ -18,7 +18,8 @@ inline timestamp make_timestamp(int year, unsigned month, unsigned day,
   auto duration = days.time_since_epoch() + std::chrono::hours(hour) +
                   std::chrono::minutes(minute) + std::chrono::seconds(second) +
                   std::chrono::nanoseconds(fraction_ns);
-  return timestamp(duration);
+  return timestamp(
+    std::chrono::duration_cast<std::chrono::system_clock::duration>(duration));
 }
 
 struct timestamp_parts {

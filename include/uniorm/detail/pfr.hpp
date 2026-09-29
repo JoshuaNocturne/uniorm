@@ -20,7 +20,11 @@ struct ubiq {
   template <class T>
   constexpr operator T&() const noexcept {
     // Only used in unevaluated contexts (requires expressions); never called.
+#if defined(_MSC_VER)
+    __assume(0);
+#else
     __builtin_unreachable();
+#endif
   }
 };
 

@@ -15,9 +15,10 @@ inline timestamp make_timestamp(int year, unsigned month, unsigned day,
   std::chrono::month m{ static_cast<unsigned>(month) };
   std::chrono::day d{ static_cast<unsigned>(day) };
   std::chrono::sys_days days = y / m / d;
-  return timestamp{ days.time_since_epoch() } + std::chrono::hours(hour) +
-         std::chrono::minutes(minute) + std::chrono::seconds(second) +
-         std::chrono::nanoseconds(fraction_ns);
+  auto duration = days.time_since_epoch() + std::chrono::hours(hour) +
+                  std::chrono::minutes(minute) + std::chrono::seconds(second) +
+                  std::chrono::nanoseconds(fraction_ns);
+  return timestamp(duration);
 }
 
 struct timestamp_parts {

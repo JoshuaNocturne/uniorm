@@ -45,7 +45,7 @@ sql_value make_sql_value(T&& v) {
     } else if constexpr (std::is_signed_v<U>) {
       return sql_value(static_cast<std::int64_t>(v));
     } else {
-      if (v > static_cast<U>(std::numeric_limits<std::int64_t>::max())) {
+      if (v > static_cast<U>((std::numeric_limits<std::int64_t>::max)())) {
         throw type_mismatch("unsigned value exceeds int64 range");
       }
       return sql_value(static_cast<std::int64_t>(v));

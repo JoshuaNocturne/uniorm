@@ -73,4 +73,7 @@ void test_row() {
   }
   std::printf("  8\n");
   std::fflush(stdout);
+  r.~row();
+  std::printf("  9: r destroyed\n");
+  std::fflush(stdout);
 }

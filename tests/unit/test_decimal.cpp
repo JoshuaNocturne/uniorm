@@ -121,6 +121,8 @@ void test_reaches_a_row_value() {
 }  // namespace
 
 void test_decimal() {
+  std::printf("  decimal: start\n");
+  std::fflush(stdout);
   test_literal_round_trip();
   test_rejects_what_is_not_an_exact_literal();
   test_orders_across_scales();

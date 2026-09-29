@@ -19,6 +19,8 @@ void test_gen_reader();
 #endif
 
 int main() {
+  std::printf("Starting unit tests...\n");
+  std::fflush(stdout);
   test_pfr();
   test_row();
   test_decimal();

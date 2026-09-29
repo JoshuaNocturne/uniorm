@@ -151,7 +151,8 @@ struct UNIORM_API column_names {
 class UNIORM_API row {
 public:
   row();
-  row(std::vector<std::string> column_list, std::vector<sql_value> values);
+  row(std::vector<std::string> const& column_list,
+    std::vector<sql_value> const& values);
   ~row();
   row(row const&);
   row(row&&) noexcept;

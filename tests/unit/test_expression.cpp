@@ -38,8 +38,6 @@ std::string resolve_key(member_key const& key) {
 }  // namespace
 
 void test_expression() {
-  std::printf("  expr: start\n");
-  std::fflush(stdout);
   predicate::resolver resolve = resolve_key;
 
   {
@@ -202,8 +200,6 @@ void test_expression() {
     CHECK(meta.column_sql(id_key, dialect{}) == "\"Declared_Id\"");
     CHECK_THROWS(meta.column_sql(email_key, postgres), mapping_error);
 
-    std::printf("  expr: before declared_row\n");
-    std::fflush(stdout);
     row declared_row({"Declared_Name", "Declared_Id"},
       { std::string("Before"), std::int32_t{ 7 } });
     User user{};
@@ -241,8 +237,6 @@ void test_expression() {
     CHECK(user.id == 8);
     CHECK(user.name == "After");
     CHECK_THROWS(meta.populate(&user, declared_row), column_not_found);
-    std::printf("  expr: after populate throws\n");
-    std::fflush(stdout);
 
     CHECK_THROWS(mapping.column("Extra", &User::email), mapping_error);
     CHECK_THROWS(mapping.primary_key("Extra", &User::email), mapping_error);

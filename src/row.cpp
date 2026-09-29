@@ -26,21 +26,16 @@ struct row::impl {
   std::vector<sql_value> values;
 
   impl() : names(std::make_shared<column_names>()) {}
-  impl(std::vector<std::string> column_list, std::vector<sql_value> v)
-    : names(std::make_shared<column_names>(std::move(column_list))),
-      values(std::move(v)) {}
+  impl(std::vector<std::string> const& column_list,
+    std::vector<sql_value> const& v)
+    : names(std::make_shared<column_names>(column_list)), values(v) {}
 };
 
-row::row() : impl_(new impl()) {
-  std::printf("    ctor default: impl_=%p\n", static_cast<void*>(impl_));
-  std::fflush(stdout);
-}
+row::row() : impl_(new impl()) {}
 
-row::row(std::vector<std::string> column_list, std::vector<sql_value> values)
-  : impl_(new impl(std::move(column_list), std::move(values))) {
-  std::printf("    ctor params: impl_=%p\n", static_cast<void*>(impl_));
-  std::fflush(stdout);
-}
+row::row(std::vector<std::string> const& column_list,
+  std::vector<sql_value> const& values)
+  : impl_(new impl(column_list, values)) {}
 
 row::~row() {
   destroy();
@@ -48,30 +43,19 @@ row::~row() {
 
 void row::destroy() noexcept {
   if (impl_) {
-    std::printf("    d1: impl_=%p\n", static_cast<void*>(impl_));
-    std::fflush(stdout);
     impl_->values.clear();
     impl_->values.shrink_to_fit();
     impl_->names.reset();
-    std::printf("    d2: about to delete impl_=%p\n", static_cast<void*>(impl_));
-    std::fflush(stdout);
     delete impl_;
     impl_ = nullptr;
-    std::printf("    d3: done\n");
-    std::fflush(stdout);
   }
 }
 
 row::row(row const& other)
-  : impl_(new impl(*other.impl_)) {
-  std::printf("    ctor copy: impl_=%p\n", static_cast<void*>(impl_));
-  std::fflush(stdout);
-}
+  : impl_(new impl(*other.impl_)) {}
 
 row::row(row&& other) noexcept : impl_(other.impl_) {
   other.impl_ = nullptr;
-  std::printf("    ctor move: impl_=%p\n", static_cast<void*>(impl_));
-  std::fflush(stdout);
 }
 
 row& row::operator=(row const& other) {

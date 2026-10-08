@@ -6,6 +6,10 @@
 #include <string_view>
 #include <utility>
 
+#ifdef _WIN32
+#define NOMINMAX
+#include <windows.h>
+#endif
 #include <sql.h>
 #include <sqlext.h>
 

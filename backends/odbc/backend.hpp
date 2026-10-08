@@ -39,7 +39,11 @@ public:
 
 private:
   odbc::statement stmt_;
-  struct param_slot;
+  struct param_slot {
+    SQLLEN indicator = SQL_NULL_DATA;
+    unsigned char bit = 0;
+    SQL_TIMESTAMP_STRUCT ts{};
+  };
   // deque, not vector: bind_parameter hands the driver pointers into
   // existing slots, and appending further slots must not relocate them.
   std::deque<param_slot> slots_;

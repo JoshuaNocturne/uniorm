@@ -5,6 +5,10 @@
 #include <unordered_map>
 #include <utility>
 
+#ifdef _WIN32
+#define NOMINMAX
+#include <windows.h>
+#endif
 #include <sql.h>
 #include <sqlext.h>
 
@@ -156,12 +160,6 @@ backend::buffer_type buffer_type_for(sql_value const& v) {
 }
 
 }  // namespace
-
-struct backend_statement::param_slot {
-  SQLLEN indicator = SQL_NULL_DATA;
-  unsigned char bit = 0;
-  SQL_TIMESTAMP_STRUCT ts{};
-};
 
 backend_statement::backend_statement(odbc::connection& conn) : stmt_(conn) {}
 

@@ -77,6 +77,10 @@ if(UNIORM_BACKEND_ODBC)
     add_executable(uniorm_perf_tests
         perf/test_perf.cpp
     )
+    if(WIN32)
+        target_compile_options(uniorm_perf_tests PRIVATE
+            /utf-8)
+    endif()
     # The perf case opens a driver handle directly for its timing loop.
     target_link_libraries(uniorm_perf_tests PRIVATE uniorm::odbc ODBC::ODBC)
     add_test(NAME perf_tests COMMAND uniorm_perf_tests)

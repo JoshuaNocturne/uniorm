@@ -24,6 +24,11 @@ add_library(uniorm_odbc SHARED
 )
 add_library(uniorm::odbc ALIAS uniorm_odbc)
 
+if(WIN32)
+    target_compile_options(uniorm_odbc PRIVATE
+        /utf-8)
+endif()
+
 target_compile_features(uniorm_odbc PUBLIC cxx_std_20)
 target_link_libraries(uniorm_odbc
     PUBLIC uniorm::uniorm

@@ -46,6 +46,11 @@ add_library(uniorm SHARED
 )
 add_library(uniorm::uniorm ALIAS uniorm)
 
+if(WIN32)
+    target_compile_options(uniorm PRIVATE
+        /utf-8)
+endif()
+
 # The public headers need C++20 themselves (concepts, remove_cvref_t), and the
 # global CMAKE_CXX_STANDARD above does not cross into a consumer's flags.
 target_compile_features(uniorm PUBLIC cxx_std_20)

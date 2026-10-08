@@ -1,5 +1,6 @@
 #include "check.hpp"
 
+#include <cstdio>
 #include <memory>
 #include <optional>
 #include <string>
@@ -40,6 +41,7 @@ std::string resolve_key(member_key const& key) {
 void test_expression() {
   predicate::resolver resolve = resolve_key;
 
+  std::printf("  expr: comparisons\n");
   {
     std::vector<sql_value> bound;
     CHECK(eq(&User::id, 7).to_sql(resolve, bound) == "\"id\" = ?");
@@ -82,6 +84,7 @@ void test_expression() {
     CHECK(in(&User::id, std::vector<int>{}).to_sql(resolve, bound) == "1 = 0");
     CHECK(bound.empty());
   }
+  std::printf("  expr: null/like/throws\n");
   {
     std::vector<sql_value> bound;
     CHECK(is_not_null(&User::email).to_sql(resolve, bound) ==
@@ -98,6 +101,7 @@ void test_expression() {
     CHECK_THROWS(predicate{}.to_sql(resolve, bound), uniorm_error);
   }
 
+  std::printf("  expr: dialect ansi\n");
   {
     dialect d;  // ANSI defaults
     CHECK(d.quote_identifier("col") == "\"col\"");
@@ -107,6 +111,7 @@ void test_expression() {
           " OFFSET 0 ROWS FETCH NEXT 5 ROWS ONLY");
     CHECK(d.pagination(std::nullopt, 0).empty());
   }
+  std::printf("  expr: identifier case\n");
   {
     // The policy that decides what a quoted name is spelled as. Keeping is
     // what quoting alone did before it existed.
@@ -126,6 +131,7 @@ void test_expression() {
     // Folding stops at ASCII, so a name in another alphabet is left alone.
     CHECK(lower.fold_identifier("Stra\xc3\x9f" "e") == "stra\xc3\x9f" "e");
   }
+  std::printf("  expr: dialect detect\n");
   {
     dialect mysql = dialect::detect("MySQL");
     CHECK(mysql.quote_open == '`' && mysql.quote_close == '`');
@@ -146,6 +152,7 @@ void test_expression() {
             dialect::qualification::unsupported);
     }
   }
+  std::printf("  expr: quoting\n");
   {
     dialect postgres = dialect::detect("PostgreSQL");
     postgres.identifiers = dialect::identifier_case::lower;
@@ -176,6 +183,7 @@ void test_expression() {
     CHECK_THROWS(mysql.quote_identifier(nul_name), uniorm_error);
     CHECK_THROWS(brackets.quote_identifier(nul_name), uniorm_error);
   }
+  std::printf("  expr: mapping resolved\n");
   {
     entity_meta meta;
     meta.table = "Declared.Users";
@@ -250,6 +258,7 @@ void test_expression() {
     CHECK(meta.table_sql(postgres) ==
           "\"App.Schema\"\"V1\".\"User\"\"Rows\"");
   }
+  std::printf("  expr: mapping mysql\n");
   {
     entity_meta meta;
     meta.table = "declared_users";

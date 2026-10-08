@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.21)
 project(uniorm_install_consumer CXX)
 
 # This project deliberately sets no CMAKE_CXX_STANDARD: the C++20 requirement
@@ -20,6 +20,14 @@ add_executable(consumer main.cpp)
 target_link_libraries(consumer PRIVATE uniorm::uniorm)
 if(SMOKE_UNIORM_HAS_ODBC)
     target_compile_definitions(consumer PRIVATE UNIORM_SMOKE_HAS_ODBC)
+endif()
+# Windows loads DLLs from the executable's directory; no RPATH to lean on.
+if(WIN32)
+    add_custom_command(TARGET consumer POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "$<TARGET_RUNTIME_DLLS:consumer>"
+                "$<TARGET_FILE_DIR:consumer>"
+        COMMAND_EXPAND_LISTS)
 endif()
 
 enable_testing()

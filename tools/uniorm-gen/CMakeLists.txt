@@ -16,3 +16,4 @@ add_executable(uniorm-gen main.cpp)
 # carries no scheme. uniorm_gen_core stays driver-free so its unit tests can
 # link no backend at all.
 target_link_libraries(uniorm-gen PRIVATE uniorm_gen_core uniorm::odbc)
+uniorm_copy_runtime_dlls(uniorm-gen)

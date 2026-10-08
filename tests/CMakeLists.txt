@@ -31,13 +31,9 @@ if(UNIORM_BUILD_TOOLS)
     target_compile_definitions(uniorm_unit_tests PRIVATE UNIORM_TEST_GEN)
 endif()
 add_test(NAME unit_tests COMMAND uniorm_unit_tests)
-# Windows loads DLLs from the executable's directory and PATH; the build tree
-# puts uniorm.dll beside the core target, not the test, so the test needs help
-# finding it at runtime.
-if(WIN32)
-    set_tests_properties(unit_tests PROPERTIES
-        ENVIRONMENT "PATH=$<TARGET_FILE_DIR:uniorm>;$ENV{PATH}")
-endif()
+# Windows loads DLLs from the executable's directory; the build tree puts
+# uniorm.dll beside the core target, not the test, so copy it over.
+uniorm_copy_runtime_dlls(uniorm_unit_tests)
 
 if(UNIORM_BACKEND_ODBC)
     # The white-box targets below still link uniorm::odbc so a driver-side
@@ -64,6 +60,7 @@ if(UNIORM_BACKEND_ODBC)
     # visibility, so -I here is the whole surface the tests can peek at.
     target_include_directories(uniorm_odbc_unit_tests PRIVATE ${PROJECT_SOURCE_DIR}/backends)
     add_test(NAME odbc_unit_tests COMMAND uniorm_odbc_unit_tests)
+    uniorm_copy_runtime_dlls(uniorm_odbc_unit_tests)
 
     add_executable(uniorm_integration_tests
         integration/test_integration.cpp
@@ -73,6 +70,7 @@ if(UNIORM_BACKEND_ODBC)
     set_tests_properties(integration_tests PROPERTIES
         SKIP_RETURN_CODE 77
         ENVIRONMENT "UNIORM_PLUGIN_PATH=${UNIORM_BUILD_TREE_PLUGIN_DIR}")
+    uniorm_copy_runtime_dlls(uniorm_integration_tests)
 
     add_executable(uniorm_perf_tests
         perf/test_perf.cpp
@@ -87,6 +85,7 @@ if(UNIORM_BACKEND_ODBC)
     set_tests_properties(perf_tests PROPERTIES
         SKIP_RETURN_CODE 77 LABELS perf
         ENVIRONMENT "UNIORM_PLUGIN_PATH=${UNIORM_BUILD_TREE_PLUGIN_DIR}")
+    uniorm_copy_runtime_dlls(uniorm_perf_tests)
 
     if(UNIORM_BUILD_TOOLS)
         add_executable(uniorm_gen_e2e_tests
@@ -104,6 +103,7 @@ if(UNIORM_BACKEND_ODBC)
         set_tests_properties(gen_e2e_tests PROPERTIES
             SKIP_RETURN_CODE 77
             ENVIRONMENT "UNIORM_PLUGIN_PATH=${UNIORM_BUILD_TREE_PLUGIN_DIR}")
+        uniorm_copy_runtime_dlls(uniorm_gen_e2e_tests)
     endif()
 endif()
 

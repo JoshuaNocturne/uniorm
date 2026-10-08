@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.21)
 project(uniorm VERSION 0.4.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
@@ -64,6 +64,20 @@ target_include_directories(uniorm PUBLIC
 # library, sitting outside src/ so its build shape is obvious at a glance
 # (see backends/odbc/CMakeLists.txt), and pulls in the driver it needs.
 target_link_libraries(uniorm PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
+
+# Windows has no RPATH: an executable finds its DLLs only beside itself or
+# through PATH. Copy the runtime closure next to the target so ctest and any
+# spawned subprocess load without environment help.
+function(uniorm_copy_runtime_dlls target)
+    if(WIN32)
+        add_custom_command(TARGET ${target} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "$<TARGET_RUNTIME_DLLS:${target}>"
+                    "$<TARGET_FILE_DIR:${target}>"
+            COMMAND_EXPAND_LISTS)
+    endif()
+endfunction()
+
 if(UNIORM_BACKEND_ODBC)
     add_subdirectory(backends/odbc)
 endif()

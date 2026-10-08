@@ -23,7 +23,12 @@ set(SMOKE_SYSTEM_NAME "@CMAKE_SYSTEM_NAME@")
 set(SMOKE_ROOT "${SMOKE_BUILD_DIR}/install_smoke")
 set(SMOKE_PREFIX "${SMOKE_ROOT}/prefix")
 set(SMOKE_PACKAGE_DIR "${SMOKE_PREFIX}/${SMOKE_LIBDIR}/cmake/uniorm")
-set(SMOKE_PLUGIN_DIR "${SMOKE_PREFIX}/${SMOKE_LIBDIR}/uniorm/backends")
+# On Windows, DLLs go to bin/; on Linux, .so files go to lib/
+if(SMOKE_SYSTEM_NAME STREQUAL "Windows")
+  set(SMOKE_PLUGIN_DIR "${SMOKE_PREFIX}/${SMOKE_BINDIR}/uniorm/backends")
+else()
+  set(SMOKE_PLUGIN_DIR "${SMOKE_PREFIX}/${SMOKE_LIBDIR}/uniorm/backends")
+endif()
 set(SMOKE_CONSUMER "${SMOKE_ROOT}/consumer")
 
 file(REMOVE_RECURSE "${SMOKE_ROOT}")

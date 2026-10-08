@@ -17,6 +17,8 @@ set(SMOKE_BINDIR "@CMAKE_INSTALL_BINDIR@")
 set(SMOKE_INCLUDEDIR "@CMAKE_INSTALL_INCLUDEDIR@")
 set(SMOKE_HAS_TOOLS "@UNIORM_BUILD_TOOLS@")
 set(SMOKE_HAS_ODBC "@UNIORM_BACKEND_ODBC@")
+set(SMOKE_SHARED_SUFFIX "@CMAKE_SHARED_LIBRARY_SUFFIX@")
+set(SMOKE_SYSTEM_NAME "@CMAKE_SYSTEM_NAME@")
 
 set(SMOKE_ROOT "${SMOKE_BUILD_DIR}/install_smoke")
 set(SMOKE_PREFIX "${SMOKE_ROOT}/prefix")
@@ -56,22 +58,35 @@ endif()
 # dlopen it, and that the plugin exports the ABI-version check the loader calls
 # on a miss. If the build turned ODBC off, both must be absent.
 if(SMOKE_HAS_ODBC)
-  file(GLOB odbc_plugin "${SMOKE_PLUGIN_DIR}/libuniorm_odbc.so*")
-  list(LENGTH odbc_plugin odbc_plugin_count)
-  if(odbc_plugin_count LESS 2)
-    message(FATAL_ERROR
-      "expected libuniorm_odbc.so and its soname under ${SMOKE_PLUGIN_DIR}, "
-      "found: ${odbc_plugin}")
+  if(SMOKE_SYSTEM_NAME STREQUAL "Windows")
+    set(odbc_plugin "${SMOKE_PREFIX}/${SMOKE_BINDIR}/uniorm/backends/uniorm_odbc${SMOKE_SHARED_SUFFIX}")
+    if(NOT EXISTS "${odbc_plugin}")
+      message(FATAL_ERROR
+        "expected uniorm_odbc${SMOKE_SHARED_SUFFIX} under "
+        "${SMOKE_PREFIX}/${SMOKE_BINDIR}/uniorm/backends")
+    endif()
+  else()
+    file(GLOB odbc_plugin "${SMOKE_PLUGIN_DIR}/libuniorm_odbc${SMOKE_SHARED_SUFFIX}*")
+    list(LENGTH odbc_plugin odbc_plugin_count)
+    if(odbc_plugin_count LESS 2)
+      message(FATAL_ERROR
+        "expected libuniorm_odbc${SMOKE_SHARED_SUFFIX} and its soname under "
+        "${SMOKE_PLUGIN_DIR}, found: ${odbc_plugin}")
+    endif()
   endif()
   if(NOT EXISTS "${SMOKE_PACKAGE_DIR}/uniormOdbcTargets.cmake")
     message(FATAL_ERROR
       "this build carries the ODBC backend but no export set landed")
   endif()
 else()
-  if(EXISTS "${SMOKE_PLUGIN_DIR}/libuniorm_odbc.so")
+  if(SMOKE_SYSTEM_NAME STREQUAL "Windows")
+    set(odbc_plugin "${SMOKE_PREFIX}/${SMOKE_BINDIR}/uniorm/backends/uniorm_odbc${SMOKE_SHARED_SUFFIX}")
+  else()
+    set(odbc_plugin "${SMOKE_PLUGIN_DIR}/libuniorm_odbc${SMOKE_SHARED_SUFFIX}")
+  endif()
+  if(EXISTS "${odbc_plugin}")
     message(FATAL_ERROR
-      "UNIORM_BACKEND_ODBC=OFF but the plugin installed at "
-      "${SMOKE_PLUGIN_DIR}/libuniorm_odbc.so")
+      "UNIORM_BACKEND_ODBC=OFF but the plugin installed at ${odbc_plugin}")
   endif()
 endif()
 

@@ -270,10 +270,14 @@ void test_expression() {
     CHECK(meta.ignored.size() == 1);
     std::printf("  expr: P6 key compare\n");
     CHECK(meta.ignored[0] == email_key);
+    std::printf("  expr: Q2 ignored key ok\n");
     CHECK(meta.resolved->columns.size() == 2);
+    std::printf("  expr: Q3 resolved size ok\n");
     CHECK(meta.table_sql(postgres) ==
           "\"App.Schema\"\"V1\".\"User\"\"Rows\"");
+    std::printf("  expr: Q4 final table sql\n");
   }
+    std::printf("  expr: Q5 teardown done\n");
   std::printf("  expr: mapping mysql\n");
   {
     entity_meta meta;

@@ -8,6 +8,12 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(CMAKE_CXX_VISIBILITY_PRESET hidden)
 set(CMAKE_VISIBILITY_INLINES_HIDDEN ON)
 
+# -DCMAKE_CXX_FLAGS on the command line replaces CMake's MSVC default, which is
+# what normally carries /EHsc; without it unwinding skips local destructors.
+if(MSVC)
+    add_compile_options(/EHsc)
+endif()
+
 # Build mode switch: defaults to Debug; pass -DCMAKE_BUILD_TYPE=Release etc.
 # Debug  -> -g (CMake default flags); Release -> -O3 -DNDEBUG (CMake default flags)
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)

@@ -1,6 +1,5 @@
 #include "check.hpp"
 
-#include <cstdio>
 #include <memory>
 #include <optional>
 #include <string>
@@ -41,7 +40,6 @@ std::string resolve_key(member_key const& key) {
 void test_expression() {
   predicate::resolver resolve = resolve_key;
 
-  std::printf("  expr: comparisons\n");
   {
     std::vector<sql_value> bound;
     CHECK(eq(&User::id, 7).to_sql(resolve, bound) == "\"id\" = ?");
@@ -84,7 +82,6 @@ void test_expression() {
     CHECK(in(&User::id, std::vector<int>{}).to_sql(resolve, bound) == "1 = 0");
     CHECK(bound.empty());
   }
-  std::printf("  expr: null/like/throws\n");
   {
     std::vector<sql_value> bound;
     CHECK(is_not_null(&User::email).to_sql(resolve, bound) ==
@@ -101,7 +98,6 @@ void test_expression() {
     CHECK_THROWS(predicate{}.to_sql(resolve, bound), uniorm_error);
   }
 
-  std::printf("  expr: dialect ansi\n");
   {
     dialect d;  // ANSI defaults
     CHECK(d.quote_identifier("col") == "\"col\"");
@@ -111,7 +107,6 @@ void test_expression() {
           " OFFSET 0 ROWS FETCH NEXT 5 ROWS ONLY");
     CHECK(d.pagination(std::nullopt, 0).empty());
   }
-  std::printf("  expr: identifier case\n");
   {
     // The policy that decides what a quoted name is spelled as. Keeping is
     // what quoting alone did before it existed.
@@ -131,7 +126,6 @@ void test_expression() {
     // Folding stops at ASCII, so a name in another alphabet is left alone.
     CHECK(lower.fold_identifier("Stra\xc3\x9f" "e") == "stra\xc3\x9f" "e");
   }
-  std::printf("  expr: dialect detect\n");
   {
     dialect mysql = dialect::detect("MySQL");
     CHECK(mysql.quote_open == '`' && mysql.quote_close == '`');
@@ -152,7 +146,6 @@ void test_expression() {
             dialect::qualification::unsupported);
     }
   }
-  std::printf("  expr: quoting\n");
   {
     dialect postgres = dialect::detect("PostgreSQL");
     postgres.identifiers = dialect::identifier_case::lower;
@@ -183,7 +176,6 @@ void test_expression() {
     CHECK_THROWS(mysql.quote_identifier(nul_name), uniorm_error);
     CHECK_THROWS(brackets.quote_identifier(nul_name), uniorm_error);
   }
-  std::printf("  expr: mapping resolved\n");
   {
     entity_meta meta;
     meta.table = "Declared.Users";
@@ -195,34 +187,26 @@ void test_expression() {
     CHECK(meta.columns[0].is_primary_key);
     CHECK(!meta.columns[1].is_primary_key);
     CHECK(meta.ignored.size() == 1);
-    std::printf("  expr: M1 builder\n");
 
     dialect postgres = dialect::detect("PostgreSQL");
     postgres.identifiers = dialect::identifier_case::lower;
     auto id_key = make_member_key(&User::id);
     auto name_key = make_member_key(&User::name);
     auto email_key = make_member_key(&User::email);
-    std::printf("  expr: M2 dialect keys\n");
     CHECK(meta.table_sql(postgres) == "\"declared.users\"");
     CHECK(meta.column_sql(0, postgres) == "\"declared_id\"");
     CHECK(meta.column_sql(name_key, postgres) == "\"declared_name\"");
     CHECK(meta.table_sql(dialect{}) == "\"Declared.Users\"");
     CHECK(meta.column_sql(id_key, dialect{}) == "\"Declared_Id\"");
-    std::printf("  expr: M3 unresolved sql\n");
     CHECK_THROWS(meta.column_sql(email_key, postgres), mapping_error);
 
-    std::printf("  expr: P1 make declared_row\n");
     row declared_row({"Declared_Name", "Declared_Id"},
       { std::string("Before"), std::int32_t{ 7 } });
-    std::printf("  expr: M4 declared_row\n");
     User user{};
-    std::printf("  expr: P2 populate call\n");
     meta.populate(&user, declared_row);
     CHECK(user.id == 7);
     CHECK(user.name == "Before");
-    std::printf("  expr: M5 populate declared\n");
 
-    std::printf("  expr: P3 assign resolved\n");
     meta.resolved = identifier_resolution{
       { "IgnoredCatalog", "App.Schema\"V1", "User\"Rows" },
       { "User_Id", "Display\"Name" }
@@ -234,12 +218,10 @@ void test_expression() {
     CHECK(meta.column_sql(1, postgres) == "\"Display\"\"Name\"");
     CHECK(meta.column_sql(name_key, postgres) == "\"Display\"\"Name\"");
     CHECK(meta.table == "Declared.Users");
-    std::printf("  expr: M6 resolved sql\n");
     CHECK(meta.columns[0].column == "Declared_Id");
     CHECK(meta.columns[1].column == "Declared_Name");
     CHECK(meta.column_name(id_key) == "Declared_Id");
     CHECK(meta.column_name(name_key) == "Declared_Name");
-    std::printf("  expr: M7 names\n");
     CHECK_THROWS(meta.column_name(email_key), mapping_error);
     CHECK_THROWS(meta.column_sql(email_key, postgres), mapping_error);
     CHECK_THROWS(meta.table_sql(dialect{}),
@@ -248,37 +230,26 @@ void test_expression() {
       backend::capability_not_supported);
     CHECK_THROWS(meta.column_sql(name_key, dialect{}),
       backend::capability_not_supported);
-    std::printf("  expr: M8 capability throws\n");
 
-    std::printf("  expr: P4 make resolved_row\n");
     row resolved_row({"Display\"Name", "User_Id"},
       { std::string("After"), std::int32_t{ 8 } });
     meta.populate(&user, resolved_row);
     CHECK(user.id == 8);
     CHECK(user.name == "After");
-    std::printf("  expr: M9 populate resolved\n");
     CHECK_THROWS(meta.populate(&user, declared_row), column_not_found);
-    std::printf("  expr: M10 mismatch throw\n");
 
     CHECK_THROWS(mapping.column("Extra", &User::email), mapping_error);
     CHECK_THROWS(mapping.primary_key("Extra", &User::email), mapping_error);
     CHECK_THROWS(mapping.ignore(&User::name), mapping_error);
-    std::printf("  expr: P5 temp builder\n");
     CHECK_THROWS(mapping_builder<User>(meta).column("Extra", &User::email),
       mapping_error);
     CHECK(meta.columns.size() == 2);
     CHECK(meta.ignored.size() == 1);
-    std::printf("  expr: P6 key compare\n");
     CHECK(meta.ignored[0] == email_key);
-    std::printf("  expr: Q2 ignored key ok\n");
     CHECK(meta.resolved->columns.size() == 2);
-    std::printf("  expr: Q3 resolved size ok\n");
     CHECK(meta.table_sql(postgres) ==
           "\"App.Schema\"\"V1\".\"User\"\"Rows\"");
-    std::printf("  expr: Q4 final table sql\n");
   }
-    std::printf("  expr: Q5 teardown done\n");
-  std::printf("  expr: mapping mysql\n");
   {
     entity_meta meta;
     meta.table = "declared_users";

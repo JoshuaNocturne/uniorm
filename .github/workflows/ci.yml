@@ -138,7 +138,9 @@ jobs:
   core-windows:
     name: core (no ODBC, Windows)
     runs-on: windows-latest
-    timeout-minutes: 20
+    # The debugging step below holds the runner open for an interactive
+    # session, which has to fit inside the job timeout.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
 
@@ -159,6 +161,15 @@ jobs:
 
       - name: Test
         run: ctest --test-dir build -C Debug -R '^unit_tests$' --output-on-failure --timeout 60
+
+      - name: Open a debugging session
+        # The test binary is left in the tree it was built in, so a shell on the
+        # runner can re-run it against the same DLLs the failure saw. The SSH
+        # commands appear in this step's log.
+        if: failure()
+        uses: mxschmitt/action-tmate@v3
+        with:
+          limit-access-to-actor: true
 
   driver:
     name: ${{ matrix.name }}

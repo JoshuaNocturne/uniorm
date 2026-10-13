@@ -18,7 +18,7 @@ uniorm 是一个现代化的 C++ 数据库访问层：核心构建在驱动中�
   （`SQL_ATTR_ROW_ARRAY_SIZE`），见 §4.5.2
 - 类型系统：SQL 类型 ↔ 现代 C++ 类型映射，含 converter 扩展点（§4.4）
 - 三种结果对象：
-  - 聚合 struct 投影（按列序/列名绑定，无需注册）
+  - 聚合 struct 投影（按列序绑定，无需注册；注册过的类型改按列名，见 §4.6）
   - 实体映射（成员指针路线，显式注册）
   - 动态行对象（按列名取 variant 值）
 - 基于成员指针的类型安全查询构建器
@@ -110,6 +110,7 @@ uniorm/
 │   │   ├── registry.hpp         # scheme 解析 + backend 注册表（out-of-tree backend 注册入口）
 │   │   └── error.hpp            # backend_error / capability_not_supported / unknown_scheme
 │   ├── detail/
+│   │   ├── entity_binding.hpp   # 注册实体的结果列直绑（按列名定位序号）
 │   │   ├── identifier.hpp       # 全库唯一的那一处 ASCII 折叠：凡比较或发出
 │   │   │                        # 标识符名字的都经它（§4.8、§5.2、§6.2）
 │   │   ├── pfr.hpp              # 自实现聚合体反射（字段数探测 + 展开，上限 64）
@@ -698,7 +699,7 @@ std::size_t r = db.remove(people);   // 同上；无键列可推断且未给 whe
 
 ### 4.6 聚合 struct 投影（零注册路径）
 
-无需任何映射注册，按列序绑定聚合体：
+`T` 未注册时按列序绑定聚合体（注册过则由 §4.7 的映射接手）：
 
 ```cpp
 struct user_row {
@@ -714,16 +715,28 @@ for (auto const& u : rows) { /* ... */ }
 ```
 
 返回前按 `orm::row_array_size()` 块取行，逐行 `fill_into` 直接构造进结果 vector
-的存储（见 §4.8 物化路径）。
+的存储（见 §4.8 物化路径）。`orm::query<T>(sql)` 的两条分派共用体内那份块读循环
+`orm::fetch_rows`：它只要求 `binding` 提供 `set_row_array_size` / `bind` /
+`fill_into`，`projection` 与 `entity_binding` 正是同一组接口。
 
 实现：自实现 `pfr_lite`（`detail/pfr.hpp`，不引入 Boost），含两个核心设施——
 `field_count<T>`（万能转换类型 + `requires` 表达式探测聚合体字段数）与
 `tie_aggregate(T&)`（按字段数 `if constexpr` 分派的结构化绑定展开，由宏生成至上限）。
 要求：入口 concept `detail::aggregate_projection` = `std::is_aggregate_v` +
 `std::is_default_constructible_v` + `field_count<T>() <= max_aggregate_fields`（64）；
-concept 挂在 `orm::query<T>` 的模板参数上，不满足者是"无匹配重载"而非体内
-`static_assert`。字段类型满足 4.3 的映射或存在 converter；嵌套聚合体计为一个字段，
-需经 converter 绑定。
+字段类型满足 4.3 的映射或存在 converter；嵌套聚合体计为一个字段，需经 converter
+绑定。
+
+列序就是这条路径的契约：`projection::bind` 把第 k 个字段绑到结果第 k 列，它手上没有
+字段名可查（`tie_aggregate` 的结构化绑定只给类型与顺序，`f1..f64` 是占位名），所以
+重排 SELECT 会把同类型字段的值静默对调，只有类型不同时才由后端报错。字段数多于结果
+列数会在绑定期被后端拒掉，少于则多出来的列被忽略。
+
+`orm::query<T>(sql)` 先问 `T` 注册过没有（`orm::find`）：注册过就交给 §4.7 的
+`entity_binding`，序号由 `entity_meta::result_ordinal` 按标签定位，列序不再参与；
+没注册才走上面这条按序投影。注册与否是运行时事实，所以这个入口的模板参数不再挂
+concept，体内只留 `static_assert(std::is_default_constructible_v<T>)`（两条路径都
+要就地构造 `T`），既未注册又非聚合体的类型在运行时抛 `mapping_error`。
 
 ### 4.7 实体映射（显式契约）
 
@@ -834,8 +847,9 @@ class orm {                             // 非线程安全，按线程/会话持
     ::uniorm::query<T> query();                               // 实体查询：db.query<T>()
     template <class T> ::uniorm::update<T> update();          // 类型化 UPDATE builder
     template <class T> ::uniorm::remove<T> remove();          // 类型化 DELETE builder
-    template <detail::aggregate_projection T>
-    std::vector<T> query(std::string_view sql, params const& p = {});    // 投影
+    template <class T>
+    std::vector<T> query(std::string_view sql, params const& bound = {});
+    // 类型化读：T 注册过按 §4.7 的列名配对，否则按 §4.6 的列序投影
     update_builder update(std::string_view table);          // 无映射表的动态 UPDATE
     remove_builder remove(std::string_view table);          // 动态 DELETE
 
@@ -872,8 +886,9 @@ std::string_view>)` 与动态表名版区分；无主键又没给 `where_fields`
 
 成员指针的类型擦除：注册时经 `make_column_meta` 捕获 `write` 闭包
 （`[member](void* obj, sql_value const& v) { static_cast<T*>(obj)->*member = value_cast<M>(v); }`），
-运行时物化不再需要模板。查询结果按**列名**（而非列序）写回，
-天然规避 SELECT 列序与 struct 字段序不一致的问题。
+运行时物化不再需要模板。注册实体读回的结果按**列名**（而非列序）配对——构建器自写的
+SELECT 与 `orm::query<T>(sql)` 的手写语句都走这套，列序与字段顺序不一致不再影响结果；
+按序号绑定的只剩零注册的聚合投影，那是 §4.6 的列序契约。
 
 ### 4.8 成员指针查询构建器
 
@@ -910,15 +925,26 @@ auto opt = db.query<User>()
 目标实体**。注册时 `column_meta` 除 `write`/`read` 闭包外再生成 `make_binding`
 工厂（`detail::make_field_binding` 按成员类型选择数值直绑、字符串/二进制定长
 缓冲 + 截断重读、时间戳暂存、`std::optional` 空值复位等绑定策略）。变长列的
-暂存槽宽取各绑定期 `stmt.column_meta()` 的 `display_size`：字符列
-`display_size × 4 + 1`（`display_size < 1024` 时），二进制列 `display_size + 1`
-（`< 4096` 时），否则退回 4096 定宽——使一个块的缓存占用与列宽成比例；超槽或
-驱动回报 `SQL_NO_TOTAL` 的值退回 `read_long_text`/`read_long_bytes` 整读。
-`render_select` 保证 SELECT 列序与 `meta.columns` 注册序一致；每个绑定在构造期
-捕获字段在实体内的**字节偏移**，`finalize(row_index, entity)` 把某行的暂存数据
-直接写入任意实体实例。`all()` 因此可以按块 `resize` 出 vector 存储后逐行
-`fill_into(out[i])`（异常时把 size 截回原值再重抛），无原型对象中转、每字段一次
-赋值即完成物化；`one()` 仍经 `take()` + `proto_` 返回。
+暂存槽宽取 `display_size`：字符列 `display_size × 4 + 1`（`display_size < 1024`
+时），二进制列 `display_size + 1`（`< 4096` 时），否则退回 4096 定宽——使一个块
+的缓存占用与列宽成比例；超槽或驱动回报 `SQL_NO_TOTAL` 的值退回
+`read_long_text`/`read_long_bytes` 整读。这些 `display_size` 来自一条查询**只
+描述一次**的 `stmt.column_meta()`：`projection::bind` 与 `entity_binding::bind`
+各取一轮结果元数据，再连同序号传给每个绑定——让绑定自己描述，C 个变长列就要付
+C 轮 `SQLDescribeCol`。每个绑定在构造期捕获字段在实体内的**字节偏移**，
+`finalize(row_index, entity)` 把某行的暂存数据直接写入任意实体实例。`all()`
+因此可以按块 `resize` 出 vector 存储后逐行 `fill_into(out[i])`（异常时把 size
+截回原值再重抛），无原型对象中转、每字段一次赋值即完成物化；`one()` 仍经
+`take()` + `proto_` 返回。
+
+映射好的物化按**列名**定位序号：`entity_binding::bind` 不把注册序当序号，而是
+拿 `meta.columns` 每列的标签在结果集描述里找（`entity_meta::result_ordinal`：
+先精确同名，再退一次 ASCII 折叠同名，取第一个命中）。退折叠那次是因为服务端
+回报的拼法可能和声明的只差大小写——引号里的声明名照样选中该列，回报的列名却是
+另一拼法。结果里没有这个标签就抛 `column_not_found`，多出来的列忽略。定位只在
+绑定期做一次，每行仍按序号写回，块读与按序绑定一样快。`render_select` 照注册序
+列出 SELECT 列，所以构建器自写的 SELECT 每次都落在精确同名上；这套匹配要防的是
+手写 SQL、`SELECT *` 和换库后列序不同的语句。
 
 `all()` 的完整执行序列（`query<T>` 直接操作 `statement_iface`，没有中间层）：
 `acquire_statement(sql)` → `bind_params` → `execute` → `set_row_array_size` →
@@ -1638,7 +1664,7 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
   对 `userxorders` 不算——后者正是 pattern 里 `_` 的通配，两侧任一为空则留）、
   `test_odbc_error_is_backend_error`（`odbc_error` 就是 `backend_error`，
   无需二次翻译）；
-- **集成测试**（已实现，DSN/凭据由 `UNIORM_IT_DSN` / `UNIORM_IT_USER` / `UNIORM_IT_PWD` 指定，凭据以 `UID`/`PWD` 写进连接串；连不上时 ctest SKIP）：execute/params 往返、动态行（含 `connection::execute` 显式块取行大小 0 退回逐行）、DECIMAL 动态路径（`DECIMAL(20,4)` / `(20,0)` / `(38,0)` 取回精确定点字面量与 `column_info::scale`，按需解析成 double、scale-0 解析成 int64，带小数或超 int64 范围的字面量抛 `type_mismatch`，NULL 仍报 `is_null`）、DECIMAL 映射路径（`DECIMAL(20,4)` / `(65,30)` / `(20,0)` 三列配 `decimal_t` 与 `std::optional<decimal_t>` 成员：批量插入与实体读回逐字核对 `to_literal`（含 65,30 列第 30 位为 1 的值——没有任何整型或 double 装得下它）、聚合投影、动态行 `get<decimal_t>`、以 `decimal_t` 为右值的 `where(gt(&T::amount, ...))` 落到同一字面量）、聚合投影（含长字符串与 timestamp）、converter 往返（批量插入、实体物化含 NULL、
+- **集成测试**（已实现，DSN/凭据由 `UNIORM_IT_DSN` / `UNIORM_IT_USER` / `UNIORM_IT_PWD` 指定，凭据以 `UID`/`PWD` 写进连接串；连不上时 ctest SKIP）：execute/params 往返、动态行（含 `connection::execute` 显式块取行大小 0 退回逐行）、DECIMAL 动态路径（`DECIMAL(20,4)` / `(20,0)` / `(38,0)` 取回精确定点字面量与 `column_info::scale`，按需解析成 double、scale-0 解析成 int64，带小数或超 int64 范围的字面量抛 `type_mismatch`，NULL 仍报 `is_null`）、DECIMAL 映射路径（`DECIMAL(20,4)` / `(65,30)` / `(20,0)` 三列配 `decimal_t` 与 `std::optional<decimal_t>` 成员：批量插入与实体读回逐字核对 `to_literal`（含 65,30 列第 30 位为 1 的值——没有任何整型或 double 装得下它）、聚合投影、动态行 `get<decimal_t>`、以 `decimal_t` 为右值的 `where(gt(&T::amount, ...))` 落到同一字面量）、聚合投影（含长字符串与 timestamp）、注册实体读手写 SQL（列序打乱仍按列名配对，缺列报 `column_not_found`）、converter 往返（批量插入、实体物化含 NULL、
 `in` 谓词、投影、构建器 `set`/批量 update、动态行 `get<T>`）、orm validate（含 strict
 的列缺失/可空/类型族三条失败路径）、查询构建器全谓词与分页（末了拿 `build_select()`
 的文本比对这条连接自己那家方言的引号；再把策略声明成 `upper` 重发一次——表名跟着升

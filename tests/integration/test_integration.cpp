@@ -320,6 +320,27 @@ void test_projection(orm& db) {
   CHECK(rows[2].note.value_or("") == "short");
 }
 
+// A registered entity read by a statement the caller wrote pairs each field
+// with the column of its name, not the column at its ordinal.
+void test_registered_read_by_label(orm& db) {
+  auto const rows = db.query<User>(
+    "SELECT name, created, id, note, age, balance FROM uniorm_it_user"
+    " ORDER BY id");
+  CHECK(rows.size() == 3);
+  CHECK(rows[0].id == 1 && rows[0].name == "alice");
+  CHECK(rows[0].age.has_value() && *rows[0].age == 30);
+  CHECK(rows[0].balance == 12.5);
+  CHECK(!rows[0].note.has_value());
+  CHECK(rows[0].created.has_value() &&
+        *rows[0].created == detail::make_timestamp(2024, 1, 2, 3, 4, 5, 0));
+  CHECK(!rows[1].age.has_value());
+  CHECK(!rows[1].created.has_value());
+  CHECK(rows[1].note.has_value() && rows[1].note->size() == long_note.size());
+  CHECK(rows[2].balance == -4.25);
+  CHECK_THROWS(
+    db.query<User>("SELECT id, name FROM uniorm_it_user"), column_not_found);
+}
+
 void test_converter_round_trip(orm& db) {
   struct order_projection {
     std::int64_t id;
@@ -1375,6 +1396,7 @@ int main() {
     test_decimal_mapped(db);
     test_zero_block_fetch_size(db);
     test_projection(db);
+    test_registered_read_by_label(db);
     test_converter_round_trip(db);
     test_validate(conn_string);
     test_identifier_spelling(conn_string);

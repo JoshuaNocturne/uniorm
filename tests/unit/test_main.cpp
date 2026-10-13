@@ -12,6 +12,7 @@ void test_registry();
 void test_orm_crud_helpers();
 void test_orm_validate();
 void test_identifier_resolution();
+void test_binding_order();
 void test_backend_registry();
 void test_pool();
 #ifdef UNIORM_TEST_GEN
@@ -44,6 +45,8 @@ int main() {
   test_orm_validate();
   std::printf("Running test_identifier_resolution...\n");
   test_identifier_resolution();
+  std::printf("Running test_binding_order...\n");
+  test_binding_order();
   std::printf("Running test_backend_registry...\n");
   test_backend_registry();
   std::printf("Running test_pool...\n");

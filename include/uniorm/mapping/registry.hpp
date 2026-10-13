@@ -73,6 +73,11 @@ struct UNIORM_API entity_meta {
     std::size_t index, dialect const& sql_dialect) const;
   std::string column_sql(
     member_key const& key, dialect const& sql_dialect) const;
+  // One-based ordinal, in a described result set, of the column this mapping
+  // spells at `index`; throws column_not_found when the result has no such
+  // label.
+  std::size_t result_ordinal(
+    std::size_t index, std::vector<column_info> const& result) const;
   void populate(void* obj, row const& result_row) const;
 };
 

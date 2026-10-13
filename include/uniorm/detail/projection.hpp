@@ -34,11 +34,16 @@ std::ptrdiff_t member_offset(F const& field, void* base) noexcept {
 // the entity; finalize() materializes a fetched row into any entity
 // instance (the result vector's storage), so no intermediate prototype or
 // per-row move of small (SSO) strings is required.
+//
+// `meta` is the result set described once per query by the caller: a binding
+// that needed a fresh description would pay a full describe round for every
+// variable-width column.
 class field_binding {
 public:
   virtual ~field_binding() = default;
 
-  virtual void bind(backend::statement_iface& stmt, std::size_t column) = 0;
+  virtual void bind(backend::statement_iface& stmt, std::size_t column,
+    std::vector<column_info> const& meta) = 0;
   // entity points at a fully constructed object of the binding's layout.
   virtual void finalize(std::size_t row_index, void* entity) {
     if (ind_[row_index] == backend::null_indicator) reject_null();
@@ -76,7 +81,8 @@ public:
     offset_ = member_offset(target, base);
   }
 
-  void bind(backend::statement_iface& stmt, std::size_t column) override {
+  void bind(backend::statement_iface& stmt, std::size_t column,
+    std::vector<column_info> const&) override {
     // For block fetching, we need an array of values
     data_.resize(row_array_size_);
     // BufferLength should be the size of one element, not the total size
@@ -120,7 +126,8 @@ public:
     offset_ = member_offset(target, base);
   }
 
-  void bind(backend::statement_iface& stmt, std::size_t column) override {
+  void bind(backend::statement_iface& stmt, std::size_t column,
+    std::vector<column_info> const& meta) override {
     stmt_ = &stmt;
     column_ = column;
     // Size each staging slot after the column's declared width instead of
@@ -128,7 +135,6 @@ public:
     // display_size is in characters; *4 bounds the UTF-8 byte length.
     // Oversized values fall back to read_long_text per row.
     std::size_t slot = 4096;
-    auto meta = stmt.column_meta();
     if (column - 1 < meta.size()) {
       std::size_t chars = meta[column - 1].display_size;
       if (chars > 0 && chars < 1024) slot = chars * 4 + 1;
@@ -168,13 +174,13 @@ public:
     offset_ = member_offset(target, base);
   }
 
-  void bind(backend::statement_iface& stmt, std::size_t column) override {
+  void bind(backend::statement_iface& stmt, std::size_t column,
+    std::vector<column_info> const& meta) override {
     stmt_ = &stmt;
     column_ = column;
     // Tight stride per declared column width; see string_binding::bind.
     // display_size is in bytes for binary columns.
     std::size_t slot = 4096;
-    auto meta = stmt.column_meta();
     if (column - 1 < meta.size()) {
       std::size_t bytes = meta[column - 1].display_size;
       if (bytes > 0 && bytes < 4096) slot = bytes + 1;
@@ -216,7 +222,8 @@ public:
     offset_ = member_offset(target, base);
   }
 
-  void bind(backend::statement_iface& stmt, std::size_t column) override {
+  void bind(backend::statement_iface& stmt, std::size_t column,
+    std::vector<column_info> const&) override {
     // For block fetching, allocate N staging areas
     staging_.resize(row_array_size_);
     // BufferLength should be the size of one element
@@ -245,10 +252,11 @@ public:
     offset_ = member_offset(target, base);
   }
 
-  void bind(backend::statement_iface& stmt, std::size_t column) override {
+  void bind(backend::statement_iface& stmt, std::size_t column,
+    std::vector<column_info> const& meta) override {
     inner_ = make_field_binding(storage_, &storage_);
     inner_->set_row_array_size(row_array_size_);
-    inner_->bind(stmt, column);
+    inner_->bind(stmt, column, meta);
   }
 
   void finalize(std::size_t row_index, void* entity) override {
@@ -288,10 +296,11 @@ public:
     offset_ = member_offset(target, base);
   }
 
-  void bind(backend::statement_iface& stmt, std::size_t column) override {
+  void bind(backend::statement_iface& stmt, std::size_t column,
+    std::vector<column_info> const& meta) override {
     inner_ = make_field_binding(slot_, &slot_);
     inner_->set_row_array_size(row_array_size_);
-    inner_->bind(stmt, column);
+    inner_->bind(stmt, column, meta);
   }
 
   // This binding binds nothing, so every NULL test has to read the inner
@@ -356,11 +365,12 @@ public:
     // Offsets are captured against a throwaway instance; they are identical
     // for every object of the aggregate layout.
     T proto{};
+    auto const meta = stmt.column_meta();
     std::size_t column = 0;
     for_each_field(proto, [&](auto& field) {
       auto binding = make_field_binding(field, &proto);
       binding->set_row_array_size(row_array_size_);
-      binding->bind(stmt, column + 1);
+      binding->bind(stmt, column + 1, meta);
       ++column;
       bindings_.push_back(std::move(binding));
     });

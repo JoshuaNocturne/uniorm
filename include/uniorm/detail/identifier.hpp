@@ -28,4 +28,21 @@ inline std::string fold_upper(std::string_view name) {
   return out;
 }
 
+// True when two names differ only in ASCII letter casing: the same rule
+// fold_lower applies, without building either string.
+inline bool fold_equal(std::string_view left, std::string_view right) {
+  if (left.size() != right.size()) {
+    return false;
+  }
+  auto fold = [](char c) {
+    return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
+  };
+  for (std::size_t index = 0; index < left.size(); ++index) {
+    if (fold(left[index]) != fold(right[index])) {
+      return false;
+    }
+  }
+  return true;
+}
+
 }  // namespace uniorm::detail

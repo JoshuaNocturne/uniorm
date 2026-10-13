@@ -15,6 +15,7 @@
 #include <uniorm/orm.hpp>
 #include <uniorm/params.hpp>
 #include <uniorm/builder/expression.hpp>
+#include <uniorm/detail/entity_binding.hpp>
 #include <uniorm/result_set.hpp>
 #include <uniorm/row.hpp>
 
@@ -22,60 +23,7 @@ namespace uniorm {
 
 class connection;
 
-namespace backend {
-class statement_iface;
-}
-
 enum class direction { asc, desc };
-
-namespace detail {
-
-// Binds all mapped columns directly onto the fields of one entity instance.
-// Relies on the SELECT projecting columns in meta.columns registration order.
-template <class T>
-class entity_binding {
-public:
-  explicit entity_binding(entity_meta const& meta) {
-    bindings_.reserve(meta.columns.size());
-    for (auto const& c : meta.columns) {
-      bindings_.push_back(c.make_binding(&proto_));
-    }
-  }
-
-  void set_row_array_size(std::size_t size) {
-    row_array_size_ = size;
-  }
-
-  void bind(backend::statement_iface& stmt) {
-    for (std::size_t i = 0; i < bindings_.size(); ++i) {
-      bindings_[i]->set_row_array_size(row_array_size_);
-      bindings_[i]->bind(stmt, i + 1);
-    }
-  }
-
-  T take(std::size_t row_index) {
-    for (auto& binding : bindings_) {
-      binding->finalize(row_index, &proto_);
-    }
-    return std::move(proto_);
-  }
-
-  // Materialize one row directly into `dest` (vector storage). Bindings
-  // write at captured member offsets, so no prototype round trip or
-  // per-row move of small (SSO) strings is needed.
-  void fill_into(T& dest, std::size_t row_index) {
-    for (auto& binding : bindings_) {
-      binding->finalize(row_index, &dest);
-    }
-  }
-
-private:
-  T proto_{};
-  std::size_t row_array_size_ = 1;
-  std::vector<std::unique_ptr<field_binding>> bindings_;
-};
-
-}  // namespace detail
 
 // Fluent dynamic UPDATE for tables without an entity mapping, obtained via
 // orm::update(table). Every set value is bound through a `?` placeholder;

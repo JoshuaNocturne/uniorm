@@ -1,6 +1,7 @@
 #include "uniorm/mapping/registry.hpp"
 
 #include <uniorm/backend/error.hpp>
+#include <uniorm/detail/identifier.hpp>
 
 namespace uniorm {
 
@@ -85,6 +86,28 @@ void entity_meta::populate(void* obj, row const& result_row) const {
     auto const& label = resolved ? resolved->columns.at(index) : column.column;
     column.write(obj, result_row.at(label));
   }
+}
+
+std::size_t entity_meta::result_ordinal(
+  std::size_t index, std::vector<column_info> const& result) const {
+  if (resolved) {
+    require_resolution_size(*this);
+  }
+  auto const& label = resolved
+    ? resolved->columns.at(index) : columns[index].column;
+  for (std::size_t slot = 0; slot < result.size(); ++slot) {
+    if (result[slot].name == label) {
+      return slot + 1;
+    }
+  }
+  // A quoted declared name can select a column the server reports with other
+  // casing, so an exact miss still matches a folded label.
+  for (std::size_t slot = 0; slot < result.size(); ++slot) {
+    if (detail::fold_equal(result[slot].name, label)) {
+      return slot + 1;
+    }
+  }
+  throw column_not_found("result set has no column \"" + label + "\"");
 }
 
 }  // namespace uniorm

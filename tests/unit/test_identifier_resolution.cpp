@@ -877,13 +877,20 @@ void test_queries_and_statement_cache() {
     "FROM \"App\".\"Accounts\" WHERE \"User_Id\" = ? "
     "ORDER BY \"Display_Name\" DESC";
   CHECK(retained.build_select() == select);
-  state.result_columns = { { "Tenant_Id", sql_type::bigint, 19, false },
-    { "Display_Name", sql_type::varchar, 80, false },
-    { "User_Id", sql_type::bigint, 19, false },
-    { "Balance", sql_type::integer, 10, true } };
-  state.result_rows = { params(std::int64_t{ 8 }, "Ada", std::int64_t{ 17 },
-    std::int32_t{ 25 }).values(),
-    params(std::int64_t{ 9 }, "Lin", std::int64_t{ 17 }, nullptr).values() };
+  auto describe_accounts = [&] {
+    state.result_columns = { { "Tenant_Id", sql_type::bigint, 19, false },
+      { "Display_Name", sql_type::varchar, 80, false },
+      { "User_Id", sql_type::bigint, 19, false },
+      { "Balance", sql_type::integer, 10, true } };
+  };
+  describe_accounts();
+  auto const account_rows = [] {
+    return parameter_rows{
+      params(std::int64_t{ 8 }, "Ada", std::int64_t{ 17 },
+        std::int32_t{ 25 }).values(),
+      params(std::int64_t{ 9 }, "Lin", std::int64_t{ 17 }, nullptr).values() };
+  };
+  state.result_rows = account_rows();
   auto rows = retained.all();
   CHECK(rows.size() == 2);
   CHECK(rows.at(0).tenant == 8);
@@ -895,6 +902,28 @@ void test_queries_and_statement_cache() {
   CHECK(!rows.at(1).balance);
   parameter_rows const predicate_params{ params(std::int64_t{ 17 }).values() };
   check_executions(state, select, predicate_params);
+
+  // A statement the caller wrote is paired by the resolved spelling too: that
+  // is the name the server reports, and this query asks in another order.
+  std::string const hand =
+    "SELECT User_Id, Balance, Display_Name, Tenant_Id FROM App.Accounts "
+    "WHERE User_Id = ?";
+  state.result_columns = { { "User_Id", sql_type::bigint, 19, false },
+    { "Balance", sql_type::integer, 10, true },
+    { "Display_Name", sql_type::varchar, 80, false },
+    { "Tenant_Id", sql_type::bigint, 19, false } };
+  state.result_rows = {
+    params(std::int64_t{ 17 }, nullptr, "Ada", std::int64_t{ 8 }).values() };
+  auto const hand_read =
+    database.query<account>(hand, params(std::int64_t{ 17 }));
+  CHECK(hand_read.size() == 1);
+  CHECK(hand_read.at(0).id == 17);
+  CHECK(hand_read.at(0).balance == std::nullopt);
+  CHECK(hand_read.at(0).name == "Ada");
+  CHECK(hand_read.at(0).tenant == 8);
+  check_executions(state, hand, predicate_params);
+  describe_accounts();
+  state.result_rows = account_rows();
 
   auto const prepared_count = state.prepared.size();
   database.identifier_case(dialect::identifier_case::upper);
@@ -916,6 +945,7 @@ void test_queries_and_statement_cache() {
     "SELECT COUNT(*) FROM \"App\".\"Accounts\" WHERE \"User_Id\" = ?",
     predicate_params);
   state.result_rows.clear();
+  describe_accounts();
   CHECK(!retained.one());
   check_executions(state, select + " OFFSET 0 ROWS FETCH NEXT 1 ROWS ONLY",
     predicate_params);
@@ -936,6 +966,10 @@ void test_queries_and_statement_cache() {
     "DELETE FROM \"App\".\"Accounts\" WHERE \"User_Id\" = ?", predicate_params);
 
   database.clear_identifier_resolution();
+  state.result_columns = { { "TENANT_ID", sql_type::bigint, 19, false },
+    { "DISPLAY_NAME", sql_type::varchar, 80, false },
+    { "USER_ID", sql_type::bigint, 19, false },
+    { "BALANCE", sql_type::integer, 10, true } };
   auto const declared =
     "SELECT \"tenant_id\", \"display_name\", \"user_id\", \"balance\" "
     "FROM \"accounts\" WHERE \"user_id\" = ? "

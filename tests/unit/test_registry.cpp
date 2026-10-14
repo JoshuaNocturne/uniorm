@@ -21,6 +21,12 @@ struct Account {
   std::int32_t cached = 0;
 };
 
+struct Flag {
+  std::int64_t id;
+  bool on;
+  std::optional<bool> maybe;
+};
+
 }  // namespace
 
 void test_registry() {
@@ -92,6 +98,26 @@ void test_registry() {
                      sql_value(std::int32_t{ 2 }) });
     Account acc{};
     CHECK_THROWS(meta.populate(&acc, r), column_not_found);
+  }
+
+  // A bool member stages its fetched rows through a byte array of its own, and
+  // registering it is what instantiates that binding.
+  registry.map<Flag>("flags")
+    .primary_key("id", &Flag::id)
+    .column("on", &Flag::on)
+    .column("maybe", &Flag::maybe);
+  {
+    auto const& meta = registry.meta<Flag>();
+    row r({ "id", "on", "maybe" }, { sql_value(std::int64_t{ 1 }),
+                                     sql_value(true),
+                                     sql_value(std::monostate{}) });
+    Flag f{};
+    meta.populate(&f, r);
+    CHECK(f.on);
+    CHECK(!f.maybe.has_value());
+    f.maybe = false;
+    CHECK(meta.columns[2].read(&f) == sql_value(false));
+    CHECK(meta.columns[1].read(&f) == sql_value(true));
   }
 
   CHECK_THROWS(registry.map<Account>("again"), mapping_error);

@@ -93,6 +93,10 @@ void test_generate() {
 
   CHECK(contains(text, "#pragma once"));
   CHECK(contains(text, "#include <uniorm/mapping/registry.hpp>"));
+  // orm.hpp is the one that makes uniorm::orm complete, so a generated header
+  // is includable by itself.
+  CHECK(contains(text, "#include <uniorm/orm.hpp>"));
+  CHECK(contains(text, "#include <uniorm/decimal.hpp>"));
   CHECK(contains(text, "namespace testdb {"));
   CHECK(contains(text, "// FK: user_id -> t_user(id)"));
   CHECK(contains(text, "// index: idx_status (status)"));
@@ -153,6 +157,17 @@ void test_generate_errors() {
   gen_config cfg;
   cfg.tables["t_order"].columns["status"].cpp_type = "money";
   CHECK_THROWS(generate_header(make_fixture(), cfg), config_error);
+  // The registry names int8_t as a member type, but sql_value has no such
+  // alternative, so a header asking for one would not compile.
+  gen_config narrow;
+  narrow.tables["t_order"].columns["status"].cpp_type = "std::int8_t";
+  try {
+    generate_header(make_fixture(), narrow);
+    CHECK(false);
+  } catch (config_error const& e) {
+    CHECK(std::string(e.what()).find("cannot be bound") !=
+      std::string::npos);
+  }
 }
 
 // A config written against one catalog's spelling still applies to another's,

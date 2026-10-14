@@ -26,7 +26,6 @@ std::string normalize_type(std::string t) {
 bool is_bindable_cpp_type(std::string const& t) {
   static std::unordered_set<std::string> const allowed = {
     "bool",
-    "std::int8_t",
     "std::int16_t",
     "std::int32_t",
     "std::int64_t",
@@ -45,7 +44,7 @@ std::string check_bindable(std::string const& t, std::string const& where) {
   if (!is_bindable_cpp_type(t)) {
     throw config_error(where + ": cpp type '" + t +
                        "' cannot be bound by the v1 registry (allowed: "
-                       "bool, std::int8_t..int64_t, double, std::string, "
+                       "bool, std::int16_t..int64_t, double, std::string, "
                        "std::vector<std::byte>, uniorm::timestamp, "
                        "uniorm::decimal_t; a domain type goes under "
                        "converter = \"...\")");
@@ -344,7 +343,12 @@ generated_output generate_header(
   text += "#include <optional>\n";
   text += "#include <string>\n";
   text += "#include <vector>\n\n";
-  text += "#include <uniorm/mapping/registry.hpp>\n\n";
+  // registry.hpp alone only forward declares uniorm::orm and decimal.hpp
+  // brings neither, so a header generated against them cannot be included by
+  // itself.
+  text += "#include <uniorm/decimal.hpp>\n";
+  text += "#include <uniorm/mapping/registry.hpp>\n";
+  text += "#include <uniorm/orm.hpp>\n\n";
   text += "namespace " + unit + " {\n\n";
 
   std::vector<std::pair<table_model const*, std::string>> emitted;

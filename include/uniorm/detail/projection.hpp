@@ -93,7 +93,7 @@ public:
 
   void write(std::size_t row_index, void* entity) override {
     *reinterpret_cast<T*>(static_cast<char*>(entity) + offset_) =
-      data_[row_index];
+      static_cast<T>(data_[row_index]);
   }
 
 private:
@@ -117,7 +117,10 @@ private:
         std::is_same_v<T, T> && false, "unsupported direct binding type");
   }
 
-  std::vector<T> data_;
+  // std::vector<bool> is the bit-packed specialization with no data(), so a
+  // bool column stages through the same byte its buffer already describes.
+  using slot = std::conditional_t<std::is_same_v<T, bool>, std::int8_t, T>;
+  std::vector<slot> data_;
 };
 
 class string_binding : public field_binding {

@@ -7,7 +7,9 @@
 #include <string>
 #include <vector>
 
+#include <uniorm/decimal.hpp>
 #include <uniorm/mapping/registry.hpp>
+#include <uniorm/orm.hpp>
 
 namespace gen_it {
 

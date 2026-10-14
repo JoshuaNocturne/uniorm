@@ -17,6 +17,7 @@ void test_backend_registry();
 void test_pool();
 #ifdef UNIORM_TEST_GEN
 void test_gen_config();
+void test_gen_ddl();
 void test_gen_output();
 void test_gen_reader();
 #endif
@@ -53,6 +54,7 @@ int main() {
   test_pool();
 #ifdef UNIORM_TEST_GEN
   test_gen_config();
+  test_gen_ddl();
   test_gen_output();
   test_gen_reader();
 #endif

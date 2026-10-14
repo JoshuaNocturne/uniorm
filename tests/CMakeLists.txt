@@ -25,6 +25,7 @@ if(UNIORM_BUILD_TOOLS)
     # the target that links none.
     target_sources(uniorm_unit_tests PRIVATE
         unit/test_gen_config.cpp
+        unit/test_gen_ddl.cpp
         unit/test_gen_output.cpp
         unit/test_gen_reader.cpp
     )
@@ -99,6 +100,7 @@ if(UNIORM_BACKEND_ODBC)
             UNIORM_GEN_OUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/gen_out"
             UNIORM_GEN_GOLDEN="${CMAKE_CURRENT_SOURCE_DIR}/integration/golden/gen_it_schema.hpp"
             UNIORM_GEN_CONFIG="${CMAKE_CURRENT_SOURCE_DIR}/integration/golden/gen_it.toml"
+            UNIORM_GEN_SQL="${CMAKE_CURRENT_SOURCE_DIR}/integration/golden/gen_it.sql"
         )
         add_test(NAME gen_e2e_tests COMMAND uniorm_gen_e2e_tests)
         set_tests_properties(gen_e2e_tests PROPERTIES

@@ -3,9 +3,15 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <system_error>
+
+#ifndef _WIN32
+#include <sys/wait.h>
+#endif
 
 #include <uniorm/connection.hpp>
 #include <uniorm/converter.hpp>
@@ -20,7 +26,9 @@
 //     --tables=uniorm_gen_user,uniorm_gen_order --name=gen_it
 //     --config=tests/integration/golden/gen_it.toml
 //     --out=tests/integration/golden
-// The macros expand to quoted string literals provided by CMake.
+// The macros expand to quoted string literals provided by CMake. The script
+// beside the golden holds the same tables for --input-ddl, so the offline
+// source owes this test the same code without ever opening a connection.
 
 // The domain type the override file names. A generated header reaches a
 // converter-backed member through uniorm::converter<T>, so the
@@ -142,36 +150,42 @@ char const* const kMetadataMarkers[] = {
 // The comments the tool writes carry the connector's spelling of a type name
 // and the server's way of storing a default, which makes them differ between
 // the pairs this suite runs under and mean nothing to anything that compiles.
-// Erasing them leaves the line structure alone, so the two sides still have to
-// agree on where every line begins.
+// A trailing one goes with the line's own text. A line that is nothing but a
+// comment reports metadata the two sources do not promise to agree on: a live
+// catalog lists a primary key as an index, a script never says so.
 std::string without_comments(std::string const& text) {
   std::string out;
   std::istringstream lines(text);
   std::string line;
   while (std::getline(lines, line)) {
     auto const comment = line.find("//");
-    if (comment != std::string::npos) {
-      line.erase(comment);
+    if (comment == std::string::npos) {
+      out += line;
+      out += '\n';
+      continue;
     }
-    out += line;
+    std::string const head = line.substr(0, comment);
+    if (head.find_first_not_of(" \t") == std::string::npos) {
+      continue;
+    }
+    out += head;
     out += '\n';
   }
   return out;
 }
 
-// Live extraction: run the tool against the fixture tables and compare the
-// code it produced with the golden's. The comments are not part of that, on
-// any driver or server.
-void test_generate_matches_golden(std::string const& conn_string) {
-  std::string cmd = std::string(UNIORM_GEN_PATH) + " --connection-string=\"" +
-                    conn_string + "\" --out=" + UNIORM_GEN_OUT_DIR +
+// Runs the tool over one schema source and holds what it wrote to the golden:
+// the metadata comments have to be there, the code has to be that code.
+void require_matches_golden(
+  std::string const& source, std::string const& out_dir) {
+  std::string cmd = std::string(UNIORM_GEN_PATH) + " " + source +
+                    " --out=" + out_dir +
                     " --tables=uniorm_gen_user,uniorm_gen_order"
                     " --name=gen_it --config=" UNIORM_GEN_CONFIG " 2>&1";
   int rc = std::system(cmd.c_str());
   CHECK(rc == 0);
 
-  std::string text =
-    read_normalized(std::string(UNIORM_GEN_OUT_DIR) + "/gen_it_schema.hpp");
+  std::string text = read_normalized(out_dir + "/gen_it_schema.hpp");
   CHECK(!text.empty());
   for (char const* marker : kMetadataMarkers) {
     if (text.find(marker) == std::string::npos) {
@@ -189,7 +203,8 @@ void test_generate_matches_golden(std::string const& conn_string) {
          generated[pos] == golden[pos]) {
     ++pos;
   }
-  std::printf("FAIL generated code differs from golden at byte %zu\n", pos);
+  std::printf("FAIL %s differs from golden at byte %zu\n", source.c_str(),
+    pos);
   std::printf("  generated: %s\n",
     generated.substr(pos > 40 ? pos - 40 : 0, 80).c_str());
   std::printf("  golden:    %s\n",
@@ -197,18 +212,186 @@ void test_generate_matches_golden(std::string const& conn_string) {
   ++uniorm::test::failure_count();
 }
 
+// Live extraction: the fixture tables this test just created.
+void test_generate_matches_golden(std::string const& conn_string) {
+  require_matches_golden("--connection-string=\"" + conn_string + "\"",
+    UNIORM_GEN_OUT_DIR);
+}
+
+// Offline extraction: the same tables as a script, so a golden header is
+// reproducible without a server, and the two sources owe each other nothing
+// but the code.
+void test_generate_from_a_script_matches_golden() {
+  require_matches_golden("--input-ddl=" UNIORM_GEN_SQL,
+    std::string(UNIORM_GEN_OUT_DIR) + "/ddl");
+}
+
+struct run_result {
+  int code;
+  std::string text;
+};
+
+// One call of the binary, with everything it printed. std::system gives the
+// command processor's exit status, which is a wait status here and the exit
+// code itself on Windows.
+run_result run_gen(std::string const& args, std::string const& log_path) {
+  std::string const cmd = std::string(UNIORM_GEN_PATH) + " " + args +
+                          " >" + log_path + " 2>&1";
+  int const raw = std::system(cmd.c_str());
+  run_result result;
+#ifdef _WIN32
+  result.code = raw;
+#else
+  result.code = WIFEXITED(raw) ? WEXITSTATUS(raw) : -1;
+#endif
+  result.text = read_normalized(log_path);
+  return result;
+}
+
+void require_code(std::string const& item, int code, int expected) {
+  if (code == expected) {
+    return;
+  }
+  std::printf("FAIL %s: exit %d, expected %d\n", item.c_str(), code,
+    expected);
+  ++uniorm::test::failure_count();
+}
+
+void require_text(std::string const& item, std::string const& text,
+  std::string const& needle) {
+  if (text.find(needle) != std::string::npos) {
+    return;
+  }
+  std::printf("FAIL %s: output has no '%s'\n", item.c_str(), needle.c_str());
+  std::printf("  output: %s\n", text.c_str());
+  ++uniorm::test::failure_count();
+}
+
+std::string write_script(std::string const& dir, std::string const& name,
+  std::string const& body) {
+  std::filesystem::create_directories(dir);
+  std::string const path = dir + "/" + name;
+  std::ofstream out(path, std::ios::binary | std::ios::trunc);
+  out << body;
+  return path;
+}
+
+// The CLI's own contract, checked against the binary rather than the library:
+// which sources may appear together, what a rejected script says and on which
+// line, and what a run that fails leaves behind. An in-process test cannot see
+// any of it -- exit codes, the shape of stderr and "wrote nothing" are this
+// program's interface.
+void test_cli_contract() {
+  std::string const root(UNIORM_GEN_OUT_DIR);
+  std::string const log = root + "/cli.log";
+  std::string const out = root + "/cli";
+  std::string const rejected = root + "/cli_rejected";
+  std::error_code ignored;
+  std::filesystem::remove_all(out, ignored);
+  std::filesystem::remove_all(rejected, ignored);
+
+  run_result good = run_gen("--input-ddl=" UNIORM_GEN_SQL " --out=" + out +
+    " --name=gen_it", log);
+  require_code("--input-ddl run", good.code, 0);
+  // The tool prints the path it wrote, in this platform's separators, so the
+  // line is what is checked and the file itself is looked for by the API.
+  require_text("--input-ddl run", good.text, "gen_it_schema.hpp");
+  CHECK(std::filesystem::exists(out + "/gen_it_schema.hpp"));
+
+  run_result help = run_gen("--help", log);
+  require_code("--help", help.code, 0);
+  require_text("--help", help.text, "usage: uniorm-gen");
+
+  // Two sources, then none: the same rule the tool prints its usage for.
+  for (std::string const& args :
+      { "--input-ddl=" UNIORM_GEN_SQL " --dsn=anything --out=" + rejected,
+          "--out=" + rejected }) {
+    run_result both = run_gen(args, log);
+    require_code("two sources refused", both.code, 2);
+    require_text("two sources refused", both.text,
+      "exactly one of --dsn / --connection-string / --input-ddl is required");
+  }
+
+  run_result no_out = run_gen("--input-ddl=" UNIORM_GEN_SQL, log);
+  require_code("--out required", no_out.code, 2);
+  require_text("--out required", no_out.text, "--out=<dir> is required");
+
+  run_result absent = run_gen(
+    "--input-ddl=" + root + "/no_such_file.sql --out=" + rejected, log);
+  require_code("missing script", absent.code, 1);
+  require_text("missing script", absent.text, "cannot open DDL file");
+
+  // A script the parser refuses names the line it gave up on, and a refused
+  // run writes no header at all.
+  std::string const arrays = write_script(root, "arrays.sql",
+    "CREATE TABLE t (\n  a INT[]\n);\n");
+  run_result array = run_gen("--input-ddl=" + arrays + " --out=" + rejected,
+    log);
+  require_code("array column", array.code, 1);
+  require_text("array column", array.text, "ddl: line 2:");
+  require_text("array column", array.text, "carries no arrays");
+
+  run_result missing_table = run_gen("--input-ddl=" UNIORM_GEN_SQL
+    " --out=" + rejected + " --tables=no_such_table", log);
+  require_code("unknown --tables name", missing_table.code, 1);
+  require_text("unknown --tables name", missing_table.text,
+    "table not found: no_such_table");
+
+  CHECK(!std::filesystem::exists(rejected));
+
+  // A type the mapping has no entry for is a warning and a text column, not a
+  // failure: the live read answers the same way.
+  std::string const odd = write_script(root, "odd_type.sql",
+    "CREATE TABLE t (\n  a WIDGET NOT NULL\n);\n");
+  run_result odd_run = run_gen(
+    "--input-ddl=" + odd + " --out=" + out + " --name=odd_type", log);
+  require_code("unmapped type", odd_run.code, 0);
+  require_text("unmapped type", odd_run.text,
+    "warning: t.a: unmapped SQL type 'WIDGET', using std::string");
+
+  // What a script states that a mapping cannot use is counted, not failed.
+  std::string const dropped = write_script(root, "dropped.sql",
+    "CREATE TABLE t (\n  a INT NOT NULL\n);\n"
+    "ALTER TABLE t DROP COLUMN a;\n");
+  run_result dropped_run = run_gen("--input-ddl=" + dropped +
+    " --out=" + out + " --name=dropped", log);
+  require_code("ignored action", dropped_run.code, 0);
+  require_text("ignored action", dropped_run.text,
+    "warning: ignored ALTER TABLE t DROP action");
+}
+
 }  // namespace
 
+// A DSN this job cannot reach is a skip, but an offline leg that already
+// failed is not: 77 would have ctest record the run as a pass.
+static int skip_or_report(std::string const& reason, int counted) {
+  if (counted == 0) {
+    std::printf("skip: %s\n", reason.c_str());
+    return 77;
+  }
+  std::printf("%d gen e2e test(s) failed; the database legs did not run\n",
+    counted);
+  return 1;
+}
+
 int main() {
+  // These two legs open no connection, so they go first and stand on their own.
+  try {
+    test_generate_from_a_script_matches_golden();
+    test_cli_contract();
+  } catch (std::exception const& e) {
+    std::printf("FATAL: unexpected exception: %s\n", e.what());
+    ++uniorm::test::failure_count();
+  }
+  int const offline_failures = uniorm::test::failure_count();
+
   char const* dsn_env = std::getenv("UNIORM_IT_DSN");
   char const* user_env = std::getenv("UNIORM_IT_USER");
   char const* pwd_env = std::getenv("UNIORM_IT_PWD");
   if (!dsn_env || !*dsn_env || !user_env || !*user_env || !pwd_env ||
       !*pwd_env) {
-    std::printf(
-      "skip: set UNIORM_IT_DSN / UNIORM_IT_USER / UNIORM_IT_PWD to run "
-      "gen e2e tests\n");
-    return 77;
+    return skip_or_report("set UNIORM_IT_DSN / UNIORM_IT_USER / "
+      "UNIORM_IT_PWD to run gen e2e tests", offline_failures);
   }
   std::string dsn = dsn_env;
   std::string user = user_env;
@@ -218,9 +401,8 @@ int main() {
   try {
     connection probe(conn_string);
   } catch (std::exception const& e) {
-    std::printf(
-      "skip: cannot connect to DSN '%s': %s\n", dsn.c_str(), e.what());
-    return 77;
+    return skip_or_report("cannot connect to DSN '" + dsn + "': " + e.what(),
+      offline_failures);
   }
 
   try {

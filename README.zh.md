@@ -332,13 +332,22 @@ std::size_t held = pool.capacity(); // 另有 idle_count() 与
 ```sh
 uniorm-gen --dsn=mydb --user=u --password=p \
            --config=uniorm.toml --out=build/gen [--tables=a,b]
+uniorm-gen --input-ddl=schema.sql --out=build/gen [--name=app]
 ```
 
 `--dsn` 与 `--connection-string` 是同一件事的两种写法——前者拼成
 `DSN=<dsn>[;UID=…][;PWD=…]`，交给消费者自己也会用的那个 `uniorm::orm`
-构造器——两者只能选一个，`--out` 则必须给。`--catalog` 与 `--schema` 收窄去哪
+构造器——`--dsn` / `--connection-string` / `--input-ddl` 三者只能选一个，
+`--out` 则必须给。`--catalog` 与 `--schema` 收窄去哪
 找表，按名字而不是通配模式：值里的 `%` 不匹配任何东西，运行会先这么说（留空即由
 连接说了算）。`--name` 改输出单元名，`--tables` 取逗号分隔的表名列表。
+
+`--input-ddl` 读的是一份建表脚本而不是活服务器，那一趟不开连接。它认 MySQL 与
+PostgreSQL 两家的 `CREATE TABLE`（列与表级键）、
+`CREATE INDEX` 以及 `ALTER TABLE` 里加东西的那些形式；认得出但跟映射无关的动作
+（`DROP`、`MODIFY`、存储子句）计数后跳过，末尾并成一条警告，不至于让整次运行
+失败。脚本说不出一个未限定的表住在哪个 catalog/schema，所以这样的表对你传的
+任何一个 `--catalog` / `--schema` 都答。`USE app;` 给缺省单元名。
 
 输出 `build/gen/<name>_schema.hpp`：每表一个 struct（可空列自动
 `std::optional`，DECIMAL/NUMERIC 生成为无损的 `std::string`），PK/FK/索引

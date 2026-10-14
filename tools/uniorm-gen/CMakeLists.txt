@@ -3,6 +3,7 @@
 # schema metadata through the public interface, so nothing here names a driver.
 add_library(uniorm_gen_core STATIC
     config.cpp
+    ddl_meta.cpp
     generator.cpp
     naming.cpp
     schema_reader.cpp
@@ -11,9 +12,10 @@ target_link_libraries(uniorm_gen_core PUBLIC uniorm::uniorm)
 target_include_directories(uniorm_gen_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
 add_executable(uniorm-gen main.cpp)
-# The generator opens a connection through registry::create, so it needs the
-# ODBC backend loaded as a sibling NEEDED entry on this exe -- the core alone
-# carries no scheme. uniorm_gen_core stays driver-free so its unit tests can
-# link no backend at all.
+# The generator opens a live connection through registry::create, so it needs
+# the ODBC backend loaded as a sibling NEEDED entry on this exe -- the core
+# alone carries no scheme. uniorm_gen_core stays driver-free so its unit tests
+# can link no backend at all, which is also what lets --input-ddl answer
+# without a driver present.
 target_link_libraries(uniorm-gen PRIVATE uniorm_gen_core uniorm::odbc)
 uniorm_copy_runtime_dlls(uniorm-gen)

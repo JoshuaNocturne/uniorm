@@ -23,13 +23,12 @@ uniorm 是一个现代化的 C++ 数据库访问层：核心构建在驱动中�
   - 动态行对象（按列名取 variant 值）
 - 基于成员指针的类型安全查询构建器
 - Schema 校验（经 `orm::schema()` 读表元数据）
-- `uniorm-gen` 代码生成工具（活连接、schema 自省、TOML 配置）
+- `uniorm-gen` 代码生成工具（活连接或 DDL 脚本、schema 自省、TOML 配置）
 
 ### v1 明确不做（Out of Scope）
 
 - Unit of Work / 脏检查 / 级联加载 / 懒加载（留待 v2）
 - 异步 API（ODBC 本身同步；v1 同步接口，未来可在线程池上包装）
-- DDL 文件解析（代码生成仅支持活连接）
 - 游标更新（可更新结果集游标；批量写入走数组参数绑定，见 §4.5.2）
 - Schema 迁移管理（migration）
 
@@ -118,7 +117,7 @@ uniorm/
 │   │   ├── traits.hpp           # is_optional_v 等共享 traits
 │   │   └── time.hpp             # chrono ↔ 日历拆分/组装
 │   ├── orm.hpp                  # 实体注册与 CRUD 入口：除模板外只有声明，实现全在 src/orm.cpp
-│   ├── mapping/registry.hpp     # 实体映射注册表（含 mapping_builder；uniorm-gen 产物唯一依赖）
+│   ├── mapping/registry.hpp     # 实体映射注册表（含 mapping_builder；生成头三依赖之一）
 │   └── builder/
 │       ├── builder.hpp          # query<T> / update<T> / remove<T> / update_builder / remove_builder
 │       └── expression.hpp       # member_key / predicate / 谓词构造器
@@ -166,7 +165,8 @@ uniorm/
 ```
 
 公开/私有边界按"外部消费者是否需要"判定：凡出现在 `uniorm/uniorm.hpp` 或
-`uniorm/mapping/registry.hpp`（生成代码的唯一依赖）传递闭包内的头文件留在 `include/`，
+生成头所依赖的 `uniorm/orm.hpp` / `uniorm/mapping/registry.hpp` /
+`uniorm/decimal.hpp` 传递闭包内的头文件留在 `include/`，
 其余下沉：核心的私有头与实现贴邻放在 `src/`，backend 的私有头贴邻放在 `backends/<scheme>/`，
 都用引号相对名互相引用。于是 `src/` 不在 `uniorm` 目标的任何 include 路径上（同目录
 引用无需路径），只有两个白盒单测目标显式带 `-I`：核心侧的 `uniorm_unit_tests`
@@ -381,7 +381,7 @@ ODBC adapter 内翻成 `SQL_C_*`；`uniorm-gen` 的默认映射决定生成实�
 | SQL 类型 | C++ 类型 |
 |---|---|
 | BIT | `bool` |
-| TINYINT / SMALLINT / INTEGER / BIGINT | `int16_t` / `int32_t` / `int64_t`（TINYINT 也接受 `int8_t`） |
+| TINYINT / SMALLINT / INTEGER / BIGINT | `int16_t` / `int32_t` / `int64_t`（`int8_t` 在 `plain_sql_member` 的名单里，但 `sql_value` 没有这一选项，成员用它编译不过，`uniorm-gen` 也拒作覆写类型） |
 | REAL / FLOAT / DOUBLE | `double`（`float` 不是可绑定成员类型，单精度列一律落 `double`；`uniorm-gen` 对此告警） |
 | DECIMAL / NUMERIC | 见下方"DECIMAL 策略"（实体/投影随字段类型：`std::string` 或 `decimal_t` 均无损；动态行取精确定点字面量，`get<std::string>` 无损、`get<decimal_t>` 解析成值、`get<double>` 按需解析） |
 | CHAR / VARCHAR / LONGVARCHAR | `std::string` |
@@ -1481,14 +1481,16 @@ PQputCopyData(pg, ...);                     // 用户自行驱动原生操作
 
 ### 6.1 形态
 
-独立 CLI，活连接目标数据库。本仓库只提供可执行文件（`UNIORM_BUILD_TOOLS=ON`
-时构建，因它要的 schema 自省目前只有 ODBC backend 提供，故依赖
-`UNIORM_BACKEND_ODBC`；顶层构建时也按 §3.1 装进 `<bindir>`）；仓库内没有任何
-`add_custom_command`，"构建期生成"要调用方自己在 CMake 里接。
+独立 CLI，schema 来源两种：活连接目标数据库，或一份建表脚本（§6.2）。本仓库只
+提供可执行文件（`UNIORM_BUILD_TOOLS=ON` 时构建，因活连接那条路要的 schema 自省
+目前只有 ODBC backend 提供，故依赖 `UNIORM_BACKEND_ODBC`；顶层构建时也按 §3.1
+装进 `<bindir>`）；仓库内没有任何 `add_custom_command`，"构建期生成"要调用方自己
+在 CMake 里接。
 
 ```
 uniorm-gen (--dsn=<dsn> [--user=<u> --password=<p>]
-           | --connection-string=<str>)
+           | --connection-string=<str>
+           | --input-ddl=<file>)
            --out=<dir>
            [--config=<file>]          # TOML，见 §6.4
            [--tables=a,b,c]           # 逗号分隔的表名过滤
@@ -1496,9 +1498,10 @@ uniorm-gen (--dsn=<dsn> [--user=<u> --password=<p>]
            [--name=<n>]               # 产物/命名空间名，缺省取 backend 报的库名
 ```
 
-`--dsn` 与 `--connection-string` 必须二选一，`--out` 必填，否则打印 usage 并
-返回失败。`--catalog` / `--schema` 的值里有 `%` 时照常读取，但先打一条警告：
-目录按名字问，那个字符不参与匹配（§5.2）。
+三种输入必须选且只选一个，`--out` 必填，否则打印 usage 并返回失败。`--catalog`
+/ `--schema` 的值里有 `%` 时照常读取，但先打一条警告：目录按名字问，那个字符不
+参与匹配（§5.2）。`--input-ddl` 一路不开连接：服务端有没有、脚本与它差多少，这一
+趟都不问（§6.2）。
 
 ### 6.2 Schema 提取（走 `orm::schema()`）
 
@@ -1508,6 +1511,11 @@ CLI 开一个公开 `uniorm::orm`，向它取 `schema()`（§4.7；它转给底�
 `--dsn` 与 `--connection-string` 于是汇成同一条路：前者拼成
 `DSN=<dsn>[;UID=…][;PWD=…]` 交给同一个连接串；句柄层里那条 DSN 专用的
 `SQLConnect` 通路失去最后一个调用者，随之删掉。
+
+`--input-ddl=<file>` 走另一头：脚本先解析成一份内存目录，再由它答上面这六个读。
+读侧的接口只有这六个（`database_name` / `tables` / `table_columns` /
+`primary_key` / `foreign_keys` / `indexes`），`read_schema`、`check_config`、
+`generate_header` 一段不改，活连接与脚本两份输入自那之后是同一条路。
 
 分工：backend 只回答"目录里有什么"，留下什么、怎么摆由 `uniorm-gen` 决定。
 
@@ -1533,6 +1541,31 @@ CLI 开一个公开 `uniorm::orm`，向它取 `schema()`（§4.7；它转给底�
 每表四次读取。外键与索引都只以注释形式进生成物
 （`// FK: col -> pk(col)`、`// index: name (cols)`），无开关。
 
+#### 脚本输入（`--input-ddl`）
+
+`tools/uniorm-gen/ddl_meta.{hpp,cpp}` 把一份建表脚本读成上面那六个问题的答案。
+收 MySQL 与 PostgreSQL 两家的写法：`CREATE TABLE` 的列定义与表级
+`PRIMARY KEY` / `UNIQUE` / `KEY` / `INDEX` / `CONSTRAINT … FOREIGN KEY`、
+`CREATE [UNIQUE] INDEX`、`ALTER TABLE` 的加列与加键。认得出但不改变映射的东西先
+计数再跳过，末尾并成一条（`ignored 2 x ALTER TABLE t DROP action`；表级 `CHECK`
+和 `FULLTEXT` / `SPATIAL` 同属这一类，键里带上表名）；读不下去的是 `ddl_error`
+（继承 `uniorm_error`），带 `ddl: line N:` 指出断在哪一行。
+
+- **名字限定**：一段是表名，两段是 `schema.table`，三段是
+  `catalog.schema.table`。脚本说不出一个未限定的表住在哪个 catalog/schema，
+  于是它答任何 `--catalog` / `--schema` 限定——否则"一加限定就筛空"。
+  `USE x` 答 `database_name()`，没有它就答空串，单元名照旧由 `--name` 给。
+- **类型拼法**：`type_name` 就是脚本自己写的那个词（大写归一），`[types]`
+  覆写的键和生成物注释因此对得上用户写的；限定类型只取最后一段
+  （`public.citext` → `CITEXT`），与活目录报的一致。
+- **认不出的类型**照活读的老路走：`sql_type::other` 加生成器那句
+  "unmapped SQL type '…', using std::string"。数组在解析期就拒：v1 的绑定集
+  不携带数组（§4.3）。
+- 没名字的 `KEY` / `INDEX` 由列名补一个（`index_a`、`unique_code`），生成物
+  注释里的每个索引因此都有名字。
+- 问一个脚本里没有的表，六个读都答空清单、不报错——与活目录对不存在的表一样
+  沉默。
+
 ### 6.3 生成物
 
 每库一个头文件 `<out>/<name>_schema.hpp`，整体包在 `namespace <name>`（经
@@ -1555,7 +1588,9 @@ CLI 开一个公开 `uniorm::orm`，向它取 `schema()`（§4.7；它转给底�
 标识符出口应用（§4.8）。一份产物因此可以服务存储拼法不同的两家。
 
 生成物只输出到指定目录，视为不可手改。头文件仅依赖
-`<uniorm/mapping/registry.hpp>` 与标准库。
+`<uniorm/orm.hpp>`、`<uniorm/mapping/registry.hpp>`、`<uniorm/decimal.hpp>`
+与标准库，单独 include 就能编译——`orm.hpp` 才给出 `uniorm::orm` 的完整类型，
+`registry.hpp` 只前向声明它。
 
 ### 6.4 配置文件（TOML）
 
@@ -1578,8 +1613,8 @@ converter = "Status"                 # 域类型：成员生成为 Status，绑�
 原样生成为成员类型，生成物同时以 `static_assert(uniorm::has_converter<...>)` 要求
 特化存在，因此使用它的 TU 必须在包含生成头之前声明 `uniorm::converter<Status>`
 （§4.4）。converter 只有逐列入口，没有全局覆写。库自带的类型不必如此——`cpp_type =
-"uniorm::decimal_t"` 用不着消费者额外 include：生成物唯一依赖的
-`<uniorm/mapping/registry.hpp>` 传递带着 `<uniorm/decimal.hpp>`。
+"uniorm::decimal_t"` 用不着消费者额外 include：生成物自己带上
+`<uniorm/decimal.hpp>`。
 
 键的匹配忽略大小写：`[types]` 两侧折成大写，`[tables.NAME]` 与
 `[tables.NAME.columns.COLUMN]` 两侧折成小写，于是同一份配置对拼法不同的目录
@@ -1655,10 +1690,15 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
   之前抛——拼法不同的那对按提示写 `class` 就能过，只差大小写的那对则逐字钉住它报出的
   另一条出路）、`test_gen_reader`（一份假目录钉住主键名与列清单两次读取的三种形状：
   命中、只差大小写、根本没有，警告文本带出该表的实际拼法；另钉 `--catalog` /
-  `--schema` 带 `%` 时的告警）；后三个只在
+  `--schema` 带 `%` 时的告警）、`test_gen_ddl`（一份脚本喂那六个读：两家的类型
+  与参数、引号名与三种注释、默认值的各种形状、可空与键、外键（含内联
+  `REFERENCES` 与指向后建那张表的延迟）、索引（含无名键补出的名字）、
+  `ALTER TABLE` 的加列/加键和被计数的动作、该拒的脚本（数组、`LIKE`、不闭合的
+  引号）逐条钉住，末了把脚本目录接进 `read_schema` + `generate_header` 走一遍
+  到底）；后四个只在
   `UNIORM_BUILD_TOOLS` 打开时编入（同时定义 `UNIORM_TEST_GEN`），要链的是
-  `uniorm_gen_core`——生成器改走公共自省接口之后它自己不再点名驱动，这三个用例
-  于是回到不链 ODBC 的目标里；
+  `uniorm_gen_core`——生成器改走公共自省接口之后它自己不再点名驱动，这四个用例
+  于是回到不链 ODBC 的目标里；DDL 那份读的是脚本，本就点不到驱动名；
   `uniorm_odbc_unit_tests` 链接 ODBC——`test_odbc_handles`（句柄 RAII）、
   `test_odbc_catalog`（目录行再筛的那条判据是纯函数：只差大小写算同名，`user_orders`
   对 `userxorders` 不算——后者正是 pattern 里 `_` 的通配，两侧任一为空则留）、
@@ -1702,25 +1742,41 @@ commit/rollback/析构回滚、批量插入（含空 optional 写 NULL、1500 �
   数组绑定同构，不存在多行 VALUES 或占位符上限分批）、`SQLBindCol` + `SQLFetch`
   全表扫描（对应实体直绑与动态行路径）、单行 `LIMIT 1`（对应 `one()`），
   用于衡量 uniorm 抽象层的额外开销
-- **`uniorm-gen` 端到端**（已实现，`gen_e2e_tests`，连不上库时 SKIP）：
+- **`uniorm-gen` 端到端**（已实现，`gen_e2e_tests`，连不上库时 SKIP，两条不开
+  连接的腿在它前头各自跑完）：
   夹具表（含 PK/FK/索引/DECIMAL，时间列是三家同名的可空
   `TIMESTAMP`，见 §8）→ 工具带检入的覆写文件
   （`golden/gen_it.toml`，其 `converter` 键让 `note` 生成为域类型，`cpp_type` 键把
   `amount` 生成为 `uniorm::decimal_t`）生成 →
-  与 golden 比对，但只比代码：两边每行 `//` 之后的注释先截掉再比，不分哪一格。
+  与 golden 比对，但只比代码：每行 `//` 之后的注释先截掉，整行是注释的那行
+  整行删掉，不分哪一格。
   注释记的是连接器怎么拼 `BIGINT`、服务端怎么存默认值，没有消费者会编译它，而它
   按"连接器 × 服务端"每格都不同——留着它就等于把 golden 钉死在一格上，升级一支
-  连接器能同时红三条腿。截注释不动行结构（成员行是固定两个空格的分隔符），所以
-  两边仍要对齐每一行的起点。另留一组**语义标记**（FK 与二级索引的注释）：这两件
-  事在生成的代码里不留任何痕迹，只有注释能证明抽取到了。主键映射调用、可空列与
-  `decimal_t`/`timestamp` 生成的 C++ 类型都是代码，归代码比对看着。之所以代码
-  这一层要每条腿都跑，是因为服务端答空一处元数据时生成的头文件照样编译、注册、
-  过 `validate(strict)`，MySQL 8.4 上就真发生过主键整列读丢（见 §8）——它在代码
-  比对里就是 `.column` 撞上 golden 的 `.primary_key`。
+  连接器能同时红三条腿。整行删的是两个来源本来就不必一致的元数据：活目录把主键
+  也当一个索报告，脚本没说过这句。截完仍逐字节比代码，成员行是固定两个空格的分
+  隔符，两边要对齐每一行的起点。另留一组**语义标记**（FK 与二级索引的注释）：
+  这两件事在生成的代码里不留任何痕迹，只有注释能证明抽取到了。主键映射调用、可
+  空列与 `decimal_t`/`timestamp` 生成的 C++ 类型都是代码，归代码比对看着。之
+  所以代码这一层要每条腿都跑，是因为服务端答空一处元数据时生成的头文件照样
+  编译、注册、过 `validate(strict)`，MySQL 8.4 上就真发生过主键整列读丢（见
+  §8）——它在代码比对里就是 `.column` 撞上 golden 的 `.primary_key`。
   golden 本身被编译进测试，执行注册 +
   `validate(strict)` + 构建器 `count()` + 实体写入与物化读回（读回同时核对
   `decimal_t` 的值相等与按列 scale 还原出的字面量），覆盖"生成 → 编译 →
   注册 → 校验 → 读写"全链路。
+- **离线同源**（已实现，同在 `gen_e2e_tests`，它自己不开连接）：同一组夹具表
+  以脚本形式检入（`golden/gen_it.sql`，`prepare_schema` 建的那两张、同一个顺
+  序），同一份覆写文件走 `--input-ddl` 再生成一遍，按上一条同一套判据与同一份
+  golden 比——"脚本抽出来的代码等于活目录抽出来的代码"是跑出来的，不是推出来
+  的。
+- **CLI 契约**（已实现，同在 `gen_e2e_tests`，同样不开连接）：真调用那个可执行
+  文件，逐项钉它的对外面——两个来源同时给、一个都不给都是退出 2 并打 usage，缺
+  `--out` 是 2；脚本读不到、`--tables` 指一个脚本里没有的名、列是数组，各是退出
+  1，第三条还钉住报错里的行号（`ddl: line 2:`）；映射没有条目的类型与被跳过的
+  `ALTER … DROP` 是警告加退出 0；失败的那几趟一个头文件都不写。退出码、stderr
+  的形状与"没写东西"只在真跑一次时才存在，进程内的用例看不见它们。这两条离线腿
+  排在 DSN 那道门之前，且那道门认它们：离线腿先失败时返回 1 而不是 77，否则一次
+  真失败会被 ctest 记成跳过、进而记成通过。
 - **安装冒烟**（已实现，`install_smoke`，`cmake -P` 脚本，只在 top-level 且非交叉编译
   时注册，不需要数据库）：`cmake --install` 到 `<build>/install_smoke/prefix` → 核对
   config/targets/头文件/库都已就位，且装出的头文件集合与 `include/uniorm` 逐一相符；
@@ -1946,7 +2002,10 @@ commit/rollback/析构回滚、批量插入（含空 optional 写 NULL、1500 �
    **待做**：OCI backend 的原生数组绑定
 4. 异步包装层（libpq backend 可用原生异步）
 5. 外键导航 / 关联加载
-6. 离线 schema 快照输入（DDL 解析）
+6. ~~离线 schema 快照输入（DDL 解析）~~ **已完成**：`uniorm-gen --input-ddl=
+   <file>` 收一份建表脚本，由它答 `schema_meta` 那六个读，之后与活连接同一条
+   路（§6.1/§6.2）。解析器认的是两家的 SQL 原文，`mysqldump` / `pg_dump`
+   导出的建表段可以直接喂进来
 7. 迁移脚本生成
 8. ~~backend 拆成独立链接目标（如 `uniorm_odbc` / `uniorm_pq`）：多 backend 共存时
    让"只用一家"的部署不必在运行时载入其余驱动（见 §5.1）~~ **已完成**：每家

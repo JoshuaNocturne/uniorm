@@ -379,15 +379,26 @@ them.
 ```sh
 uniorm-gen --dsn=mydb --user=u --password=p \
            --config=uniorm.toml --out=build/gen [--tables=a,b]
+uniorm-gen --input-ddl=schema.sql --out=build/gen [--name=app]
 ```
 
 `--dsn` and `--connection-string` are two spellings of one thing — the first
 assembles `DSN=<dsn>[;UID=…][;PWD=…]` and hands it to the same `uniorm::orm`
-constructor you would use yourself — and exactly one of them is required, as is
-`--out`. `--catalog` and `--schema` narrow where tables are looked for, by name:
-they are not ODBC patterns, so a `%` there matches nothing and the run says so
+constructor you would use yourself — and exactly one of `--dsn`,
+`--connection-string`, `--input-ddl` is required, as is `--out`. `--catalog`
+and `--schema` narrow where tables are looked for, by name: they are not ODBC
+patterns, so a `%` there matches nothing and the run says so
 (empty leaves that part to the connection). `--name` renames the output unit,
 `--tables` takes a comma-separated list.
+
+`--input-ddl` reads a create-table script instead of a live server, so that run
+opens no connection. It takes the MySQL and
+PostgreSQL spellings of `CREATE TABLE` (columns and table-level keys),
+`CREATE INDEX` and the adding forms of `ALTER TABLE`; anything it recognizes
+that carries no mapping (`DROP`, `MODIFY`, storage clauses) is counted into one
+warning rather than failing the run. A script never says which catalog or
+schema an unqualified table lives in, so those tables answer any `--catalog` /
+`--schema` you pass. `USE app;` supplies the default unit name.
 
 Writes `build/gen/<name>_schema.hpp`: one struct per table (nullable columns
 become `std::optional`, DECIMAL/NUMERIC arrive as a lossless `std::string`),

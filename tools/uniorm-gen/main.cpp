@@ -6,6 +6,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <variant>
 #include <vector>
 
 #include "config.hpp"
@@ -167,14 +168,12 @@ int main(int argc, char** argv) {
     std::cerr << "--out=<dir> is required\n" << k_usage;
     return 2;
   }
+  // --dsn names the pieces and leaves spelling them to the backend;
+  // --connection-string is already the caller's own words.
+  std::variant<std::string, uniorm::connection_spec> endpoint =
+    connection_string;
   if (!dsn.empty()) {
-    connection_string = "DSN=" + dsn;
-    if (!user.empty()) {
-      connection_string += ";UID=" + user;
-    }
-    if (!password.empty()) {
-      connection_string += ";PWD=" + password;
-    }
+    endpoint = uniorm::connection_spec{ "odbc", dsn, user, password };
   }
 
   try {
@@ -198,8 +197,12 @@ int main(int argc, char** argv) {
       return generate_from(md, cfg, opts, name, out_dir);
     }
 
-    uniorm::orm db(connection_string);
-    return generate_from(db.schema(), cfg, opts, name, out_dir);
+    return std::visit(
+      [&](auto const& what) {
+        uniorm::orm db(what);
+        return generate_from(db.schema(), cfg, opts, name, out_dir);
+      },
+      endpoint);
   } catch (uniorm::uniorm_error const& e) {
     std::cerr << "uniorm-gen: " << e.what() << "\n";
     return 1;

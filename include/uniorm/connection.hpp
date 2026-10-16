@@ -10,6 +10,7 @@
 #include <vector>
 
 #include <uniorm/backend/backend.hpp>
+#include <uniorm/connection_spec.hpp>
 #include <uniorm/detail/pfr.hpp>
 #include <uniorm/dialect.hpp>
 #include <uniorm/export.hpp>
@@ -26,13 +27,16 @@ namespace detail {
 struct statement_cache;
 }  // namespace detail
 
-// Low-level connection: owns a backend connection (chosen by the
-// connection-string scheme at construction) and offers statement
-// execution, statement caching, and transaction control.
+// Low-level connection: owns a backend connection (the backend is the
+// connection string's scheme, or a spec's, picked at construction) and
+// offers statement execution, statement caching, and transaction control.
 // orm is the high-level entry point; connection provides the primitives.
 class UNIORM_API connection {
 public:
   explicit connection(std::string_view connection_string);
+  // The pieces reach the backend as they were given: only the scheme is
+  // read above this line, and a backend that wants no part of them says so.
+  explicit connection(connection_spec const& spec);
   ~connection();
 
   connection(connection&&) noexcept;

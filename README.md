@@ -68,7 +68,10 @@ See [docs/design.md](docs/design.md) for the full design.
 - **Pluggable backends** — the core API sits on a driver-neutral backend
   interface; the connection-string scheme selects the backend
   (`odbc://...`, or a bare ODBC connection string for backward
-  compatibility), and ODBC is the only backend built so far. Catalog reads are
+  compatibility), and ODBC is the only backend built so far. A
+  `connection_spec` — scheme, target, user, password — is the alternative
+  spelling, handed to that backend unfilled so it writes its own dialect's
+  words. Catalog reads are
   part of that interface (`schema()`), so a backend without a catalog answers
   `capability_not_supported` rather than failing inside a read, and every name
   there is asked for as a name rather than a pattern, so a read returns the rows
@@ -152,6 +155,12 @@ uniorm::orm db("DSN=mydb;UID=user;PWD=secret");
 // pool_options. Pass a connection_pool of your own to choose the size,
 // timeouts and maintainer instead.
 
+// The same database, without writing one backend's string:
+uniorm::orm pieces(uniorm::connection_spec{
+    "odbc",                       // the only field uniorm itself reads
+    "mydb",                       // where: a DSN name, a host:port/db, ...
+    "user", "secret"});           // empty = no credential supplied
+
 auto rs = db.execute("SELECT id, name FROM users WHERE age > ?",
                      uniorm::params{18});
 while (rs.next()) {
@@ -163,6 +172,15 @@ std::size_t n = db.execute_update(
     "UPDATE users SET name = ? WHERE id = ?",
     uniorm::params{"alice", std::int64_t{1}});
 ```
+
+A `connection_spec` hands the four pieces to the backend that owns the scheme,
+because only that backend knows how they must be spelled: the ODBC one writes
+`DSN=` / `UID=` / `PWD=` and braces a value that needs it. `orm::connect(...)`
+takes the same shape. It claims no completeness — a driver keyword, a port, a
+database name of its own, a TLS policy, a login timeout all belong to the string
+form, which stays the primitive every backend implements. One consequence at the
+pool: a spec and a string that reach the same server keep separate pools, since
+deciding they name one database would take a driver's vocabulary.
 
 ### Aggregate projection (zero registration)
 
@@ -341,7 +359,10 @@ db.execute_update("DELETE FROM logs", uniorm::params{});
 db.commit();                      // the caller commits, batch writes included
 
 uniorm::pool_options opts;
-opts.connection_string = "DSN=mydb;UID=user;PWD=secret";
+opts.target = "DSN=mydb;UID=user;PWD=secret";
+                                  // or the four pieces:
+                                  // opts.target = uniorm::connection_spec{
+                                  //     "odbc", "mydb", "user", "secret" };
 opts.size = 8;                    // connections the pool may hold
 opts.acquire_timeout = std::chrono::seconds{ 5 };
 opts.heartbeat_interval = std::chrono::seconds{ 30 };  // 0 = no maintainer
@@ -382,9 +403,10 @@ uniorm-gen --dsn=mydb --user=u --password=p \
 uniorm-gen --input-ddl=schema.sql --out=build/gen [--name=app]
 ```
 
-`--dsn` and `--connection-string` are two spellings of one thing — the first
-assembles `DSN=<dsn>[;UID=…][;PWD=…]` and hands it to the same `uniorm::orm`
-constructor you would use yourself — and exactly one of `--dsn`,
+`--dsn` and `--connection-string` are two spellings of one connection — the
+first hands `{"odbc", <dsn>, <user>, <password>}` to the same
+`uniorm::orm` constructor you would use yourself, leaving the ODBC backend to
+spell and escape it — and exactly one of `--dsn`,
 `--connection-string`, `--input-ddl` is required, as is `--out`. `--catalog`
 and `--schema` narrow where tables are looked for, by name: they are not ODBC
 patterns, so a `%` there matches nothing and the run says so
@@ -508,7 +530,7 @@ Connector/ODBC with server-side prepares, and on PostgreSQL through psqlODBC.
 One golden header serves all three families, because the fixture tables are
 spelled the way all of them parse.
 
-v2 is underway, and three pieces have landed on top of v1:
+v2 is underway, and four pieces have landed on top of v1:
 
 - **The backend abstraction** — a driver-neutral interface plus a scheme
   registry, with ODBC moved behind it and linked `PRIVATE`. A build with
@@ -526,6 +548,12 @@ v2 is underway, and three pieces have landed on top of v1:
   changes nothing for anyone who never sets it; the two folds let one generated
   header serve servers that store the same table under different case. A miss
   names the spelling the catalog has, so the policy can be read off the error.
+- **A connection named without one driver's words** — `connection_spec` carries
+  scheme, target, user and password to the backend that owns that scheme, which
+  is the only place that knows how to spell them. The string stays the primitive
+  every backend implements; a backend that wants none of the four pieces says so
+  with `capability_not_supported`, the same shape as every other optional
+  capability here.
 
 ### What CI guards
 

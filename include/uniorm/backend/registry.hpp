@@ -46,7 +46,16 @@ public:
   std::unique_ptr<connection_iface> create(
     std::string_view connection_string, std::string* tail) const;
 
+  // Same lookup and same loader fall-back, for a caller that already knows
+  // the scheme: a connection_spec names it without a string to split.
+  std::unique_ptr<connection_iface> create_for_scheme(
+    std::string_view scheme) const;
+
 private:
+  // The registered factory, or unknown_scheme naming what is registered and
+  // the loader's reason.
+  factory resolve(std::string_view scheme, std::string& load_note) const;
+
   mutable std::mutex mu_;
   std::unordered_map<std::string, factory> backends_;
 };

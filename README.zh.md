@@ -52,7 +52,9 @@ ODBC 驱动的数据库，而不依赖特定厂商的 C 客户端。实体映射
   struct + 注册函数（TOML 覆写类型/类名/跳过表）
 - **可插拔 backend**：核心 API 构建在驱动中立的 backend 接口之上，连接串
   scheme 选择后端（`odbc://...`；裸 ODBC 连接串保持向后兼容），而目前落地实现
-  的后端只有 ODBC 一个。目录读取也是这份接口的一部分（`schema()`），没有目录
+  的后端只有 ODBC 一个。另一种写法是 `connection_spec`：scheme、target、
+  user、password 四件，交出去时不拼词，怎么拼由那一家 backend 说了算。
+  目录读取也是这份接口的一部分（`schema()`），没有目录
   的 backend 于是答 `capability_not_supported`，而不是在某次读取内部失败；这里的每
   个名字都按名字问、不按 pattern 问，一次读取因此只带回服务端在该名下报出的行。能力
   清单里只有核心真会分岔的两条：`columnar_batch` 选批量写的那条通道，
@@ -126,6 +128,12 @@ uniorm::orm db("DSN=mydb;UID=user;PWD=secret");
 // 用的是默认 pool_options。想自选容量、超时与维护线程，就传入你自己的
 // connection_pool。
 
+// 同一个库，不必写某一家的串：
+uniorm::orm pieces(uniorm::connection_spec{
+    "odbc",                       // uniorm 自己只读这一个字段
+    "mydb",                       // 去处：DSN 名、host:port/db……
+    "user", "secret"});           // 空 = 没有提供凭据
+
 auto rs = db.execute("SELECT id, name FROM users WHERE age > ?",
                      uniorm::params{18});
 while (rs.next()) {
@@ -137,6 +145,13 @@ std::size_t n = db.execute_update(
     "UPDATE users SET name = ? WHERE id = ?",
     uniorm::params{"alice", std::int64_t{1}});
 ```
+
+`connection_spec` 把四件套交给 scheme 所属的那家 backend，因为只有它知道这些
+该怎么拼：ODBC 那家写成 `DSN=` / `UID=` / `PWD=`，该包花括号的值就包上。
+`orm::connect(...)` 收同一个形状。它并不声称够用——驱动关键字、端口、自己的
+库名、TLS 策略、登录超时这些都仍归串管，而串是每个 backend 都要实现的原语。
+池上因此有一条后果：同一个库，一份用 spec 建、一份用串建，是两个池——判定它们
+指的是同一个库要的是 driver 的词汇，core 没有。
 
 ### 聚合投影（零注册）
 
@@ -298,7 +313,7 @@ db.execute_update("DELETE FROM logs", uniorm::params{});
 db.commit();                      // commit()，批量写也不例外
 
 uniorm::pool_options opts;
-opts.connection_string = "DSN=mydb;UID=user;PWD=secret";
+opts.target = "DSN=mydb;UID=user;PWD=secret";
 opts.size = 8;                    // 池最多持有多少条连接
 opts.acquire_timeout = std::chrono::seconds{ 5 };
 opts.heartbeat_interval = std::chrono::seconds{ 30 };  // 0 = 不起维护线程
@@ -335,9 +350,10 @@ uniorm-gen --dsn=mydb --user=u --password=p \
 uniorm-gen --input-ddl=schema.sql --out=build/gen [--name=app]
 ```
 
-`--dsn` 与 `--connection-string` 是同一件事的两种写法——前者拼成
-`DSN=<dsn>[;UID=…][;PWD=…]`，交给消费者自己也会用的那个 `uniorm::orm`
-构造器——`--dsn` / `--connection-string` / `--input-ddl` 三者只能选一个，
+`--dsn` 与 `--connection-string` 是同一个连接的两种写法——前者把
+`{"odbc", <dsn>, <user>, <password>}` 交给消费者自己也会用的那个
+`uniorm::orm` 构造器，怎么拼、要不要转义归 ODBC backend——`--dsn` /
+`--connection-string` / `--input-ddl` 三者只能选一个，
 `--out` 则必须给。`--catalog` 与 `--schema` 收窄去哪
 找表，按名字而不是通配模式：值里的 `%` 不匹配任何东西，运行会先这么说（留空即由
 连接说了算）。`--name` 改输出单元名，`--tables` 取逗号分隔的表名列表。
@@ -441,7 +457,7 @@ v1 已完成：三条访问路径（裸 SQL / 聚合投影 / 实体映射）、�
 测试在 MariaDB 上、经 Connector/ODBC 走服务端预处理在真 MySQL 上、经 psqlODBC 在
 PostgreSQL 上全绿。夹具表改成三家都认的写法，于是一份 golden 便供三家。
 
-v2 进行中，v1 之上另外落地三块：
+v2 进行中，v1 之上另外落地四块：
 
 - **backend 抽象**：驱动中立的接口 + scheme 注册表，ODBC 迁到接口之后、改为
   `PRIVATE` 链接。`UNIORM_BACKEND_ODBC=OFF` 的构建编得出核心库、跑得了它自己的
@@ -454,6 +470,10 @@ v2 进行中，v1 之上另外落地三块：
   SQL 的那一处生效，`validate()` 按同一个策略去问目录。默认 `keep`，不声明的人行为
   一字不变；另两折让一份生成物供得起把同一张表存成两种拼法的两家。落空的消息带出目录
   里的拼法，策略因此可以从错误里读出来。
+- **不必写某一家的串也能连**：`connection_spec` 把 scheme、target、user、
+  password 交给拥有这个 scheme 的 backend——只有它知道这些该怎么拼。串仍是
+  每家都要实现的原语；不接四件套的 backend 就答 `capability_not_supported`，
+  和这里其余可选能力一个形状。
 
 ### CI 守什么
 

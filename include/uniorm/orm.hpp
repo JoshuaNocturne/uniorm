@@ -15,6 +15,7 @@
 
 #include <uniorm/backend/backend.hpp>
 #include <uniorm/connection.hpp>
+#include <uniorm/connection_spec.hpp>
 #include <uniorm/detail/entity_binding.hpp>
 #include <uniorm/detail/projection.hpp>
 #include <uniorm/mapping/registry.hpp>
@@ -41,6 +42,10 @@ class UNIORM_API orm {
 public:
   orm() = default;
   explicit orm(std::string_view connection_string);
+  // The four pieces of a connection, leased from the pool that the backend
+  // owning this spec's scheme reaches. A backend that spells its address
+  // some other way says so here and the core reports that.
+  explicit orm(connection_spec const& spec);
   // Acquire connection from user-managed pool
   explicit orm(connection_pool& pool);
   ~orm();
@@ -53,6 +58,7 @@ public:
 
   // --- Connection lifecycle ---
   void connect(std::string_view connection_string);
+  void connect(connection_spec const& spec);
   void disconnect();
 
   // --- Block fetching configuration ---

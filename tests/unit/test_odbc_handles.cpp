@@ -3,6 +3,7 @@
 
 #include <uniorm/backend/error.hpp>
 
+#include "odbc/backend.hpp"
 #include "odbc/connection.hpp"
 #include "odbc/environment.hpp"
 #include "odbc/error.hpp"
@@ -27,6 +28,25 @@ void test_odbc_handles() {
 
   odbc::connection moved_conn = std::move(conn);
   CHECK(!moved_conn.is_open());
+}
+
+void test_odbc_dsn_string() {
+  CHECK(odbc::dsn_string("mydb", "", "") == "DSN=mydb");
+  CHECK(odbc::dsn_string("mydb", "who", "secret") ==
+    "DSN=mydb;UID=who;PWD=secret");
+  // An absent credential is left out rather than sent blank.
+  CHECK(odbc::dsn_string("mydb", "", "secret") == "DSN=mydb;PWD=secret");
+
+  // A value carrying a separator, a brace or outer space has to be braced,
+  // and a closing brace inside it doubled, or the driver reads the pieces
+  // back wrong.
+  CHECK(odbc::dsn_string("a;b", "", "") == "DSN={a;b}");
+  CHECK(odbc::dsn_string("a=b", "", "") == "DSN={a=b}");
+  CHECK(odbc::dsn_string("a{b", "", "") == "DSN={a{b}");
+  CHECK(odbc::dsn_string("a}b", "", "") == "DSN={a}}b}");
+  CHECK(odbc::dsn_string(" mydb ", "", "") == "DSN={ mydb }");
+  CHECK(odbc::dsn_string("mydb", "who", "p ss;d") ==
+    "DSN=mydb;UID=who;PWD={p ss;d}");
 }
 
 void test_odbc_error_is_backend_error() {

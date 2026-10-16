@@ -1,6 +1,7 @@
 #include "backend.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cstring>
 #include <unordered_map>
 #include <utility>
@@ -605,6 +606,52 @@ void backend_statement::reset() {
   stmt_.reset();
 }
 
+namespace {
+
+// A value that carries a delimiter, a brace or an outer space is the one
+// case the driver manager's own syntax asks to be braced, and a closing
+// brace inside a braced value doubles.
+bool needs_braces(std::string_view value) {
+  if (value.empty()) {
+    return false;
+  }
+  if (value.find_first_of(";={}") != std::string_view::npos) {
+    return true;
+  }
+  auto outer = [](unsigned char c) { return std::isspace(c) != 0; };
+  return outer(value.front()) || outer(value.back());
+}
+
+std::string quoted(std::string_view value) {
+  if (!needs_braces(value)) {
+    return std::string(value);
+  }
+  std::string out = "{";
+  for (char letter : value) {
+    if (letter == '}') {
+      out += "}}";
+    } else {
+      out += letter;
+    }
+  }
+  out += '}';
+  return out;
+}
+
+}  // namespace
+
+std::string dsn_string(
+  std::string_view target, std::string_view user, std::string_view password) {
+  std::string out = "DSN=" + quoted(target);
+  if (!user.empty()) {
+    out += ";UID=" + quoted(user);
+  }
+  if (!password.empty()) {
+    out += ";PWD=" + quoted(password);
+  }
+  return out;
+}
+
 backend_connection::backend_connection()
   : conn_(shared_environment()), metadata_(conn_) {}
 
@@ -620,6 +667,12 @@ void backend_connection::open(std::string_view connection_string) {
       std::string_view::npos) {
     array_rowcount_totals_ = false;
   }
+}
+
+// Spelled out here, then handed to the one route every connection takes:
+// what follows an open belongs to the driver, not to how it was named.
+void backend_connection::open(connection_spec const& spec) {
+  open(dsn_string(spec.target, spec.user, spec.password));
 }
 
 void backend_connection::close() {

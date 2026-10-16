@@ -16,15 +16,21 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <variant>
 
 #include <uniorm/connection.hpp>
+#include <uniorm/connection_spec.hpp>
 #include <uniorm/error.hpp>
 #include <uniorm/export.hpp>
 
 namespace uniorm {
 
 struct pool_options {
-  std::string connection_string;
+  // What this pool opens, one of two shapes: the caller's own connection
+  // string, or the pieces a backend is left to spell. A pool made from a
+  // spec never shares its key with one made from a string, because deciding
+  // they name the same database would take a driver's vocabulary.
+  std::variant<std::string, connection_spec> target = std::string();
   std::size_t size = 8;
   std::chrono::milliseconds acquire_timeout{ 5000 };
   // 0 disables the background maintainer; acquire() still drops connections
@@ -106,20 +112,27 @@ private:
     impl_;  // scheduler holds weak refs
 };
 
-// Global registry of connection pools, keyed by DSN+UID.
-// orm uses this to automatically pool connections.
+// Global registry of connection pools, keyed by where they connect and who
+// they connect as. orm uses this to automatically pool connections.
 class UNIORM_API connection_pool_registry {
 public:
   static connection_pool_registry& instance();
 
   pooled_connection acquire(std::string const& connection_string);
+  pooled_connection acquire(connection_spec const& spec);
 
   void configure(std::string const& connection_string, pool_options opts);
+  void configure(connection_spec const& spec, pool_options opts);
 
 private:
   connection_pool_registry() = default;
 
   static std::string make_key(std::string const& connection_string);
+  static std::string make_key(connection_spec const& spec);
+
+  // The shared half of the two acquires: the pool for this key, made from
+  // opts if there is none yet.
+  pooled_connection acquire_keyed(std::string const& key, pool_options opts);
 
   std::mutex mutex_;
   std::map<std::string, std::unique_ptr<connection_pool>> pools_;

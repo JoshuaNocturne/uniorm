@@ -3,6 +3,8 @@
 // Convenience header: includes the full uniorm public API.
 // Users can include this single header instead of picking individual ones.
 
+#include <uniorm/connection.hpp>
+#include <uniorm/connection_spec.hpp>
 #include <uniorm/converter.hpp>
 #include <uniorm/decimal.hpp>
 #include <uniorm/dialect.hpp>

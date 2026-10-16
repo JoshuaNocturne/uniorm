@@ -38,6 +38,11 @@ orm::orm(std::string_view connection_string)
   adopt_connection(native_connection(), auto_commit_, identifiers_);
 }
 
+orm::orm(connection_spec const& spec)
+  : pooled_conn_(connection_pool_registry::instance().acquire(spec)) {
+  adopt_connection(native_connection(), auto_commit_, identifiers_);
+}
+
 orm::orm(connection_pool& pool) : pooled_conn_(pool.acquire()) {
   adopt_connection(native_connection(), auto_commit_, identifiers_);
 }
@@ -52,6 +57,12 @@ void orm::connect(std::string_view connection_string) {
   clear_identifier_resolution();
   pooled_conn_ =
     connection_pool_registry::instance().acquire(std::string(connection_string));
+  adopt_connection(native_connection(), auto_commit_, identifiers_);
+}
+
+void orm::connect(connection_spec const& spec) {
+  clear_identifier_resolution();
+  pooled_conn_ = connection_pool_registry::instance().acquire(spec);
   adopt_connection(native_connection(), auto_commit_, identifiers_);
 }
 

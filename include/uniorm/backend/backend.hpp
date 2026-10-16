@@ -15,6 +15,7 @@
 #include <string_view>
 #include <vector>
 
+#include <uniorm/connection_spec.hpp>
 #include <uniorm/params.hpp>
 #include <uniorm/schema.hpp>
 #include <uniorm/types.hpp>
@@ -185,6 +186,13 @@ struct connection_iface {
   // (everything after "scheme://", or the whole string for the bare
   // DSN form).
   virtual void open(std::string_view connection_string) = 0;
+  // The four-piece form, handed over unformatted: turning it into this
+  // dialect's own words is what the backend below the interface is for. A
+  // backend that wants no part of it says so here and the core reports that.
+  virtual void open(connection_spec const&) {
+    throw capability_not_supported(
+      "opening by connection pieces is not supported");
+  }
   virtual void close() = 0;
   virtual bool is_open() const noexcept = 0;
 

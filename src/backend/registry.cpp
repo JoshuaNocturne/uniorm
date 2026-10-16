@@ -71,52 +71,72 @@ std::vector<std::string> registry::schemes() const {
   return out;
 }
 
-std::unique_ptr<connection_iface> registry::create(
-  std::string_view connection_string, std::string* tail) const {
-  parsed_scheme parsed = parse_scheme(connection_string);
+registry::factory registry::resolve(
+  std::string_view scheme, std::string& load_note) const {
   factory make;
   {
     std::lock_guard lock(mu_);
-    auto it = backends_.find(parsed.scheme);
+    auto it = backends_.find(std::string(scheme));
     if (it != backends_.end()) {
       make = it->second;
     }
   }
+  if (make) {
+    return make;
+  }
+  // Loading calls back into register_backend on the singleton; a concurrent
+  // miss on the same scheme loses the race with backend_error, and the map
+  // has the entry either way.
+  bool loaded = false;
+  try {
+    loaded = detail::try_load_plugin(scheme, load_note);
+  } catch (backend_error const&) {
+    loaded = true;
+  }
+  if (loaded) {
+    std::lock_guard lock(mu_);
+    auto it = backends_.find(std::string(scheme));
+    if (it != backends_.end()) {
+      return it->second;
+    }
+  }
+  std::string msg =
+    "no backend registered for scheme '" + std::string(scheme) +
+    "' (registered:";
+  for (auto const& s : schemes()) {
+    msg += " " + s;
+  }
+  msg += ")";
+  if (!load_note.empty()) {
+    msg += "; " + load_note;
+  }
+  throw unknown_scheme(msg);
+}
+
+std::unique_ptr<connection_iface> registry::create(
+  std::string_view connection_string, std::string* tail) const {
+  parsed_scheme parsed = parse_scheme(connection_string);
   std::string load_note;
-  if (!make) {
-    // Loading calls back into register_backend on the singleton; a concurrent
-    // miss on the same scheme loses the race with backend_error, and the map
-    // has the entry either way.
-    bool loaded = false;
-    try {
-      loaded = detail::try_load_plugin(parsed.scheme, load_note);
-    } catch (backend_error const&) {
-      loaded = true;
-    }
-    if (loaded) {
-      std::lock_guard lock(mu_);
-      auto it = backends_.find(parsed.scheme);
-      if (it != backends_.end()) {
-        make = it->second;
-      }
-    }
-  }
-  if (!make) {
-    std::string msg =
-      "no backend registered for scheme '" + parsed.scheme +
-      "' (registered:";
-    for (auto const& s : schemes()) {
-      msg += " " + s;
-    }
-    msg += ")";
-    if (!load_note.empty()) {
-      msg += "; " + load_note;
-    }
-    throw unknown_scheme(msg);
-  }
+  factory make = resolve(parsed.scheme, load_note);
   if (tail != nullptr) {
     *tail = std::string(parsed.tail);
   }
+  return make();
+}
+
+std::unique_ptr<connection_iface> registry::create_for_scheme(
+  std::string_view scheme) const {
+  if (scheme.empty()) {
+    throw unknown_scheme(
+      "a connection spec names no scheme, so no backend can be chosen");
+  }
+  // The same spelling the string route ends at: parse_scheme lowercases what
+  // it found, and the map is keyed on that.
+  std::string wanted(scheme);
+  std::transform(wanted.begin(), wanted.end(), wanted.begin(),
+    [](unsigned char c) { return std::tolower(c); });
+  std::string load_note;
+  factory make = resolve(wanted, load_note);
   return make();
 }
 

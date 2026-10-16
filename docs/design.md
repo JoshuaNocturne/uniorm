@@ -100,6 +100,7 @@ uniorm/
 │   ├── schema.hpp               # column_shape / schema_meta：活库表结构
 │   │                            # 的读取契约（见 §5.2）
 │   ├── connection.hpp           # connection：连接前置的 low-level 入口（含语句缓存原语）
+│   ├── connection_spec.hpp      # 四件套：scheme / target / user / password
 │   ├── transaction.hpp
 │   ├── pool.hpp                 # connection_pool / pooled_connection / connection_pool_registry
 │   ├── dialect.hpp              # 方言特性（引用符、标识符拼法、分页）
@@ -549,9 +550,10 @@ class params {
     std::vector<sql_value> const& values() const noexcept;
 };
 
-// 高层连接：按连接串 scheme 选择 backend，move-only
+// 高层连接：backend 由连接串的 scheme 或 spec 的 scheme 选定，move-only
 class connection {
     explicit connection(std::string_view connection_string);
+    explicit connection(connection_spec const& spec);   // 见 §5.2 的四件套
     void close();
     bool is_open() const noexcept;
 
@@ -804,8 +806,10 @@ class mapping_builder {                       // db.map<T>("table") 的返回值
 class orm {                             // 非线程安全，按线程/会话持有
     orm();
     explicit orm(std::string_view connection_string);   // 经 connection_pool_registry 取池
+    explicit orm(connection_spec const& spec);          // 也走注册表（§4.10）
     explicit orm(connection_pool& pool);                // 用户自管池
     void connect(std::string_view connection_string);
+    void connect(connection_spec const& spec);
     void disconnect();
 
     // 同名 getter/setter，默认值见括号
@@ -1169,7 +1173,8 @@ v1 不支持嵌套事务/savepoint。`transaction` 只在自身析构时回滚�
 
 ```cpp
 struct pool_options {
-    std::string connection_string;
+    // 这个池反复打开的就是它：调用方自己的连接串，或交给 backend 去拼的四件套
+    std::variant<std::string, connection_spec> target = std::string();
     std::size_t size = 8;
     std::chrono::milliseconds acquire_timeout{5000};
     std::chrono::milliseconds heartbeat_interval{30000};  // 0 关闭后台维护线程
@@ -1201,20 +1206,27 @@ private:
     connection* operator->() noexcept;
 };
 
-// 全局池注册表：orm 用连接串构造时即从这里借连接（自动池化）
+// 全局池注册表：orm 用连接串或四件套构造时即从这里借连接（自动池化）
 class connection_pool_registry {
 public:
     static connection_pool_registry& instance();
     pooled_connection acquire(std::string const& connection_string);
+    pooled_connection acquire(connection_spec const& spec);
     void configure(std::string const& connection_string, pool_options opts);
+    void configure(connection_spec const& spec, pool_options opts);
 };
 ```
 
-`orm` 的三条连接路径：`orm(connection_string)` / `orm::connect(...)` 走注册表
+`orm` 的连接路径：`orm(connection_string)` / `orm::connect(...)` 走注册表
 （key 为解析出的 `dsn=` + `uid=`（含 `user=`/`username=` 别名），大小写与空白
 归一后取 `dsn=<值>|uid=<值>`；首次见到的那串完整连接字符串成为该池的建连串），
-缺省参数即上面的 `pool_options` 默认值；`orm(connection_pool&)` 用调用方管
-的池；`orm()` + `map()` 只做注册，首次使用时 `ensure_connected()` 若仍未连接
+缺省参数即上面的 `pool_options` 默认值；`orm(connection_spec)` /
+`orm::connect(spec)` 也走注册表，key 取 `spec=<scheme>|target=<值>|user=<值>`，
+password 与字符串路线一样不入 key（同一个地方、同一个用户共用一池）。**两种写法
+即使指向同一个库也不共用 key**：判定 `DSN=mydb` 与
+`{scheme: odbc, target: mydb}` 是不是一处，要的是 driver 的词汇，核心没有。
+`orm(connection_pool&)` 用调用方管的池；`orm()` + `map()` 只做注册，
+首次使用时 `ensure_connected()` 若仍未连接
 就抛。`configure()` 是 `emplace` 语义：**同 key 已存在池时静默无效**，要改
 参数得在建连前调用。
 
@@ -1365,9 +1377,11 @@ struct batch_writer_iface { std::size_t add_column(buffer_type, count, element_s
                             void* data(col); std::size_t element_size(col);
                             std::int64_t* indicators(col); void finish(); };
 
-struct connection_iface { /* open / close / is_open / set_autocommit /
-                            commit / rollback / caps / dbms_name /
-                            create_statement / schema() / native_handle */ };
+struct connection_iface { /* open(connection_string)（必选）/
+                            open(connection_spec)（可选，默认抛）/ close /
+                            is_open / set_autocommit / commit / rollback /
+                            caps / dbms_name / create_statement / schema() /
+                            native_handle */ };
 
 struct column_shape { /* name / type / nullable；table_shape = 它的 vector，
                         find_column(shape, name) 按目录顺序找 */ };
@@ -1383,6 +1397,32 @@ struct schema_meta { /* 住在 public 的 <uniorm/schema.hpp>，命名空间 uni
                       connection_iface::schema() 取得（默认 nullptr = 不提供），
                       门面侧是 orm::schema() */ };
 ```
+
+`open` 有两个形状。必选的那个收连接串里 scheme 之后的尾巴（裸 DSN 串就是整条），
+core 从不读它；可选的那个收 `connection_spec`，声明住在
+`include/uniorm/connection_spec.hpp`——和 `params` / `schema_meta` 一样，它是跨
+边界的 `uniorm` 类型，由 `backend.hpp` 反过来 include：接口点名的类型得住在
+`backend.hpp` 那一层或以下，而 `connection.hpp` 在它之上，写 backend 的人不该
+为了读这四个字段去包整张连接门面。四件是 `scheme` / `target` / `user` /
+`password`，**拼词归 backend**：`scheme` 是 core 唯一读取的字段，它选定
+backend；`target` 的语法属于那一家（一个已注册的 DSN 名、`host[:port]/dbname`、
+一个 service 串），core 既不认得也不校验。ODBC 侧把四件套拼成
+
+    DSN=<target>[;UID=<user>][;PWD=<password>]
+
+空的凭据整个键省掉而不是送空值，值里出现 `;`、`=`、`{`、`}` 或首尾空白时按 ODBC
+规则裹上花括号，括号内的 `}` 写作 `}}`。
+`backend_connection::open(connection_spec)` 拼完仍走 `open(std::string_view)`
+那条唯一入口：开连接之后要做的事（比如认驱动）跟怎么起的头无关。
+
+不提供这条路的 backend 什么都不必写：默认实现抛 `capability_not_supported`，
+和 `exact_tables` 那些可选能力同一个形状。反向不成立——串是原语，四件套是糖：
+DSN-less 的串（`DRIVER=` / `DATABASE=` / `Trusted_Connection`）根本没有对应的
+四个字段可填，`port` / `dbname` / TLS 策略 / 登录超时这类也一律留在串里。
+注册表侧因此只有两条入口：`create()` 解析串取 scheme，`create_for_scheme()`
+直接用 spec 的 scheme（同样先归小写，两条路线落在同一个 key 上；scheme 为空时
+抛 `unknown_scheme`）。多一个虚函数槽本要让 `UNIORM_ABI_VERSION` 进一格
+（§5.1）；这一轮版本留在 `0.4.0`，未进。
 
 列的形状单独成类型：目录读的 `column_row` 还带着服务端自己的类型拼法、宽度和
 默认值文本，这些只有生成器留存；比对用的三项（名字、类型、可空）抽出来之后，
@@ -1429,6 +1469,9 @@ backend，要在自己的 `reset()` 重写里清干净。
 - 无 scheme 的裸串（`DSN=...`）默认 ODBC，保持向后兼容；候选 scheme 须
   匹配 `[a-z][a-z0-9+.-]*`，否则视为裸 ODBC 串（兼容 `SERVER=tcp://host`
   这类怪串）；
+- `connection_spec` 不经过解析：`create_for_scheme()` 直接拿它的 `scheme`（同样
+  先归小写，两条路线落到同一个 scheme 名上），scheme 为空即抛
+  `unknown_scheme`——没有别的线索可选 backend；
 - 注册表为 Meyers 单例 + mutex；`register_backend` 重复注册抛 `backend_error`；
   `create()` 在 scheme 未命中时调 `plugin_loader::try_load_plugin`，仍拿不到
   factory 才抛 `unknown_scheme`，message 里附上已注册 scheme 列表与 loader 的
@@ -1474,7 +1517,10 @@ PQputCopyData(pg, ...);                     // 用户自行驱动原生操作
 1. **libpq**（PostgreSQL）——COPY、LISTEN/NOTIFY、异步 I/O
 2. **Oracle OCI**——数组绑定及 OCI 专有特性
 
-两者均来自既有项目中必须绕开 ODBC 的实际经验。能力清单不为它们的特性集预留标志位：
+两者均来自既有项目中必须绕开 ODBC 的实际经验。四件套（§5.2）正是为它们留的路：
+libpq 把它拼成空格分隔的 conninfo，OCI 连串都没有——用户名与口令是
+`OCISessionBegin` 各自的实参。两家也都仍只需实现 `open(std::string_view)`
+那条原语，四件套按需接。能力清单不为它们的特性集预留标志位：
 一家 backend 落地后，只有核心真需要分岔的地方才进清单（§5.2）。
 
 ## 6. uniorm-gen 代码生成工具
@@ -1508,9 +1554,10 @@ uniorm-gen (--dsn=<dsn> [--user=<u> --password=<p>]
 CLI 开一个公开 `uniorm::orm`，向它取 `schema()`（§4.7；它转给底层连接的
 `connection::schema()`）；backend 不提供自省即抛
 `capability_not_supported`，CLI 原样报错退出（今天的 ODBC backend 一直给）。
-`--dsn` 与 `--connection-string` 于是汇成同一条路：前者拼成
-`DSN=<dsn>[;UID=…][;PWD=…]` 交给同一个连接串；句柄层里那条 DSN 专用的
-`SQLConnect` 通路失去最后一个调用者，随之删掉。
+`--dsn` 与 `--connection-string` 于是汇成同一个连接：前者交四件套
+（`connection_spec{"odbc", <dsn>, <user>, <password>}`），拼词与转义归 ODBC
+backend（§5.2）；句柄层里那条 DSN 专用的 `SQLConnect` 通路失去最后一个调用者，
+随之删掉。
 
 `--input-ddl=<file>` 走另一头：脚本先解析成一份内存目录，再由它答上面这六个读。
 读侧的接口只有这六个（`database_name` / `tables` / `table_columns` /
@@ -1640,8 +1687,10 @@ backend::backend_error : uniorm_error    // backend 层（backend/error.hpp）�
                                          // backend 名固定 "odbc"
 
 backend::capability_not_supported : uniorm_error   // 无路可退的读取遇上做不到
-                                                   // 的 backend：表自省（§5.2）
-backend::unknown_scheme : uniorm_error             // 连接串 scheme 未注册
+                                                   // 的 backend：表自省、四件
+                                                   // 套连接（§5.2）
+backend::unknown_scheme : uniorm_error             // 串的 scheme 前缀没注册，
+                                                   // 或四件套没填 scheme
 
 gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型配置错误
                                                    // （tools/uniorm-gen/config.hpp）
@@ -1681,9 +1730,16 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
   （钉住的是这个行为，不是一个补不上的用例）；假目录还数着自己被列了几趟，通过的校验是 0 趟；
   同一份映射与同一份目录，只换 `identifier_case` 就在成败两侧来回）、`test_backend_registry`
   （scheme 解析边界、注册/重复注册/未注册 scheme；本目标只链核心，`"odbc"`
-  scheme 断言未注册——拆库后这条断言在 ON / OFF 构建里都成立，无需按选项加宏）、`test_pool`
+  scheme 断言未注册——拆库后这条断言在 ON / OFF 构建里都成立，无需按选项加宏；
+  另钉 `create_for_scheme` 归小写与空 scheme，以及只实现字符串 `open` 的 backend
+  被四件套连接时抛 `capability_not_supported`；实现了那一式的则拿回原样的四件
+  ——折小写只发生在查表那一步，`target` 里的 `;` 与空的 `user` 一个字符都不动）、
+  `test_pool`
   （用一个记录调用的假 backend 驱动 `connection_pool::release`：归还时回滚挂起的
-  工作并复位 autocommit，复位抛异常则该连接被淘汰且名额扣回）、
+  工作并复位 autocommit，复位抛异常则该连接被淘汰且名额扣回；四件套的池 key 只到
+  scheme / target / user，换 password 仍是同一池，而同处同人的串写法另开一池；
+  `orm` 也能从串换乘四件套（先交回借到的那条，两边各是一池）；被淘汰后补上的
+  连接仍按四件套配方打开——池留的是配方，不是替它拼好的串）、
   `test_gen_config`（TOML 子集解析正例/错误行号/非法键）、
   `test_gen_output`（命名转换边界 + 生成器快照与覆写/跳表/converter 生成/DECIMAL 列
   以 `cpp_type` 覆写成 `uniorm::decimal_t`/错误路径，含两张表折成同一个类名时在写文件
@@ -1700,11 +1756,13 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
   `uniorm_gen_core`——生成器改走公共自省接口之后它自己不再点名驱动，这四个用例
   于是回到不链 ODBC 的目标里；DDL 那份读的是脚本，本就点不到驱动名；
   `uniorm_odbc_unit_tests` 链接 ODBC——`test_odbc_handles`（句柄 RAII）、
+  `test_odbc_dsn_string`（四件套在这一家的拼法：空凭据整键省掉，带 `;` / `=` /
+  `{` / `}` 或首尾空白的值裹花括号、括号内的 `}` 写作 `}}`）、
   `test_odbc_catalog`（目录行再筛的那条判据是纯函数：只差大小写算同名，`user_orders`
   对 `userxorders` 不算——后者正是 pattern 里 `_` 的通配，两侧任一为空则留）、
   `test_odbc_error_is_backend_error`（`odbc_error` 就是 `backend_error`，
   无需二次翻译）；
-- **集成测试**（已实现，DSN/凭据由 `UNIORM_IT_DSN` / `UNIORM_IT_USER` / `UNIORM_IT_PWD` 指定，凭据以 `UID`/`PWD` 写进连接串；连不上时 ctest SKIP）：execute/params 往返、动态行（含 `connection::execute` 显式块取行大小 0 退回逐行）、DECIMAL 动态路径（`DECIMAL(20,4)` / `(20,0)` / `(38,0)` 取回精确定点字面量与 `column_info::scale`，按需解析成 double、scale-0 解析成 int64，带小数或超 int64 范围的字面量抛 `type_mismatch`，NULL 仍报 `is_null`）、DECIMAL 映射路径（`DECIMAL(20,4)` / `(65,30)` / `(20,0)` 三列配 `decimal_t` 与 `std::optional<decimal_t>` 成员：批量插入与实体读回逐字核对 `to_literal`（含 65,30 列第 30 位为 1 的值——没有任何整型或 double 装得下它）、聚合投影、动态行 `get<decimal_t>`、以 `decimal_t` 为右值的 `where(gt(&T::amount, ...))` 落到同一字面量）、聚合投影（含长字符串与 timestamp）、注册实体读手写 SQL（列序打乱仍按列名配对，缺列报 `column_not_found`）、converter 往返（批量插入、实体物化含 NULL、
+- **集成测试**（已实现，DSN/凭据由 `UNIORM_IT_DSN` / `UNIORM_IT_USER` / `UNIORM_IT_PWD` 指定，凭据以 `UID`/`PWD` 写进连接串，同一份凭据也按四件套连一次——两条路线连到同一处才算对上，而且四件套那一侧不止跑一条语句：目录里认得出这张夹具表、`orm` 能从串换乘过来、调用方自己拿四件套建的池也借得出连接，一个不存在的 target 则由驱动直接拒（`SQLDriverConnect` 不带提示，CI 上不会等输入）；连不上时 ctest SKIP）：execute/params 往返、动态行（含 `connection::execute` 显式块取行大小 0 退回逐行）、DECIMAL 动态路径（`DECIMAL(20,4)` / `(20,0)` / `(38,0)` 取回精确定点字面量与 `column_info::scale`，按需解析成 double、scale-0 解析成 int64，带小数或超 int64 范围的字面量抛 `type_mismatch`，NULL 仍报 `is_null`）、DECIMAL 映射路径（`DECIMAL(20,4)` / `(65,30)` / `(20,0)` 三列配 `decimal_t` 与 `std::optional<decimal_t>` 成员：批量插入与实体读回逐字核对 `to_literal`（含 65,30 列第 30 位为 1 的值——没有任何整型或 double 装得下它）、聚合投影、动态行 `get<decimal_t>`、以 `decimal_t` 为右值的 `where(gt(&T::amount, ...))` 落到同一字面量）、聚合投影（含长字符串与 timestamp）、注册实体读手写 SQL（列序打乱仍按列名配对，缺列报 `column_not_found`）、converter 往返（批量插入、实体物化含 NULL、
 `in` 谓词、投影、构建器 `set`/批量 update、动态行 `get<T>`）、orm validate（含 strict
 的列缺失/可空/类型族三条失败路径）、查询构建器全谓词与分页（末了拿 `build_select()`
 的文本比对这条连接自己那家方言的引号；再把策略声明成 `upper` 重发一次——表名跟着升
@@ -1743,7 +1801,8 @@ commit/rollback/析构回滚、批量插入（含空 optional 写 NULL、1500 �
   全表扫描（对应实体直绑与动态行路径）、单行 `LIMIT 1`（对应 `one()`），
   用于衡量 uniorm 抽象层的额外开销
 - **`uniorm-gen` 端到端**（已实现，`gen_e2e_tests`，连不上库时 SKIP，两条不开
-  连接的腿在它前头各自跑完）：
+  连接的腿在它前头各自跑完；连着库的那条按两种形状各跑一遍——调用方写好的串，
+  与交出去不拼词的四件套，同一份 golden 判两次）：
   夹具表（含 PK/FK/索引/DECIMAL，时间列是三家同名的可空
   `TIMESTAMP`，见 §8）→ 工具带检入的覆写文件
   （`golden/gen_it.toml`，其 `converter` 键让 `note` 生成为域类型，`cpp_type` 键把

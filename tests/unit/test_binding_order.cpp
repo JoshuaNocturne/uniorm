@@ -207,7 +207,7 @@ void test_binding_order() {
       return std::make_unique<scripted_connection>(state);
     });
   pool_options options;
-  options.connection_string = "scriptedorder://test";
+  options.target = "scriptedorder://test";
   options.size = 1;
   options.acquire_timeout = std::chrono::milliseconds(200);
   options.heartbeat_interval = std::chrono::milliseconds(0);

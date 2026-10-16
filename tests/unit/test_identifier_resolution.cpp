@@ -404,11 +404,15 @@ pool_options register_recording_backend(
     return std::make_unique<recording_connection>(state);
   });
   pool_options options;
-  options.connection_string = scheme + "://test;DSN=" + scheme;
+  options.target = scheme + "://test;DSN=" + scheme;
   options.size = 1;
   options.acquire_timeout = std::chrono::milliseconds(200);
   options.heartbeat_interval = std::chrono::milliseconds(0);
   return options;
+}
+
+std::string const& recipe(pool_options const& options) {
+  return std::get<std::string>(options.target);
 }
 
 struct recording_fixture {
@@ -842,18 +846,17 @@ void test_lifecycle_and_pool_reuse() {
   recording_fixture failed;
   failed.state->fail_open = true;
   connection_pool_registry::instance().configure(
-    failed.options.connection_string, failed.options);
+    recipe(failed.options), failed.options);
   connection_pool_registry::instance().configure(
-    replacement.options.connection_string, replacement.options);
+    recipe(replacement.options), replacement.options);
   orm reconnecting(fixture.pool);
   map_account(reconnecting);
   reconnecting.resolve_identifiers("Tenant", "App");
-  CHECK_THROWS(reconnecting.connect(failed.options.connection_string),
-    uniorm_error);
+  CHECK_THROWS(reconnecting.connect(recipe(failed.options)), uniorm_error);
   CHECK(!reconnecting.meta<account>().resolved);
   check_declarations(reconnecting.meta<account>());
   reconnecting.resolve_identifiers("Tenant", "App");
-  reconnecting.connect(replacement.options.connection_string);
+  reconnecting.connect(recipe(replacement.options));
   CHECK(!reconnecting.meta<account>().resolved);
   check_declarations(reconnecting.meta<account>());
   reconnecting.resolve_identifiers("Tenant", "App");

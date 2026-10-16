@@ -70,11 +70,18 @@ private:
   std::unique_ptr<odbc_batch_writer> batch_writer_;
 };
 
+// The three connection pieces spelled the way this driver manager reads
+// them. An empty user or password is no credential at all, so that pair is
+// left out instead of sent blank.
+UNIORM_ODBC_API std::string dsn_string(
+  std::string_view target, std::string_view user, std::string_view password);
+
 class backend_connection : public backend::connection_iface {
 public:
   backend_connection();
 
   void open(std::string_view connection_string) override;
+  void open(connection_spec const& spec) override;
   void close() override;
   bool is_open() const noexcept override;
   void set_autocommit(bool enabled) override;

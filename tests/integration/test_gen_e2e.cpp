@@ -175,7 +175,8 @@ std::string without_comments(std::string const& text) {
 }
 
 // Runs the tool over one schema source and holds what it wrote to the golden:
-// the metadata comments have to be there, the code has to be that code.
+// the metadata comments have to be there, the code has to be that code. A
+// failure names the out_dir rather than the source, which carries a password.
 void require_matches_golden(
   std::string const& source, std::string const& out_dir) {
   std::string cmd = std::string(UNIORM_GEN_PATH) + " " + source +
@@ -203,7 +204,7 @@ void require_matches_golden(
          generated[pos] == golden[pos]) {
     ++pos;
   }
-  std::printf("FAIL %s differs from golden at byte %zu\n", source.c_str(),
+  std::printf("FAIL %s differs from golden at byte %zu\n", out_dir.c_str(),
     pos);
   std::printf("  generated: %s\n",
     generated.substr(pos > 40 ? pos - 40 : 0, 80).c_str());
@@ -216,6 +217,16 @@ void require_matches_golden(
 void test_generate_matches_golden(std::string const& conn_string) {
   require_matches_golden("--connection-string=\"" + conn_string + "\"",
     UNIORM_GEN_OUT_DIR);
+}
+
+// The same server reached by handing the tool the pieces instead of a string:
+// the tool spells nothing, so this run matching the golden is the backend's
+// own spelling working end to end, catalog read included.
+void test_generate_matches_golden_by_pieces(std::string const& dsn,
+  std::string const& user, std::string const& pwd) {
+  std::string const pieces = "--dsn=\"" + dsn + "\" --user=\"" + user +
+    "\" --password=\"" + pwd + "\"";
+  require_matches_golden(pieces, std::string(UNIORM_GEN_OUT_DIR) + "/pieces");
 }
 
 // Offline extraction: the same tables as a script, so a golden header is
@@ -410,6 +421,7 @@ int main() {
     prepare_schema(conn);
     test_golden(conn_string);
     test_generate_matches_golden(conn_string);
+    test_generate_matches_golden_by_pieces(dsn, user, pwd);
     drop_schema(conn);
   } catch (std::exception const& e) {
     std::printf("FATAL: unexpected exception: %s\n", e.what());

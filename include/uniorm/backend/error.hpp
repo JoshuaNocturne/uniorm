@@ -37,14 +37,16 @@ private:
 };
 
 // A read asked of a backend that cannot serve it and that has no slower
-// route to fall back on: table introspection today. The capability flags
-// are the opposite case; those let the core take a slower path instead.
+// route to fall back on: table introspection, and an open by connection
+// pieces. The capability flags are the opposite case; those let the core
+// take a slower path instead.
 class UNIORM_API capability_not_supported : public uniorm_error {
 public:
   using uniorm_error::uniorm_error;
 };
 
-// The connection string's scheme has no registered backend.
+// No backend serves the scheme: the connection string's prefix names none
+// that is registered, or a connection spec left the field empty.
 class UNIORM_API unknown_scheme : public uniorm_error {
 public:
   using uniorm_error::uniorm_error;

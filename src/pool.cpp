@@ -218,7 +218,9 @@ pooled_connection connection_pool::acquire() {
       ++impl_->created;
       lock.unlock();
       try {
-        connection conn(impl_->options.connection_string);
+        connection conn = std::visit(
+          [](auto const& what) { return connection(what); },
+          impl_->options.target);
         return pooled_connection(this, std::move(conn));
       } catch (...) {
         {
@@ -352,6 +354,15 @@ std::string connection_pool_registry::make_key(
   return "dsn=" + dsn + "|uid=" + uid;
 }
 
+std::string connection_pool_registry::make_key(connection_spec const& spec) {
+  // Out of the key, as a password is out of the string form's key: a pool is
+  // shared by everyone who reaches the same place as the same user. A spec's
+  // key matches no string's, because settling whether they name one database
+  // would take a dialect's vocabulary.
+  return "spec=" + spec.scheme + "|target=" + spec.target + "|user=" +
+    spec.user;
+}
+
 connection_pool_registry& connection_pool_registry::instance() {
   static connection_pool_registry reg;
   return reg;
@@ -359,13 +370,23 @@ connection_pool_registry& connection_pool_registry::instance() {
 
 pooled_connection connection_pool_registry::acquire(
   std::string const& connection_string) {
-  std::string key = make_key(connection_string);
+  pool_options opts;
+  opts.target = connection_string;
+  return acquire_keyed(make_key(connection_string), std::move(opts));
+}
 
+pooled_connection connection_pool_registry::acquire(
+  connection_spec const& spec) {
+  pool_options opts;
+  opts.target = spec;
+  return acquire_keyed(make_key(spec), std::move(opts));
+}
+
+pooled_connection connection_pool_registry::acquire_keyed(
+  std::string const& key, pool_options opts) {
   std::lock_guard lock(mutex_);
   auto it = pools_.find(key);
   if (it == pools_.end()) {
-    pool_options opts;
-    opts.connection_string = connection_string;
     auto [new_it, _] = pools_.emplace(
       key, std::make_unique<connection_pool>(std::move(opts)));
     it = new_it;
@@ -375,11 +396,18 @@ pooled_connection connection_pool_registry::acquire(
 
 void connection_pool_registry::configure(
   std::string const& connection_string, pool_options opts) {
-  std::string key = make_key(connection_string);
-  opts.connection_string = connection_string;
-
+  opts.target = connection_string;
   std::lock_guard lock(mutex_);
-  pools_.emplace(key, std::make_unique<connection_pool>(std::move(opts)));
+  auto pool = std::make_unique<connection_pool>(std::move(opts));
+  pools_.emplace(make_key(connection_string), std::move(pool));
+}
+
+void connection_pool_registry::configure(
+  connection_spec const& spec, pool_options opts) {
+  opts.target = spec;
+  std::lock_guard lock(mutex_);
+  auto pool = std::make_unique<connection_pool>(std::move(opts));
+  pools_.emplace(make_key(spec), std::move(pool));
 }
 
 }  // namespace uniorm

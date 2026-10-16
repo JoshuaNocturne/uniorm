@@ -181,8 +181,8 @@ endfunction()
 # One consumer per build, matching the shape the build produced. The link line
 # is the same either way (uniorm::uniorm alone); what changes is whether the
 # plugin file exists on disk, which is what determines whether the loader can
-# resolve a scheme at run time. build-warn exercises the with-plugin path;
-# build-odbc-off exercises the without-plugin path. Together they cover both.
+# resolve a scheme at run time. A build with UNIORM_BACKEND_ODBC=ON covers the
+# with-plugin path; one with it OFF covers the without-plugin path.
 if(SMOKE_HAS_ODBC)
   set(SMOKE_CONSUMER_HAS_ODBC ON)
 else()

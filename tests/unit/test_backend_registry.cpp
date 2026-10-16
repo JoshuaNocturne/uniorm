@@ -8,6 +8,7 @@
 #include <uniorm/backend/error.hpp>
 #include <uniorm/backend/registry.hpp>
 #include <uniorm/connection.hpp>
+#include <uniorm/connection_spec.hpp>
 
 namespace {
 
@@ -70,6 +71,20 @@ struct dummy_connection : uniorm::backend::connection_iface {
   }
 };
 
+// A backend that does take the four pieces, so the handover itself is
+// observable: the core reads the scheme to pick a factory and passes the rest
+// through untouched, whatever the pieces look like.
+struct spec_recording_connection : dummy_connection {
+  uniorm::connection_spec seen;
+  int opens = 0;
+  void open(uniorm::connection_spec const& spec) override {
+    seen = spec;
+    ++opens;
+  }
+};
+
+spec_recording_connection* recorded = nullptr;
+
 void test_registry() {
   registry& reg = registry::instance();
 
@@ -106,9 +121,59 @@ void test_registry() {
   CHECK_THROWS(bare.schema(), uniorm::backend::capability_not_supported);
 }
 
+void test_create_for_scheme() {
+  registry& reg = registry::instance();
+  reg.register_backend(
+    "specfake", [] { return std::make_unique<dummy_connection>(); });
+
+  CHECK(reg.create_for_scheme("specfake") != nullptr);
+  // The string route lowercases the prefix it found before looking it up,
+  // and a spec has to land on the same spelling.
+  CHECK(reg.create_for_scheme("SPECFAKE") != nullptr);
+
+  CHECK_THROWS(
+    reg.create_for_scheme("nosuch"), uniorm::backend::unknown_scheme);
+  CHECK_THROWS(
+    reg.create_for_scheme(""), uniorm::backend::unknown_scheme);
+}
+
+void test_spec_open_is_optional() {
+  // dummy_connection overrides only the string form: leaving the four-piece
+  // form alone is a statement about the backend, and the core reports it.
+  uniorm::connection_spec spec{ "dummy", "where", "who", "secret" };
+  CHECK_THROWS(uniorm::connection(spec),
+    uniorm::backend::capability_not_supported);
+}
+
+void test_pieces_reach_the_backend_as_written() {
+  registry& reg = registry::instance();
+  reg.register_backend(
+    "specraw", [] {
+      auto conn = std::make_unique<spec_recording_connection>();
+      recorded = conn.get();
+      return conn;
+    });
+
+  // The scheme is folded to lowercase for the lookup only, so a spec naming it
+  // another way still lands on this factory; what the backend is handed stays
+  // as written, since spelling a target out is that backend's own business.
+  uniorm::connection_spec spec{ "SPECRAW", "a;b", "", "p=ss" };
+  {
+    uniorm::connection conn(spec);
+    CHECK(recorded->opens == 1);
+    CHECK(recorded->seen.scheme == "SPECRAW");
+    CHECK(recorded->seen.target == "a;b");
+    CHECK(recorded->seen.user.empty());
+    CHECK(recorded->seen.password == "p=ss");
+  }
+}
+
 }  // namespace
 
 void test_backend_registry() {
   test_parse_scheme();
   test_registry();
+  test_create_for_scheme();
+  test_spec_open_is_optional();
+  test_pieces_reach_the_backend_as_written();
 }

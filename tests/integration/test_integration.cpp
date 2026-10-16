@@ -14,6 +14,7 @@
 
 #include <uniorm/backend/error.hpp>
 #include <uniorm/connection.hpp>
+#include <uniorm/connection_spec.hpp>
 #include <uniorm/converter.hpp>
 #include <uniorm/decimal.hpp>
 #include <uniorm/detail/identifier.hpp>
@@ -1228,7 +1229,7 @@ void test_error_reporting(orm& db) {
 
 void test_pool(std::string const& conn_string) {
   pool_options opts;
-  opts.connection_string = conn_string;
+  opts.target = conn_string;
   opts.size = 2;
   opts.acquire_timeout = std::chrono::milliseconds(1000);
   connection_pool pool(std::move(opts));
@@ -1263,7 +1264,7 @@ void test_pool_maintenance(std::string const& conn_string) {
   using namespace std::chrono_literals;
   {
     pool_options opts;
-    opts.connection_string = conn_string;
+    opts.target = conn_string;
     opts.size = 1;
     opts.acquire_timeout = 1000ms;
     opts.heartbeat_interval = 50ms;
@@ -1296,7 +1297,7 @@ void test_pool_maintenance(std::string const& conn_string) {
   {
     // A failing heartbeat discards the connection well before max idle.
     pool_options opts;
-    opts.connection_string = conn_string;
+    opts.target = conn_string;
     opts.size = 1;
     opts.acquire_timeout = 1000ms;
     opts.heartbeat_interval = 50ms;
@@ -1315,7 +1316,7 @@ void test_pool_maintenance(std::string const& conn_string) {
   {
     // Two live pools are serviced by the same global scheduler thread.
     pool_options opts;
-    opts.connection_string = conn_string;
+    opts.target = conn_string;
     opts.size = 1;
     opts.acquire_timeout = 1000ms;
     opts.heartbeat_interval = 50ms;
@@ -1338,7 +1339,7 @@ void test_pool_maintenance(std::string const& conn_string) {
     // at a time: a gap between credit and entry shows up as a dip here.
     constexpr std::size_t n = 4;
     pool_options opts;
-    opts.connection_string = conn_string;
+    opts.target = conn_string;
     opts.size = n;
     opts.acquire_timeout = 1000ms;
     opts.heartbeat_interval = 20ms;  // so the sample crosses many passes
@@ -1357,6 +1358,73 @@ void test_pool_maintenance(std::string const& conn_string) {
     }
     CHECK(intact);
   }
+}
+
+// The four pieces have to reach the server the hand-written string reaches,
+// with the backend doing the spelling.
+void test_connection_pieces(
+  std::string const& dsn, std::string const& user, std::string const& pwd) {
+  std::string const spelled = "DSN=" + dsn + ";UID=" + user + ";PWD=" + pwd;
+  connection by_string(spelled);
+  connection_spec spec{ "odbc", dsn, user, pwd };
+  connection by_pieces(spec);
+  CHECK(by_pieces.dbms_name() == by_string.dbms_name());
+  result_set opened = by_pieces.execute("SELECT 1");
+  CHECK(opened.next());
+  CHECK(!opened.next());
+
+  // The catalog is read over that same open, so the pieces carry an
+  // introspection too: the fixture table this run created has to show up.
+  auto& metadata = by_pieces.schema();
+  bool fixture_seen = false;
+  for (auto const& table : metadata.tables("", "")) {
+    fixture_seen = fixture_seen || table.name == k_table;
+  }
+  CHECK(fixture_seen);
+
+  // orm's spec form leases from a spec-keyed pool, which is a pool of its
+  // own next to the string route's.
+  {
+    orm leased(spec);
+    result_set again = leased.execute("SELECT 1");
+    CHECK(again.next());
+  }
+
+  // An orm already connected by the string route can be moved onto the
+  // pieces; the lease is dropped first, as the two routes hold separate pools
+  // and each may be small.
+  {
+    orm moved(spelled);
+    moved.disconnect();
+    moved.connect(spec);
+    result_set after = moved.execute("SELECT 1");
+    CHECK(after.next());
+  }
+
+  // A pool the caller owns, built from the pieces: what it opens later comes
+  // from the recipe it was handed, not from a string anyone spelled for it.
+  {
+    pool_options opts;
+    opts.target = spec;
+    opts.size = 1;
+    opts.acquire_timeout = std::chrono::milliseconds(2000);
+    opts.heartbeat_interval = std::chrono::milliseconds(0);
+    connection_pool pool(opts);
+    {
+      orm from_pool(pool);
+      result_set rows = from_pool.execute("SELECT 1");
+      CHECK(rows.next());
+    }
+    CHECK(pool.idle_count() == 1);
+    pooled_connection back = pool.acquire();
+    CHECK(bool(back));
+  }
+
+  // A target that is not there is refused by the driver rather than asked
+  // about: SQLDriverConnect runs without a prompt, so this throws on every
+  // platform instead of waiting for input.
+  connection_spec absent{ "odbc", "uniorm_no_such_dsn", user, pwd };
+  CHECK_THROWS(connection{ absent }, backend::backend_error);
 }
 
 }  // namespace
@@ -1414,6 +1482,7 @@ int main() {
     test_error_reporting(db);
     test_pool(conn_string);
     test_pool_maintenance(conn_string);
+    test_connection_pieces(dsn, user, pwd);
 
     db.execute_update(std::string("DROP TABLE ") + k_table);
     db.execute_update(std::string("DROP TABLE ") + k_pair_table);

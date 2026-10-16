@@ -20,6 +20,12 @@ connection::connection(std::string_view connection_string)
   backend_->open(tail);
 }
 
+connection::connection(connection_spec const& spec)
+  : stmt_cache_(std::make_shared<detail::statement_cache>()) {
+  backend_ = backend::registry::instance().create_for_scheme(spec.scheme);
+  backend_->open(spec);
+}
+
 connection::~connection() = default;
 
 connection::connection(connection&&) noexcept = default;

@@ -111,6 +111,7 @@ uniorm/
 │   │   └── error.hpp            # backend_error / capability_not_supported / unknown_scheme
 │   ├── detail/
 │   │   ├── entity_binding.hpp   # 注册实体的结果列直绑（按列名定位序号）
+│   │   ├── fetch_rows.hpp       # 实体读与投影读共用的块读循环与取一行
 │   │   ├── identifier.hpp       # 全库唯一的那一处 ASCII 折叠：凡比较或发出
 │   │   │                        # 标识符名字的都经它（§4.8、§5.2、§6.2）
 │   │   ├── pfr.hpp              # 自实现聚合体反射（字段数探测 + 展开，上限 64）
@@ -717,9 +718,11 @@ for (auto const& u : rows) { /* ... */ }
 ```
 
 返回前按 `orm::row_array_size()` 块取行，逐行 `fill_into` 直接构造进结果 vector
-的存储（见 §4.8 物化路径）。`orm::query<T>(sql)` 的两条分派共用体内那份块读循环
-`orm::fetch_rows`：它只要求 `binding` 提供 `set_row_array_size` / `bind` /
-`fill_into`，`projection` 与 `entity_binding` 正是同一组接口。
+的存储（见 §4.8 物化路径）。块读循环只有一份，在 `detail::fetch_rows`
+（`include/uniorm/detail/fetch_rows.hpp`）：`orm::query<T>(sql)` 的两条分派与 §4.8
+构建器的 `all()` 都调它，`one()` 调同处的 `detail::fetch_one`。它只要求 `binding`
+提供 `set_row_array_size` / `bind` / `fill_into`（`one()` 那份额外要 `take`），
+`projection` 与 `entity_binding` 正是同一组接口。
 
 实现：自实现 `pfr_lite`（`detail/pfr.hpp`，不引入 Boost），含两个核心设施——
 `field_count<T>`（万能转换类型 + `requires` 表达式探测聚合体字段数）与
@@ -923,6 +926,12 @@ auto opt = db.query<User>()
 `orm::native_connection()` 取得，事务语义因此跟随 `orm` 当前持有的连接
 （`orm` 内部持 `std::optional<pooled_connection>`，见 §4.10）。构建器可以在
 语句之间存下来，因为它不再依赖一个中间网关的生命周期。
+
+链式部分与渲染集中在 `query_shape<T, Self>`（同文件）：`where` / `order_by` /
+`limit` / `offset` 返回 `Self&`（CRTP，链上仍是派生构建器本身），`render_select`
+与 `render_count` 交出 `statement{ sql, bound }`——文本与占位符要绑的值成对给出，
+`build_select()` 只是丢掉 `bound` 取文本。`query<T>` 继承它，只声明 `all` / `one` /
+`count` 三个终端，终端体内是基类的 `run_all` / `run_one` / `run_count`。
 
 物化路径：`all()`/`one()` 不经过 `result_set`/`row`/`sql_value`，而是把结果列
 **一次 `bind_column` 到暂存缓冲（ODBC 下即一次 `SQLBindCol`），再按字段偏移直写

@@ -17,6 +17,7 @@
 #include <uniorm/connection.hpp>
 #include <uniorm/connection_spec.hpp>
 #include <uniorm/detail/entity_binding.hpp>
+#include <uniorm/detail/fetch_rows.hpp>
 #include <uniorm/detail/projection.hpp>
 #include <uniorm/mapping/registry.hpp>
 #include <uniorm/pool.hpp>
@@ -145,10 +146,12 @@ public:
       "query<T> materializes T in place, which needs a default constructor");
     if (auto const* mapped = find(std::type_index(typeid(T)))) {
       detail::entity_binding<T> reading(*mapped);
-      return fetch_rows<T>(sql, bound, reading);
+      return detail::fetch_rows<T>(
+        native_connection(), sql, bound, row_array_size_, reading);
     } else if constexpr (detail::aggregate_projection<T>) {
       detail::projection<T> reading;
-      return fetch_rows<T>(sql, bound, reading);
+      return detail::fetch_rows<T>(
+        native_connection(), sql, bound, row_array_size_, reading);
     } else {
       throw mapping_error("query needs a registered entity or an aggregate: " +
         std::string(typeid(T).name()));
@@ -308,42 +311,6 @@ private:
   dialect::identifier_case identifiers_ = dialect::identifier_case::keep;
 
   void ensure_connected() const;
-
-  // The block-fetch loop both typed reads share: one describe round for the
-  // binding to place its columns in, then every fetched row materialized
-  // straight into the vector's storage. `binding` supplies bind(),
-  // set_row_array_size() and fill_into().
-  template <class T, class Binding>
-  std::vector<T> fetch_rows(
-    std::string_view sql, params const& bound, Binding& binding) {
-    ensure_connected();
-    std::string key(sql);
-    auto& conn = native_connection();
-    auto stmt = conn.acquire_statement(key);
-    stmt->bind_params(bound);
-    stmt->execute();
-    stmt->set_row_array_size(row_array_size_);
-    binding.set_row_array_size(row_array_size_);
-    binding.bind(*stmt);
-    std::vector<T> out;
-    if (std::size_t est = stmt->result_row_estimate()) out.reserve(est);
-    while (stmt->fetch()) {
-      std::size_t rows_fetched = stmt->rows_fetched();
-      // Construct rows directly in the vector storage; see fill_into.
-      std::size_t old_size = out.size();
-      out.resize(out.size() + rows_fetched);
-      try {
-        for (std::size_t index = 0; index < rows_fetched; ++index) {
-          binding.fill_into(out[old_size + index], index);
-        }
-      } catch (...) {
-        out.resize(old_size);
-        throw;
-      }
-    }
-    conn.release_statement(key, std::move(stmt));
-    return out;
-  }
 
   // Entity write entry points; everything below the surface of the public
   // templates lives in src/orm.cpp. `where_fields` == nullopt means "match on

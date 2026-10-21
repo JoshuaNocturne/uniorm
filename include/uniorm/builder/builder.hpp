@@ -16,6 +16,7 @@
 #include <uniorm/params.hpp>
 #include <uniorm/builder/expression.hpp>
 #include <uniorm/detail/entity_binding.hpp>
+#include <uniorm/detail/fetch_rows.hpp>
 #include <uniorm/result_set.hpp>
 #include <uniorm/row.hpp>
 
@@ -78,100 +79,118 @@ private:
   std::vector<where_clause> wheres_;
 };
 
-// Read builder obtained via orm::query<T>(). Chained where() accumulates and
-// ANDs; order_by/limit/offset decorate the SELECT; terminals are all/one/count.
-template <class T>
-class query {
+// The chainable half of a typed read: the decoration, its rendering, and the
+// synchronous read the terminals run. Shared by `query<T>` and the async
+// builder so one SELECT is rendered one way; `Self` is the derived builder, so
+// a chain keeps returning it and each face declares its own terminals.
+template <class T, class Self>
+class query_shape {
 public:
-  query(orm& db, entity_meta const& meta) : db_(&db), meta_(&meta) {}
+  // A statement a terminal would run: the text, and the values its
+  // placeholders bind in the order they appear.
+  struct statement {
+    std::string sql;
+    std::vector<sql_value> bound;
+  };
 
-  query& where(predicate p) {
+  Self& where(predicate p) {
     wheres_.push_back(std::move(p));
-    return *this;
+    return self();
   }
 
   template <class M>
-  query& order_by(M T::* member, direction dir = direction::asc) {
+  Self& order_by(M T::* member, direction dir = direction::asc) {
     orders_.push_back({ make_member_key(member), dir });
-    return *this;
+    return self();
   }
 
-  query& limit(std::size_t n) {
+  Self& limit(std::size_t n) {
     limit_ = n;
-    return *this;
+    return self();
   }
 
-  query& offset(std::size_t n) {
+  Self& offset(std::size_t n) {
     offset_ = n;
-    return *this;
+    return self();
   }
 
   std::string build_select() const {
-    std::vector<sql_value> discard;
-    return render_select(limit_, discard);
+    return render_select(limit_).sql;
   }
 
-  std::vector<T> all() {
-    std::vector<sql_value> bound;
-    std::string sql = render_select(limit_, bound);
-    auto& c = db_->native_connection();
-    std::string key(sql);
-    auto stmt = c.acquire_statement(key);
-    params p(std::move(bound));
-    stmt->bind_params(p);
-    stmt->execute();
-    std::size_t ras = db_->row_array_size();
-    stmt->set_row_array_size(ras);
-    detail::entity_binding<T> binding(*meta_);
-    binding.set_row_array_size(ras);
-    binding.bind(*stmt);
-    std::vector<T> out;
-    if (std::size_t est = stmt->result_row_estimate()) out.reserve(est);
-    while (stmt->fetch()) {
-      std::size_t rows_fetched = stmt->rows_fetched();
-      // Materialize rows directly into the vector's storage; the bindings
-      // write at captured member offsets, avoiding per-row string moves.
-      std::size_t old_size = out.size();
-      out.resize(out.size() + rows_fetched);
-      try {
-        for (std::size_t i = 0; i < rows_fetched; ++i) {
-          binding.fill_into(out[old_size + i], i);
+protected:
+  query_shape(orm& db, entity_meta const& meta) : db_(&db), meta_(&meta) {}
+
+  // The derived builder this decoration belongs to, so an asynchronous
+  // terminal can carry a copy of it to the executor: the builder object the
+  // call was made on is a temporary that dies at the end of that expression.
+  Self& self() noexcept {
+    return static_cast<Self&>(*this);
+  }
+
+  // `lim` overrides the chained limit; passing `limit_` renders the chain as
+  // written.
+  statement render_select(std::optional<std::size_t> lim) const {
+    auto const& dialect_ref = sql_dialect();
+    auto resolve = make_resolver();
+
+    std::string sql = "SELECT ";
+    for (std::size_t index = 0; index < meta_->columns.size(); ++index) {
+      if (index != 0) {
+        sql += ", ";
+      }
+      sql += meta_->column_sql(index, dialect_ref);
+    }
+    sql += " FROM " + meta_->table_sql(dialect_ref);
+
+    statement made{ std::move(sql), {} };
+    if (!wheres_.empty()) {
+      made.sql += " WHERE " + where_sql(resolve, made.bound);
+    }
+    if (!orders_.empty()) {
+      made.sql += " ORDER BY ";
+      for (std::size_t index = 0; index < orders_.size(); ++index) {
+        if (index != 0) {
+          made.sql += ", ";
         }
-      } catch (...) {
-        out.resize(old_size);
-        throw;
+        made.sql += resolve(orders_[index].key);
+        made.sql += orders_[index].dir == direction::asc ? " ASC" : " DESC";
       }
     }
-    c.release_statement(key, std::move(stmt));
-    return out;
+    made.sql += dialect_ref.pagination(lim, offset_);
+    return made;
   }
 
-  std::optional<T> one() {
-    std::vector<sql_value> bound;
-    std::string sql = render_select(std::size_t{ 1 }, bound);
-    auto& c = db_->native_connection();
-    std::string key(sql);
-    auto stmt = c.acquire_statement(key);
-    params p(std::move(bound));
-    stmt->bind_params(p);
-    stmt->execute();
-    stmt->set_row_array_size(1);
-    detail::entity_binding<T> binding(*meta_);
-    binding.set_row_array_size(1);
-    binding.bind(*stmt);
-    std::optional<T> result;
-    if (stmt->fetch()) {
-      result = binding.take(0);
+  statement render_count() const {
+    statement made{
+      "SELECT COUNT(*) FROM " + meta_->table_sql(sql_dialect()), {}
+    };
+    if (!wheres_.empty()) {
+      made.sql += " WHERE " + where_sql(make_resolver(), made.bound);
     }
-    c.release_statement(key, std::move(stmt));
-    return result;
+    return made;
   }
 
-  std::int64_t count() {
-    std::vector<sql_value> bound;
-    std::string sql = render_count(bound);
-    result_set rs = db_->native_connection().execute(
-      sql, params(std::move(bound)));
+  std::vector<T> run_all() const {
+    statement made = render_select(limit_);
+    detail::entity_binding<T> binding(*meta_);
+    params bound(std::move(made.bound));
+    return detail::fetch_rows<T>(db_->native_connection(), made.sql, bound,
+      db_->row_array_size(), binding);
+  }
+
+  std::optional<T> run_one() const {
+    statement made = render_select(std::size_t{ 1 });
+    detail::entity_binding<T> binding(*meta_);
+    params bound(std::move(made.bound));
+    return detail::fetch_one<T>(
+      db_->native_connection(), made.sql, bound, binding);
+  }
+
+  std::int64_t run_count() const {
+    statement made = render_count();
+    params bound(std::move(made.bound));
+    result_set rs = db_->native_connection().execute(made.sql, bound);
     if (!rs.next()) {
       return 0;
     }
@@ -206,52 +225,34 @@ private:
     return sql;
   }
 
-  std::string render_select(
-    std::optional<std::size_t> lim, std::vector<sql_value>& bound) const {
-    auto const& dialect_ref = sql_dialect();
-    auto resolve = make_resolver();
-
-    std::string sql = "SELECT ";
-    for (std::size_t index = 0; index < meta_->columns.size(); ++index) {
-      if (index != 0) {
-        sql += ", ";
-      }
-      sql += meta_->column_sql(index, dialect_ref);
-    }
-    sql += " FROM " + meta_->table_sql(dialect_ref);
-
-    if (!wheres_.empty()) {
-      sql += " WHERE " + where_sql(resolve, bound);
-    }
-    if (!orders_.empty()) {
-      sql += " ORDER BY ";
-      for (std::size_t index = 0; index < orders_.size(); ++index) {
-        if (index != 0) {
-          sql += ", ";
-        }
-        sql += resolve(orders_[index].key);
-        sql += orders_[index].dir == direction::asc ? " ASC" : " DESC";
-      }
-    }
-    sql += dialect_ref.pagination(lim, offset_);
-    return sql;
-  }
-
-  std::string render_count(std::vector<sql_value>& bound) const {
-    std::string sql =
-      "SELECT COUNT(*) FROM " + meta_->table_sql(sql_dialect());
-    if (!wheres_.empty()) {
-      sql += " WHERE " + where_sql(make_resolver(), bound);
-    }
-    return sql;
-  }
-
   orm* db_;
   entity_meta const* meta_;
   std::vector<predicate> wheres_;
   std::vector<order_clause> orders_;
   std::optional<std::size_t> limit_;
   std::size_t offset_ = 0;
+};
+
+// Read builder obtained via orm::query<T>(). Chained where() accumulates and
+// ANDs; order_by/limit/offset decorate the SELECT; terminals are all/one/count.
+template <class T>
+class query : public query_shape<T, query<T>> {
+  using shape = query_shape<T, query<T>>;
+
+public:
+  query(orm& db, entity_meta const& meta) : shape(db, meta) {}
+
+  std::vector<T> all() {
+    return this->run_all();
+  }
+
+  std::optional<T> one() {
+    return this->run_one();
+  }
+
+  std::int64_t count() {
+    return this->run_count();
+  }
 };
 
 // Typed UPDATE builder obtained via orm::update<T>(). Chained set() stages

@@ -31,4 +31,9 @@ public:
   using uniorm_error::uniorm_error;
 };
 
+class UNIORM_API submit_overflow : public uniorm_error {
+public:
+  using uniorm_error::uniorm_error;
+};
+
 }  // namespace uniorm

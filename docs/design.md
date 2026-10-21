@@ -28,7 +28,8 @@ uniorm 是一个现代化的 C++ 数据库访问层：核心构建在驱动中�
 ### v1 明确不做（Out of Scope）
 
 - Unit of Work / 脏检查 / 级联加载 / 懒加载（留待 v2）
-- 异步 API（ODBC 本身同步；v1 同步接口，未来可在线程池上包装）
+- 异步流式游标与原生异步 backend（异步表面已落在 `async.hpp`，是同步契约之上的
+  仿真，理由见 §4.11；驱动侧的原生异步要等拥有它的 backend）
 - 游标更新（可更新结果集游标；批量写入走数组参数绑定，见 §4.5.2）
 - Schema 迁移管理（migration）
 
@@ -52,7 +53,7 @@ uniorm 是一个现代化的 C++ 数据库访问层：核心构建在驱动中�
 | 决策项 | 结论 |
 |---|---|
 | C++ 标准 | C++20 |
-| 接口风格 | 纯同步 |
+| 接口风格 | 同步为主，异步是可选表面（`async.hpp`，§4.11）；两者共用同一条 backend 契约，异步侧不新增数据库通路 |
 | 平台 | Linux（unixODBC）、Windows（原生 ODBC） |
 | 错误处理 | 异常 |
 | Unicode | 内部一律 UTF-8；只做窄字符绑定（`SQL_C_CHAR`），编码转换留在驱动侧（§4.2） |
@@ -104,6 +105,9 @@ uniorm/
 │   ├── transaction.hpp
 │   ├── pool.hpp                 # connection_pool / pooled_connection / connection_pool_registry
 │   ├── dialect.hpp              # 方言特性（引用符、标识符拼法、分页）
+│   ├── async.hpp                # 异步表面（§4.11）：executor / task<T>
+│   │                            #  / async::orm / async::transaction，
+│   │                            #  每会话的 FIFO 也在这层（只有声明）
 │   ├── backend/                 # 驱动中立的 backend 契约（见 §5.2）
 │   │   ├── backend.hpp          # column_buffer / capabilities / statement_iface / connection_iface
 │   │   │                        # / batch_writer_iface（列式批量写）
@@ -126,6 +130,9 @@ uniorm/
 ├── src/                         # 核心实现（编译进 libuniorm）；私有头贴着 .cpp 存放
 │   ├── orm_mapping.hpp          # 实体写的 WHERE 解析与 SET/WHERE 列划分（纯映射规则）
 │   ├── statement_cache.hpp      # LRU 预编译语句缓存（存 statement_iface，容量固定 64）
+│   ├── async/                   # 异步表面的函数体：async.cpp 装会话与句柄、
+│   │                            #  那条 FIFO 与 executor 的虚析构，
+│   │                            #  worker_pool.cpp 装默认 executor 的线程池
 │   └── backend/                 # scheme 解析与注册表实现（含 plugin_loader.cpp：
 │                                #  按 scheme 从 <libdir>/uniorm/backends dlopen）
 ├── backends/                    # 每家 backend 一个独立 shared library，与 src/
@@ -150,8 +157,11 @@ uniorm/
 ├── tests/
 │   ├── unit/                    # 无库依赖：check.hpp（CHECK/CHECK_THROWS）+
 │   │                            # uniorm_unit_tests（不链 ODBC，含 fake backend 的
-│   │                            # test_pool.cpp、fake 目录的 test_orm_validate.cpp
-│   │                            # 与 uniorm-gen 的纯逻辑用例）与
+│   │                            # test_pool.cpp、fake 目录的
+│   │                            # test_orm_validate.cpp、异步的
+│   │                            # test_async_task.cpp 与 fake 会话的
+│   │                            # test_async_orm.cpp，另加 uniorm-gen 的
+│   │                            # 纯逻辑用例）与
 │   │                            # uniorm_odbc_unit_tests（句柄 RAII、错误派生、
 │   │                            # 目录行再筛的判据）
 │   ├── integration/             # 需活连接：test_integration.cpp、test_gen_e2e.cpp
@@ -160,6 +170,8 @@ uniorm/
 │   ├── install_smoke.cmake.in   # 安装面冒烟脚本（cmake -P）
 │   └── perf/                    # test_perf.cpp（ctest 标签 perf）
 ├── docs/design.md
+├── docs/proposal-async-api.md   # 异步表面的提案：取舍与分步落地
+├── docs/async-sequence.md       # 异步表面的时序图：类型怎么搭手
 ├── README.md / README.zh.md     # 双语入口文档
 ├── .clang-format                # Google 风格基线（未挂 hook，流水线也不校验格式）
 ├── .github/workflows/ci.yml     # 两条形状：无 ODBC 的编译契约 + 双驱动对活库跑 ctest
@@ -180,9 +192,10 @@ uniorm/
 只出现在 `backends/odbc/` 之下，对外头文件既不带驱动类型，也不带 ODBC 链接依赖
 （`ODBC::ODBC` 是 PRIVATE）。
 
-公开头只留声明：非模板成员的定义一律进同名 `.cpp`（`orm.cpp`、`decimal.cpp` 都按
-这条走）。定义搬出类外时导出标记不会跟着走——类外的 `operator` 友元要在声明上
-自己写一次 `UNIORM_API`，`converter` 的显式特化则把标记写在整个特化上。
+公开头只留声明：非模板成员的定义一律进同名 `.cpp`（`orm.cpp`、`decimal.cpp`、
+`async.cpp` 都按这条走）。定义搬出类外时导出标记不会跟着走——类外的
+`operator` 友元要在声明上自己写一次 `UNIORM_API`，`converter` 的显式特化则把
+标记写在整个特化上。
 
 ### 3.1 安装与集成
 
@@ -320,7 +333,12 @@ class statement {                      // SQLHSTMT，move-only
   `SQL_ATTR_PARAMSET_SIZE`。刻意不设：`SQL_ATTR_PARAMS_BOUND`、
   `SQL_ATTR_PARAM_BIND_TYPE`（批量绑定按列主序构造——每列一段连续数组，stride 即
   `BufferLength`）、`SQL_ATTR_METADATA_ID`、游标/并发属性（无服务端游标、
-  无游标更新）、`SQL_ATTR_ASYNC_ENABLE`（无异步）。
+  无游标更新）、`SQL_ATTR_ASYNC_ENABLE`（无异步——这一条现在有量过的数字：连接器
+  把 `SQL_ASYNC_MODE` 报成 `SQL_AM_NONE`，`SQL_MAX_ASYNC_CONCURRENT_STATEMENTS`
+  为 `0x0`，ODBC 3.8 那两个异步信息字回 `SQL_ERROR` + `HY096 Invalid information
+  type`，把属性设上去也是静默改回默认（`01S02 Option value changed`，回读
+  `0x0`，随后 `SELECT 1` 照旧同步跑完），而驱动管理器根本不导出
+  `SQLCompleteAsync`。异步因此只能是同步契约之上的仿真，见 §4.11）。
 
 ### 4.2 Unicode 策略
 
@@ -1266,6 +1284,180 @@ password 与字符串路线一样不入 key（同一个地方、同一个用户�
 
 v1 不做：动态伸缩。池须比所有借出的连接长寿。
 
+### 4.11 异步表面（`async.hpp`）
+
+第一版是**同步契约之上的仿真**：一个 task 的函数体就是它包着的这次同步调用
+（`orm::execute_update`、`detail::fetch_rows` 那个循环、整段批量扫描），跑在核心
+worker 池的一条线程上。异步只回答三件事——这次同步调用跑在哪条线程、结果怎么交
+回去、这条连接上谁排队谁在飞。没有第二条数据库通路，发出去的 SQL 一个字节不变，
+`SQL_ATTR_ASYNC_ENABLE` 也没设（§4.1 那四条实测就是这一层的存在理由）。形状按
+"以后某家 backend 用原生异步替掉这一层、调用方一行不改"切，那一层现在不建。
+
+公开侧六样（`include/uniorm/async.hpp`，855 行；不进总头文件 `uniorm.hpp`，协程
+因而不漏进每个 include 它的编译单元）。头里只剩声明与模板：非模板的实现全在
+`src/async/` 那两个 .cpp 里。`async.cpp` 一个编译单元装下三样——会话与句柄的
+构造、旋钮和那几个 task 形操作，那条 FIFO，以及接口的虚析构（放库里是让
+调用方自己派生 executor 时靠链接取得这张 vtable，而不是在他那个编译单元里
+另发一份）；`worker_pool.cpp` 是默认池，单开一个文件因为它要 include 私有头
+`worker_pool.hpp`。头里的模板要推队列，所以 `detail::operation_queue` 导出了：
+它看着像内部件，链接上却是公开表面的一部分。下面不带文件名的行号都在
+`async.hpp`，函数体写作 `async.cpp:NNN`。
+
+- `executor`（`:36`）：一个虚函数 `submit(std::function<void()>)`，交出活就返回，
+  不在这里跑任何东西。必须公开，因为"跑"与"回"两个方向都可能要点名调用方自己的
+  循环。
+- `default_executor()` / `default_executor_size()`（`:45`、`:50`；实现
+  `src/async/worker_pool.cpp:109`）：核心那条池，第一次用到时才立起来，尺寸按此前
+  `default_executor_size()` 说过的那次定，此后只增不减——已经进了驱动调用的 worker
+  拔不出来。**worker 条数即并发上限**，队列比它深只是有人在等。要零条在池还没立
+  起来时也拒（`src/async/worker_pool.cpp:122`），拒完那个数一个字没改。worker 跑
+  的是每个操作的一段，`run()`（`src/async/worker_pool.cpp:86`）把闭包的抛出吞在
+  这一层：让它穿过线程会带走
+  整条池，于是连带每一把等它的会话。
+- `task<T>`（`:394`）：惰性，造出来时什么都不跑，被 drive 那一刻才 submit。三种
+  drive 动作：`co_await`、`block()`（停住本线程等结果）、`start(handler)`（交出去
+  继续走）。没被 drive 的 task 析构不留副作用；同一个 task 第二次 drive 抛
+  `uniorm_error`。堆上那块共享状态是 `detail::operation_core<T>`（`:135`），由
+  `shared_ptr` 计数，结果与异常都住在它里面，协程帧挂在它上面、由它的析构销毁——
+  于是等结果那条线程与最后拆帧那条线程碰不上。帧从不自毁。`start()` 的 handler
+  抛出没人接：它是失败的最后一段，两处跑它的地方都不许抛，于是吞在
+  `deliver_failure()`（`:230`）这一层——吞的是 handler 自己，不是操作的失败。
+  下面 `orm` 那一条上的回调形不在这三个动作外加第四个门：它自己不交出 task，
+  所以"惰性"与"只能 drive 一次"这两条规矩对它没有可犯之处。
+- `orm`（`:549`）：会话。按值揣一把 `uniorm::orm`，**不新增状态宿主**；入口与同步
+  对象同款——连接串（`:555`）、四件套（`:556`）、`connection_pool` 借还（`:557`）
+  三条各自直接立起会话，`uniorm::orm` 不必出现在调用方眼里：`map()` 在两个对象上
+  同名同参，一份注册配方对着手里那把写一遍就够。`:560` 那条接管已配好的对象仍留
+  着，说的是"连里面的租约一起拿走"，现在没有用例走它。装 task 那一组
+  （`connect`/`disconnect`/`execute_update`/实体批量三件/`query` 两式/
+  `auto_commit`/`commit`/`rollback`/`begin`）、四个只改内存的配置面按名字转发
+  （`map`（`:575`）、`row_array_size`、`paramset_size`、`identifier_case`，外加
+  `auto_commit` 的读档——写它仍是一次操作）、`run_on`（`:601`）、`resume_on`
+  （`:608`）、`submit_limit`（`:612`、`:614`）、`pending()`（`:617`），以及按值
+  持有的那条 FIFO。`wait_all_operations()`（`:623`）是那道屏障的公开出口：
+  会话还开着的时候等一次"交出去的都落地"，长驻会话关闭又不想此刻断连接才用得上。
+  目录读不转发，由 `sync()`（`:598`）交回内层对象（`validate` / `schema` /
+  `resolve_identifiers` / `clear_identifier_resolution` /
+  `native_connection`）。转发的代价记在这：同步侧每加一个只改内存的 setter，就欠
+  下一处可能悄悄漏掉的同步，用例把四个旋钮钉在同一个宿主上（§8）。
+  四个批量与读的名字各还有一层回调形重载（`:643` 起，`insert`/`update`/`remove`
+  各一个、`query<T>` 两个），出口是 `std::function<void(R,
+  std::exception_ptr)>`，**先看第二个参数**：失败时第一个是 `R{}`。空 `on_done`
+  在调用点就被拒（`:742` 的 `answer`）：它会在 body 里抛出自家的
+  `bad_function_call`，那格回合被答掉却没人听，屏障等的是永远不会发生的一次。这
+  一层是第二条路，只覆盖"调一句、响一次"，builder 的三个终端与 `connect`/`begin`
+  都没有它。它与 task 形把**同一个工作函数**交给同一条 FIFO（`:716` 起那四个
+  `*_work`），所以"不改发出去的 SQL 一个字节"这一条对两面同时由构造成立；回调
+  在 body 里响（`:531` 的 `answered`），因此它握着这一格直到响完，慢回调会挡住
+  同一会话的下一条请求，而 `~orm()` 那次等待因此已经覆盖"所有回调都响过"，不需
+  要第二枚计数。溢出的规矩与 task 形一样：`submit_limit` 满了从调用点抛
+  `submit_overflow`，那次不会有回调（请求根本没进队列）。`on_done` 自己抛出没人
+  接：它已经是这一格答案的最后一段，抛出就止在这里，会话照样接下一条。
+  `resume_on` 对它没有话语权——它没有续体可交；`run_on` 仍有，那台 executor 没人
+  泵，`~orm()` 就等不到这一格交回来。
+- `query<T>`（`:787`）：三个终端 `all`/`one`/`count` 返回 task；装饰与渲染仍是不
+  同步那一侧的 `query_shape`（§4.8），交出去的是副本，渲染发生在真正读的那条线程
+  上，因为拼标识符要问连接的方言。这一层没有回调形终端。
+- `transaction`（`:825`）：`begin()` 交出的句柄。`commit()`/`rollback()` 各是
+  本会话的一个操作，因此排在它要收尾的那些写之后；句柄把内层
+  `uniorm::transaction` 揣在 `shared_ptr` 里，于是提交闭包不依赖句柄还活着。
+  析构是兜底：先等会话没有在飞的操作，再在当前线程上回滚一次，**允许阻塞**，
+  且不许抛。**句柄可以活过会话**：内层那把 `uniorm::transaction` 握的是会话里
+  那条连接的裸指针，而连接随 `uniorm::orm` 一起走，于是 `~orm()`
+  （`src/async/async.cpp:161`）在连接还活着时先把没闭合的句柄逐个回滚；此后
+  `commit()`/`rollback()` 报的是"背后的会话没了"，不是踩到悬空指针。这本账记在
+  会话发出处那把 `detail::session_door`（`:503`）与一份弱句柄清单上，句柄自己
+  闭不上它。
+
+这六样在两条路上各自怎么搭手——`co_await`、`block()`、`start()` 与回调形各在哪
+一刻进队列、结果从哪一条线程交付、帧由谁拆——两张时序图记在
+`docs/async-sequence.md`。
+
+每会话一条 FIFO（`detail::operation_queue`，`:85`；函数体
+`async.cpp:21-90`）：同一把 `orm` 上同时只有一个操作在飞，`co_await`、
+`start()` 与 `block()` 共用这一条先后，回调形那一次调用也走这一条先后——它就是
+一个绑好了的操作，只占一格。排队的请求不占线程（它只是队列里一个
+`std::function`），要真并行就多开几把会话。上限默认 `1024`（`:87`），满了就在
+drive 动作当场抛 `submit_overflow`（`include/uniorm/error.hpp:34`——它住在错误
+家族那一头，与 `pool_timeout` 同一个理由：说的是"用量不对"而不是驱动报的错）；
+抛出之前没 push，**所以那个 task 没被消费**，过一会儿再 drive 是合法写法
+（`async.cpp:38`）；回调形同样抛在这一处，也就是说被拒的那次请求不会有回调来。
+`co_await` 是唯一一处没有调用点可抛的：那次 push 发生在 `await_suspend`
+（`:365`）里，它自己接住，把它折成这一次 await 的失败，于是溢出从 body 的
+`catch` 里出来、和驱动报的错走同一条路，不再穿过正在跑这一帧的那条线程。
+`drain()`（`async.cpp:63`）在每次 `start()` 前后放锁，`draining_` 是内联
+executor 那种重入的守卫；抛出过的 `start()` 已经答完了它那格、等不到
+`finish()`，于是 `drain()` 在它的 `catch`（`async.cpp:72`）里还回回合再往下走，
+否则这队列从此不再启动任何东西。启动 starter 的手只有两只：队列空着时 `push()`
+当场那只（`async.cpp:42-44`，就在调用线程上），交还回合时 `finish()` 那只
+（`async.cpp:50-52`，在跑完 body 最后一段的那条线程上）；出队只有一处
+（`async.cpp:67`），`in_flight_` 只在 `async.cpp:68` 置真、`async.cpp:49` 与
+`async.cpp:77` 置假，于是"一个 starter 恰好启动一次、一个回合只框住一个 body"
+是结构而不是约定，也没有取消或丢弃的路径。`wait_idle()`（`async.cpp:58`）是屏障
+本体，`~orm()`（`src/async/async.cpp:161`）与公开的
+`orm::wait_all_operations()`（`src/async/async.cpp:176`）都走它——"会话必须活过它
+交出去的操作"这条由库代守，不靠纪律。回调在 body 里响，所以这一句对回调面就是
+"每个回调都响过"，不必再加一枚计数；同一次析构在这之后才把还开着的
+`async::transaction` 句柄逐个回滚。它等的只是**已受理**的那些：被 `submit_limit`
+拒掉的请求从没进过队列，屏障照样返回，那一次的回调永远不响。它等的是回合，而不是
+链条：入队的只有会话操作（bind 落在 `:708` 与 `:763`），调用方自己那一帧从不
+入队；一次回合又在 `finish()`（`:329`）就交出去，早于结果交付，所以一条链从
+`finish()` 到下一环 `push()` 之间整条还活着、队列却是空的——这段空窗里屏障照样
+返回，那一次 `block()` 可能还没醒，`start()` 的 handler 可能还没响。要在第一条
+路上等到交付，自己 `block()` 或 `co_await`。
+
+锁管的只是队列自己那一格：`push()`、`finish()`、`pending()` 与 `wait_idle()`
+都在 `mutex_` 里走，所以 worker 交回合与另一条线程 drive 是串行的；bind 写进
+`operation_core` 的那几项也是靠入队这把锁发布给跑它的 worker 的。会话对象本身
+仍是 §4.7 那条契约——"非线程安全，按线程/会话持有"：`run_on_`、`resume_on_`
+与按值揣着的注册表都没有锁，改它们不与在飞的操作并发，`sync()`（`:598`）交出的
+更正是 worker 正在用的那个对象，要先落定就用屏障。`limit_` 是这一层唯一一件不等
+那把锁的量：写（`async.cpp:26`）与 `push()` 在锁里的读（`async.cpp:36`）都是
+relaxed atomic，于是读永远不会撕裂，但一次改写哪一刻生效不确定——和上面那两个
+旋钮一样，算配置期的一次性动作。跨线程的另一处是 `detail::session_door`
+（`:503`）：只有 `~orm()` 写它、句柄读它，两边可能不在一条线程上，因此它是
+atomic 而不是一个 bool。
+
+跑与回是两个方向：`run_on(executor&)` 说阻塞那一段去哪儿（默认核心池；调用方自带
+池时上限归调用方算），`resume_on(executor&)` 说续体回到哪儿（默认就是跑完这一趟
+的那条 worker，靠 `final_suspend` 那个 awaiter（`:323`）的对称转移把一条链保持在
+一帧深；指定了才走 `hand_over()`（`:212`）那次交接）。会话定过的事优先于 drive
+动作上点名的 executor。starter 可以就地启动，body 却不当场落地：默认池那次
+`submit()`（`:201`）只是入队加唤醒（`src/async/worker_pool.cpp:57`），所以 body
+的一段也不在调用线程上跑，没绑会话的调用方协程走的是同一处（`:190`）；
+`run_on` 指一个当场就跑的 executor 时不在这条里。反过来，会话挂着手泵时对着
+它 `block()` 就是吊死，`wait_all_operations()` 一样吊死——这两个形状都不写进
+用例，写在注释里。
+
+四处阻塞点是承认的，不是漏掉的：目录读留在同步侧（经 `sync()`）、
+`~async::transaction` 那次兜底回滚、`~orm()` 里那次等待（它之后还要在当前线程上
+回滚没闭合的句柄），以及它的公开出口 `orm::wait_all_operations()`。两处既有
+陷阱同账记过：size-1 池上重连
+会自锁（`orm::connect()` 在旧租约还握着时去 `acquire()`，§4.10），
+异步第一版因此要求重连前先 `co_await disconnect()`；worker 上等池会饿死 worker，
+FIFO 把同时想 `acquire()` 的数量限在 worker 条数以内，剩下靠 `acquire_timeout`
+兜。换成可唤醒的等待者表、以及 `orm::connect()` 的旧租约顺序，是这一层后面的独立
+两步，不在它里面。
+
+ABI：一个新的安装头加新的导出类型与函数，`connection_iface`、
+`statement_iface`、`capabilities`、`pool_options`、`entity_meta`、`schema_meta`
+一个都不改，不移动任何 vtable 槽，`UNIORM_ABI_VERSION` 不动，仍是 0.4.x 的一格
+功能加法。第二条路那五个回调形重载是这笔账里最便宜的一次加法：全是头文件里的
+inline 模板，不新增导出符号，也不新增安装头。把非模板的实现挪进
+`src/async/async.cpp` 之后，会话的入口、`sync()` 与那几个按名字转发的
+旋钮都不再算这种便宜：它们连同显式屏障 `wait_all_operations()`、
+`operation_queue` 的全部成员与 `executor` 的虚析构，是库里新添的一批导出
+符号。这笔账照样不动 ABI 版本：
+插件契约看的是 `connection_iface` 那一圈 vtable 槽，一处没动；`async::orm`、
+`async::transaction` 与 `detail::operation_queue` 都是这一版才出现的导出类型，
+没有已发布的布局可破坏，成员一个没多。换掉的只是失败的样子——新头配旧库如今
+在链接期就断，不会各自带着半份实现跑起来。测试分四层
+（§8）：前两层不需要任何库，第 3 层是集成用例里那一段——同一份夹具从同步与
+异步两侧各读一遍、逐字段相比，一份二进制跑三条腿；第 4 层（第 2 层那批用例
+换成默认 executor 再挂 `-fsanitize=thread` 重放）是本地一次性的一道，不在流水线
+上：本机跑过，10 遍 0 报告，同一次构建里塞一个故意未同步的计数器它立刻报，
+所以 0 是量出来的（细节见提案 §8 第 4 条）。
+
 ## 5. Backend 抽象：多后端规划与 v1 纪律
 
 背景：libpq 与 Oracle OCI 在实际项目中都存在必须独立使用原生 API 的场景（PG：COPY、LISTEN/NOTIFY、异步 I/O；Oracle：OCI 数组绑定、高级特性等），这些是 ODBC 无法覆盖的。因此 uniorm 采用"通用层打底 + 原生特性逃生舱口"策略，而非试图把各库特性塞进统一 API。
@@ -1499,6 +1691,12 @@ backend，要在自己的 `reset()` 重写里清干净。
 shared 目标 `uniorm::odbc`，PRIVATE 链 `ODBC::ODBC`（§5.1）；`uniorm-gen` 向
 `orm::schema()` 要活库元数据，而目前只有 ODBC backend 提供它，故
 `UNIORM_BUILD_TOOLS` 依赖该选项。
+
+**异步不进这份契约**（§4.11）：`connection_iface` 一个虚槽也没为它加。两条理由：
+这一层没向任何一家要新东西——它跑的就是那些同步调用，塞进接口等于要每家再实现
+一条通路而谁也没多得到什么；另一个理由是队列守着的是核心的生命周期（`~orm()` 的
+drain、`~async::transaction` 的兜底回滚），backend 若自起线程去续那条链，就与它抢
+同一份所有权。日后某家要用原生异步替掉这一层，形状已经按"调用方一行不改"切好。
 
 ### 5.3 原生特性通道
 
@@ -1749,6 +1947,42 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
   scheme / target / user，换 password 仍是同一池，而同处同人的串写法另开一池；
   `orm` 也能从串换乘四件套（先交回借到的那条，两边各是一池）；被淘汰后补上的
   连接仍按四件套配方打开——池留的是配方，不是替它拼好的串）、
+  `test_async_task`（一个手泵 executor 钉住 `task` / `executor` 本身：没被
+  drive 就不 submit、`block()` 与被 `co_await` 各 drive 一次、未 drive 的
+  task 析构不留副作用、结果与异常都穿过挂起点、`block()` 重放同一个
+  `exception_ptr`、`start()` 的 handler 拿到同一个——按两次 rethrow 落在
+  同一地址来比，才证得出没有另包一层；再加同一个 task 上第二次 drive 被拒，
+  和一项不碰 task 的：核心池要零条 worker 时在池还没立起来之前就被拒，拒过两次
+  那个数还是没变。
+  全部确定，不需要线程；那两个 executor 缝住在 `async_executors.hpp`，
+  `test_async_orm` 用同一份）、
+  `test_async_orm`（`async::orm` 接到同一个假 scheme 上、`run_on` 挂到手泵，
+  假连接记下"哪条语句按什么顺序落到了连接上"，于是 FIFO 的先后、在飞的最多
+  一个、`submit_overflow` 在调用点响且被拒的那个 task 之后还能 drive、一次
+  批量扫描只交接一次，都是数出来的；`submit_limit` 设成 0 就当 1 用，多出来的
+  那条排在调用点被拒；会话自己从连接串立起来、不经过 `uniorm::orm`，四件套与
+  直接递一把同步对象这两条入口也各立得起来，`map` 与三个旋钮转发过去之后
+  `sync()` 读回同一个值，转发的那几行因此不是第二份状态；`sync()` 改过的注册表
+  task 那一侧立刻看得见，钉住"只有一份状态宿主"；同一批行从回调形与从 task 形
+  写出去，落到假连接上的语句逐字相同，两条路因此不是两份 body；`resume_on` 那条
+  看着续体落到点名的线程上；`validate()` 的负面用例也在这层——它调在协程里、
+  仍然同步阻塞，钉住"这是承认的阻塞点，不是遗漏"；`begin()` 三条按顺序日志钉
+  句柄与提交 / 回滚的先后，另有一条让句柄活过会话，看会话析构先把它回滚、之后
+  再 `commit()` 报的是会话没了；`start()` 的 handler 抛出留在自己那一格，会话
+  之后照样接下一条；一条链在 `co_await` 处接到被拒的回合时，异常从 body 的
+  `catch` 里出来，不穿过跑这一帧的 worker；用到真 worker 的是 `~orm()` 那句等待
+  与屏障那两项，摘掉屏障就全红：
+  等交接的那项与回调屏障那条一起红（标志在析构返回时还没置上，屏障因此不用第二枚
+  计数），`wait_all_operations()` 一项钉它把交出的与回调的都等齐且会话之后
+  照样接下一条，另一项钉被 `submit_limit` 拒的那次不在等里（回调永不响，
+  屏障照样返回），还有一项不碰线程：一条链夹在两次请求之间时手里没有回合，
+  屏障在它还活着的时候就回来，续体泵干才见第二次读；第二路的八项
+  也在这层——回调收到真值与空 `exception_ptr`、失败时第一个参数是 `R{}` 而第二个
+  与 body 抛出的是同一个对象、回调形的读排在一条 detach 的写之后且只占一格
+  （`queued()` 与 `pending()` 一起看）、`submit_limit` 满时抛在调用点且那次回调不
+  响、executor 拒收这一格时回调照样响、`on_done` 自己抛出不外溢也不影响下一次请求、
+  空的 `on_done` 在调用点就被拒，以及析构屏障那项：回调里挂在一枚二进制信号量上
+  等测试放行，`~orm()` 返回时标志必须已经置上）、
   `test_gen_config`（TOML 子集解析正例/错误行号/非法键）、
   `test_gen_output`（命名转换边界 + 生成器快照与覆写/跳表/converter 生成/DECIMAL 列
   以 `cpp_type` 覆写成 `uniorm::decimal_t`/错误路径，含两张表折成同一个类名时在写文件
@@ -1791,7 +2025,31 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
 无精确候选时报告歧义。每格实测拼法记一行 `note:`；测试代码已加入，真实运行结果
 以当次测试输出为准，不据旧 CI 结果推断本次通过）、事务
 commit/rollback/析构回滚、批量插入（含空 optional 写 NULL、1500 行跨 `paramset_size` 分批）、批量 update / 批量 remove（实体版按主键与全字段两种 WHERE，含一张复合主键表验证单实体与批量都按全部键列命中、非键行不被牵连，动态版 `orm::update(table)` / `orm::remove(table)`，以及 `query<T>::set/update/remove` 与无 WHERE / 无 SET / WHERE 字段未映射的守卫抛错）、语句缓存（hit/miss 计数、流式 result_set 借出期间并发 miss、清空）、跨层错误上报（驱动失败以 `backend_error` 捕获，核对 `backend_name()`
-与 SQLSTATE 诊断）、连接池借还与超时、连接池维护（心跳保活计数、空闲超时驱逐、失败心跳丢弃；"排空"一律轮询等待而非单次采样，因为正被心跳的连接仍计入 `idle_count()`）；后续按库加条件标签覆盖方言与类型怪癖；
+与 SQLSTATE 诊断）、连接池借还与超时、连接池维护（心跳保活计数、空闲超时驱逐、失败心跳丢弃；"排空"一律轮询等待而非单次采样，因为正被心跳的连接仍计入 `idle_count()`）；
+  异步段七条（除第五条与第六条那两把故意从空会话起步的，其余都跑在同一份注册配方
+  上——`map_entities(Session&)` 那一个模板对着手里那把对象写，两个面共用；各自只
+  在 id 9100..9199 里写，进段出段各清一次，一段死掉不替下一段决定它数到几）：
+  第一条是会话里 drive 那五个终端——批量 insert、
+  `all`、`one`、`execute_update`、`query<T>(sql, params)`——每个异步读回的行都按
+  字段与同步读回比一遍，外加同一句 SQL 走回调形再读一次；那一次不靠任何泵，它等的
+  就是析构那一下。唯一对不上的是本会话那次 `execute_update` 之前的那一份快照，用例
+  就把这一处钉在名字上。第二条把同一句失败的读递到四个出口——`block()` 抛出、协程
+  body 自己接住、body 不接就原样穿过 drive 动作、`start()` 的 handler 与回调的第二个
+  参数——每份文本都与同步那一抛的 `what()` 整串相等（另包一层就在这里红），顺带钉
+  成功那次 `start()` 不响 handler 而写入照样落库。第三条走 `async::transaction` 的
+  三种收场：提交、显式回滚、协程结束时两个动词都没写（兜底那次回滚就发生在这里），
+  事后由同步面确认只有提交留下了行。第四条把四个回调形名字按先后排成一串——insert、
+  读、update、一次撞主键的 insert、再读、remove——撞键那次的第一个参数是 `0` 而
+  第二个非空，队列在它之后照样答得出，每个答案与同步读回逐字段比；这条里析构不是
+  唯一的屏障出口——`wait_all_operations()` 在会话还开着时显式取一次，返回后
+  计数与行数就已落定。第五条从空会话
+  起步：配置走转发的 `map`，`connect()` 与 `disconnect()` 各是一次排在同一把
+  FIFO 上的操作。第六条也自己接过连接串，但只写一张表的映射：转发的 `map` 落下的
+  那份注册表就是队列里那条语句渲染用的那一份。第七条开两条会话、两个线程各写各的
+  （一条协程加 builder 的 `count()`，一条回调形写与读），每次读只数自己那一段的
+  id，所以钉的是库最后装着四行，而不是两者怎样交错。集成用例是一份二进制跑三条
+  腿，这七条因此每条腿都跑；后续按库加条件
+  标签覆盖方言与类型怪癖；
 - **性能基准**（已实现，ctest 标签 `perf`，`tests/perf/test_perf.cpp`）：
   连不上库时 SKIP；行数由 `UNIORM_PERF_ROWS` 指定（默认 10000）。
   覆盖批量 insert/update/delete 吞吐，以及三条查询物化路径的对比：实体直绑
@@ -1865,7 +2123,12 @@ commit/rollback/析构回滚、批量插入（含空 optional 写 NULL、1500 �
   那条"跨过 create"的断言当场翻红 → 再以 `99.0.0` 配置一次，要求被
   `SameMinorVersion` 拒掉 → 最后运行装出来的 `uniorm-gen --help`，它只可能
   经 `$ORIGIN/../<libdir>` 与 `$ORIGIN/../<libdir>/uniorm/backends` 两条
-  RPATH 一起载到库与 plugin，故 RPATH 改写一并验了。
+  RPATH 一起载到库与 plugin，故 RPATH 改写一并验了。同一个消费者工程里另有一段
+  协程：它自己实现一个 executor，链式 await 交给默认池跑，`block()` 与 `start()`
+  各 drive 一次、同一个 task 上第二次 drive 被拒，再立一把 `async::orm` 在没有
+  连接时把 `execute_update` 与 `begin()` 各 drive 一次——后两样的函数体
+  在 `src/async/async.cpp` 里，故这一段真 reach 到库内导出的会话面符号；
+  单测那两层钉的是行为，这一段钉的是外人链不链得上。
 - **CI**（已写入 `.github/workflows/ci.yml`；GitHub 上跑绿过的那副形状是三支作业——
   `core` 与两条驱动腿，三支都按作业原样在 ubuntu:24.04 容器里重放过，服务端用的是一只照抄作业
   `services` 块起出的 `mariadb:11`（实测 11.8.9），连 `MARIADB_DATABASE`/`MARIADB_USER`
@@ -2068,7 +2331,13 @@ commit/rollback/析构回滚、批量插入（含空 optional 写 NULL、1500 �
 3. ~~批量操作~~ **已完成**：`SQL_ATTR_PARAMSET_SIZE` 数组绑定 + 块取行，
    列式（`batch_writer_iface`）与行式（`bind_batch_params`）双通道（见 §4.5.2）。
    **待做**：OCI backend 的原生数组绑定
-4. 异步包装层（libpq backend 可用原生异步）
+4. ~~异步包装层（libpq backend 可用原生异步）~~ **第一版已完成**：`async.hpp`
+   那一层（§4.11）就是这一条，只是它站在同步契约之上做仿真，一家 backend 也不点
+   ——ODBC 侧实测没有可用的原生异步（§4.1），先建在接口上等于给每家加一份它兑现
+   不了的账。原生异步那一半仍归各家：libpq 真用得上它时，才是它进 backend 契约的
+   理由（§5.2 记了它为什么现在不进）。这一层后面另留了两件独立的事，都不在它里面
+   ——池的 awaitable 等待者表（替掉 `condition_variable`，§4.10）与
+   `orm::connect()` 握着旧租约时那个顺序（§4.11 末）
 5. 外键导航 / 关联加载
 6. ~~离线 schema 快照输入（DDL 解析）~~ **已完成**：`uniorm-gen --input-ddl=
    <file>` 收一份建表脚本，由它答 `schema_meta` 那六个读，之后与活连接同一条

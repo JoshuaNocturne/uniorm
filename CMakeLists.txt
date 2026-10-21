@@ -48,6 +48,8 @@ add_library(uniorm SHARED
     src/backend/registry.cpp
     src/builder/expression.cpp
     src/mapping/registry.cpp
+    src/async/async.cpp
+    src/async/worker_pool.cpp
     src/orm.cpp
 )
 add_library(uniorm::uniorm ALIAS uniorm)

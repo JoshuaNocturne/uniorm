@@ -38,6 +38,10 @@ ODBC 驱动的数据库，而不依赖特定厂商的 C 客户端。实体映射
   （`SQL_ATTR_PARAMSET_SIZE`）展开，按 `paramset_size` 分批；连接处于
   autocommit 时整批扫描包进事务，手动模式下这些批次本就在调用方的事务里
 - **RAII 事务**：析构自动回滚
+- **可选的异步表面**（`async.hpp`）：同一个同步契约套上
+  `uniorm::async::task<T>`：一把会话同时只跑一个操作，三种 drive 动作
+  （`co_await`、`block()`、`start()`），跑与回两个方向都能交给调用方自己的
+  executor。四个 CRUD 名字还各有一层收回调的重载，给"调一句、听一次"的用法
 - **连接池**：懒创建、借还超时；所有池共用一条全局维护线程执行心跳保活与
   空闲超时回收
 - **活库 schema 自省**：`orm::schema()` 与 `connection::schema()` 交出一个
@@ -342,6 +346,100 @@ std::size_t held = pool.capacity(); // 另有 idle_count() 与
 每个池按默认 `pool_options` 建立。想改这些默认值，就对该连接串调用
 `connection_pool_registry::configure()`。
 
+### 异步表面
+
+这里没有第二条数据库通路：一个 task 的函数体**就是**它包着的这次同步调用——
+`orm::execute_update`、那个取行循环、整段批量扫描——跑在一条调用方不等着的线程
+上。驱动自己的异步入口一个都没用到，因为连接器根本没有。
+
+```cpp
+#include <uniorm/async.hpp>
+
+uniorm::async::task<void> rename(uniorm::async::orm& db) {
+    auto tx = co_await db.begin();
+    co_await db.execute_update("UPDATE users SET name = ? WHERE id = ?",
+                               uniorm::params{"Ada", 7});
+    co_await tx.commit();   // 漏掉这一句会回滚，而那一次是阻塞的
+}
+
+int main() {
+    uniorm::async::orm db;
+    db.map<User>("users")                  // 配置面是按名字转发出去的
+        .primary_key("id", &User::id)
+        .column("name", &User::name);
+    db.connect("DSN=mydb;UID=user;PWD=secret").block();
+
+    rename(db).block();                    // 停住这条线程直到它跑完
+    db.execute_update("DELETE FROM visits", uniorm::params{})
+      .start([](std::exception_ptr bad) {  // 交出去，自己接着走
+        if (bad) { /* 这次写丢了，handler 是唯一痕迹 */ }
+      });
+    auto names = db.query<User>().all().block();
+}                                          // ~orm 等它交出去的一切落地
+```
+
+这个形状承诺五件事：
+
+- **worker 条数就是并发上限。** 第一个 task 之前调用
+  `default_executor_size(n)` 定下它；此后只会增，因为一条已经进了驱动调用的
+  worker 拔不出来。要并行就多开几把会话，而不是在一把会话上多排任务。
+- **交出去的失败只有一个出口。** `start()` 收一个 `on_failure`，它只为
+  失败而响：跑成的那次不报，抛了的那次也只报在这里。`block()` 与 `co_await`
+  则把同一个 `exception_ptr` 重抛出来。handler 自己抛出停在库这一侧：它是失败
+  与收这条失败的那条线程之间的最后一段，而跑它的两处都不许展开。
+- **同一把会话上排队不等于并行。** 一把会话同时只有一个在飞，其余按被 drive
+  的先后跑——`co_await`、`block()`、`start()` 共用这一条 FIFO。排队的请求不占
+  线程；`pending()` 数它们，超过 `submit_limit()`（默认 1024）时 drive 动作当场
+  抛 `submit_overflow`，并把 task 留在未驱动状态，过一会儿再试是合法写法——
+  只有 `co_await` 没有可抛的调用点：那一次拒绝折成这一次 await 自己的失败，
+  从函数体的 `catch` 里出来，和驱动报的错落在同一处。
+  `wait_all_operations()` 是 `~orm()` 里那道屏障的显式出口：会话还开着的时候
+  等一次"交出去的都落地"，长驻会话关闭又不想此刻断连接才用得上；
+  它只等已受理的请求。
+- **续体默认换线程。** 链条的下一环落在跑完那次读的 worker 上。
+  `run_on(executor&)` 说阻塞的活去哪儿，`resume_on(executor&)` 说回到哪儿；
+  一次性脚本两个都不必写。会话的入口与同步对象同款三条——连接串、四件套、从
+  pool 借还——所以 `uniorm::orm` 不必出现在代码里。`map` 与行、批量、标识符那
+  几个旋钮是按名字转发给内层那一个对象的，它们属于"没有在飞操作"的那些时刻——
+  改的正是这条队列要保护的那份状态。
+- **四处阻塞点是承认下来的，不是漏掉的：** 留在同步侧的目录读（`validate()`、
+  `schema()`、`resolve_identifiers()`，经 `sync()` 调用）、
+  `~async::transaction` 兜底那次回滚、`~orm()` 对本会话交出工作的等待，以及
+  同一个等待的公开出口 `wait_all_operations()`。同一次析构还会在连接仍然活着时
+  把没闭合的事务句柄逐个回滚：句柄允许活过会话，之后再让它 `commit()`，它报的是
+  会话没了，而不是去踩一条已经关掉的连接。
+
+调一句、听一次，用不着上面那一串，所以 `insert` / `update` / `remove` /
+`query<T>` 各还有一层收回调的重载。它是同一把会话的第二张脸，不是第二条通路：
+交给队列的那次操作，与协程那面 `co_await` 的是同一个。
+
+```cpp
+// db 还是上面那个会话：已经连上，User 的映射也在上面。
+// 它不知道一次请求是从哪张脸进来的。
+db.insert(users, [](std::size_t added, std::exception_ptr bad) {
+    if (bad) { /* 这时 added 是 0，不是"部分成功" */ return; }
+    std::printf("%zu rows in\n", added);
+});
+
+db.query<User>("SELECT id, name FROM users WHERE id > ?",
+               uniorm::params{std::int64_t{9000}},
+               [](std::vector<User> rows, std::exception_ptr bad) {
+    if (bad) { return; }
+    use(rows);
+});
+```
+
+**先看第二个参数**：失败时第一个是 `R{}`。回调跑在"跑了这次操作的那条线程"上，
+而且是在这一格还没交回去的时候——回调慢，同一把会话的下一条请求就跟着等；换来的
+是 `~orm()` 一定会等到自己欠的每个回调，所以按引用捕获局部变量是合法的。空的
+`on_done` 在调用点就被拒：它什么都答不了，却要让析构等一次永远不会响的回调。它
+自己抛出就停在抛出的地方——那一次答案已经给过，会话照样接下一条。队列满时照样
+抛在调用点（与 `block()`、`start()` 同一条规矩），被拒的那次请求之后也不会有
+回调——根本没问出去。`resume_on` 对它没有话语权，它没有续体可交；`run_on` 仍有：
+会话挂着一台只有测试会泵的手泵，析构就等不到那一格交回来。这一面只覆盖四个
+CRUD 名字：
+builder 的三个终端、`connect`、`begin` 仍是 task 形。
+
 ### 代码生成（uniorm-gen）
 
 ```sh
@@ -431,8 +529,13 @@ include/uniorm/       公共头文件（消费者唯一需要的 include 根）
   mapping/            实体映射注册表
   builder/            谓词表达式与流式查询/更新/删除构建器
   schema.hpp          每个 backend 都要应答的自省契约
+  async.hpp           task 形状的那一面，只有声明与模板：task<T>、
+                        executor、async::orm、async::transaction
+                        （不进总头文件，协程因此是按需 include 的）
 src/                  实现（构建为 libuniorm.so）；私有头贴着对应 .cpp 存放，
                         以相对名引用，不在任何对外 include 路径上
+  async/              默认 worker 池、会话那条 FIFO，以及除模板之外的全部
+                        异步函数体
   backend/            scheme 解析与 backend 注册表
   odbc/               ODBC backend（适配器、句柄 RAII 封装、错误，以及应答
                         schema() 的目录读取）
@@ -457,7 +560,7 @@ v1 已完成：三条访问路径（裸 SQL / 聚合投影 / 实体映射）、�
 测试在 MariaDB 上、经 Connector/ODBC 走服务端预处理在真 MySQL 上、经 psqlODBC 在
 PostgreSQL 上全绿。夹具表改成三家都认的写法，于是一份 golden 便供三家。
 
-v2 进行中，v1 之上另外落地四块：
+v2 进行中，v1 之上另外落地五块：
 
 - **backend 抽象**：驱动中立的接口 + scheme 注册表，ODBC 迁到接口之后、改为
   `PRIVATE` 链接。`UNIORM_BACKEND_ODBC=OFF` 的构建编得出核心库、跑得了它自己的
@@ -474,6 +577,13 @@ v2 进行中，v1 之上另外落地四块：
   password 交给拥有这个 scheme 的 backend——只有它知道这些该怎么拼。串仍是
   每家都要实现的原语；不接四件套的 backend 就答 `capability_not_supported`，
   和这里其余可选能力一个形状。
+- **同一个契约之上的异步表面**：`async.hpp` 把同步调用放到 worker 池上跑，按会话
+  排先后，不动 backend 契约，也不动发出去的 SQL 一个字节。它的机制本身不需要库就
+  能验（假 backend 上的单测），对着活库则集成用例拿同一份夹具从两侧各读一遍、逐
+  字段相比，"一条通路"是比出来的，不是假设来的。做成仿真不是偷懒，是驱动
+  没别的可拿：连接器把 `SQL_ASYNC_MODE` 报成 `SQL_AM_NONE`，ODBC 3.8 那两个
+  异步信息字被拒，驱动管理器里根本没有 `SQLCompleteAsync`。哪一家 backend 真有
+  原生异步，就把这一层换掉，调用方一行不改。
 
 ### CI 守什么
 

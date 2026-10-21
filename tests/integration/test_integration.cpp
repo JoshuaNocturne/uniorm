@@ -5,6 +5,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <exception>
 #include <optional>
 #include <string>
 #include <thread>
@@ -12,6 +13,7 @@
 
 #include "../unit/check.hpp"
 
+#include <uniorm/async.hpp>
 #include <uniorm/backend/error.hpp>
 #include <uniorm/connection.hpp>
 #include <uniorm/connection_spec.hpp>
@@ -432,28 +434,36 @@ void test_converter_round_trip(orm& db) {
   db.execute_update(std::string("DELETE FROM ") + k_order_table);
 }
 
-orm build_registry(std::string_view conn_string) {
-  orm db(conn_string);
-  db.map<User>(k_table)
+// One recipe, written through whichever face is holding it: both objects take
+// the same map() with the same arguments, so an async session is configured by
+// the same lines a synchronous one is.
+template <class Session>
+void map_entities(Session& db) {
+  db.template map<User>(k_table)
     .primary_key("id", &User::id)
     .column("name", &User::name)
     .column("age", &User::age)
     .column("balance", &User::balance)
     .column("note", &User::note)
     .column("created", &User::created);
-  db.map<Pair>(k_pair_table)
+  db.template map<Pair>(k_pair_table)
     .primary_key("grp", &Pair::grp)
     .primary_key("idx", &Pair::idx)
     .column("label", &Pair::label);
-  db.map<Order>(k_order_table)
+  db.template map<Order>(k_order_table)
     .primary_key("id", &Order::id)
     .column("state", &Order::state)
     .column("note", &Order::note);
-  db.map<Money>(k_money_table)
+  db.template map<Money>(k_money_table)
     .primary_key("id", &Money::id)
     .column("amount", &Money::amount)
     .column("wide", &Money::wide)
     .column("whole", &Money::whole);
+}
+
+orm build_registry(std::string_view conn_string) {
+  orm db(conn_string);
+  map_entities(db);
   return db;
 }
 
@@ -1427,6 +1437,628 @@ void test_connection_pieces(
   CHECK_THROWS(connection{ absent }, backend::backend_error);
 }
 
+bool same_row_except_name(User const& lhs, User const& rhs) {
+  return lhs.id == rhs.id && lhs.age == rhs.age && lhs.balance == rhs.balance
+    && lhs.note == rhs.note && lhs.created == rhs.created;
+}
+
+bool same_row(User const& lhs, User const& rhs) {
+  return same_row_except_name(lhs, rhs) && lhs.name == rhs.name;
+}
+
+std::vector<User> read_range(orm& db) {
+  return db.query<User>()
+    .where(ge(&User::id, std::int64_t{ 9000 }))
+    .order_by(&User::id)
+    .all();
+}
+
+// One body per operation, each driven from a coroutine: the five terminals the
+// synchronous face has for this fixture, reached through the session instead
+// of through the calling thread.
+async::task<void> drive_session(async::orm& session, std::size_t& inserted,
+  std::size_t& updated, std::vector<User>& all_rows, std::optional<User>& one,
+  std::vector<User>& by_sql) {
+  std::vector<User> rows{
+    User{ 9003, "gina", std::int32_t{ 44 }, 3.5, std::nullopt, std::nullopt },
+    User{ 9004, "hank", std::nullopt, 4.5, std::string("async"),
+      detail::make_timestamp(2026, 1, 2, 3, 4, 5, 0) }
+  };
+  inserted = co_await session.insert(rows);
+  all_rows = co_await session.query<User>()
+    .where(ge(&User::id, std::int64_t{ 9000 }))
+    .order_by(&User::id)
+    .all();
+  one = co_await session.query<User>()
+    .where(eq(&User::id, std::int64_t{ 9004 }))
+    .one();
+  updated = co_await session.execute_update(
+    "UPDATE uniorm_it_user SET name = ? WHERE id = ?",
+    params{ std::string("renamed"), std::int64_t{ 9004 } });
+  by_sql = co_await session.query<User>(
+    "SELECT id, name, age, balance, note, created FROM uniorm_it_user"
+    " WHERE id >= ? ORDER BY id",
+    params{ std::int64_t{ 9000 } });
+  co_return;
+}
+
+// The asynchronous segment reads the fixture the synchronous path wrote, and
+// every check compares one async read against the sync read of the same rows:
+// a passing run says the two faces are one database path, not two look-alikes.
+void test_async_reads(std::string const& conn_string, orm& db) {
+  std::vector<User> seeded{
+    User{ 9000, "amy", std::int32_t{ 20 }, 1.0, std::nullopt, std::nullopt },
+    User{ 9001, "ben", std::nullopt, 2.0, std::string("sync"), std::nullopt },
+    User{ 9002, "cid", std::int32_t{ 30 }, -1.0, std::nullopt, std::nullopt }
+  };
+  CHECK(db.insert(seeded) == 3);
+
+  std::size_t inserted = 0;
+  std::size_t updated = 0;
+  std::vector<User> all_rows;
+  std::optional<User> one;
+  std::vector<User> by_sql;
+  std::vector<User> by_callback;
+  std::exception_ptr callback_failure;
+  {
+    async::orm session(conn_string);
+    map_entities(session);
+    auto work =
+      drive_session(session, inserted, updated, all_rows, one, by_sql);
+    work.block();
+    CHECK(session.pending() == 0);
+
+    // The callback face over the same session and the same statement the
+    // coroutine face awaited. Nothing pumps it here: the answer is the
+    // callback, so reading it back relies on the destructor waiting for it.
+    session.query<User>(
+      "SELECT id, name, age, balance, note, created FROM uniorm_it_user"
+      " WHERE id >= ? ORDER BY id",
+      params{ std::int64_t{ 9000 } },
+      [&](std::vector<User> rows, std::exception_ptr bad) {
+        callback_failure = bad;
+        by_callback = std::move(rows);
+      });
+  }
+
+  CHECK(!callback_failure);
+  CHECK(inserted == 2);
+  CHECK(updated == 1);
+  CHECK(all_rows.size() == 5);
+  CHECK(by_sql.size() == 5);
+  CHECK(by_callback.size() == 5);
+
+  auto const sync_rows = read_range(db);
+  CHECK(sync_rows.size() == 5);
+  for (std::size_t index = 0; index < sync_rows.size(); ++index) {
+    // by_sql ran after this session's own rename, so it is what the
+    // synchronous path now reads, field for field.
+    CHECK(same_row(by_sql[index], sync_rows[index]));
+    // The callback read the same five rows, after the same rename.
+    CHECK(same_row(by_callback[index], sync_rows[index]));
+    // all() ran before that rename: the same five rows, one name short.
+    CHECK(same_row_except_name(all_rows[index], sync_rows[index]));
+  }
+  CHECK(all_rows[4].name == "hank");
+  CHECK(sync_rows[4].name == "renamed");
+
+  // The awaited one() is the row as insert() wrote it, NULLs and all.
+  CHECK(one.has_value());
+  CHECK(one->name == "hank");
+  CHECK(!one->age.has_value());
+  CHECK(one->note.value_or("") == "async");
+  CHECK(one->created.has_value());
+
+  auto const renamed = db.query<User>()
+    .where(eq(&User::id, std::int64_t{ 9004 }))
+    .one();
+  CHECK(renamed.has_value());
+  CHECK(renamed->name == "renamed");
+
+  CHECK(db.execute_update("DELETE FROM uniorm_it_user WHERE id >= ?",
+    params{ std::int64_t{ 9000 } }) == 5);
+  CHECK(read_range(db).empty());
+}
+
+// A statement every driver this fixture runs on fails to prepare: a table
+// nobody created. The synchronous call is the baseline for the text the driver
+// produced, so a passing run says each asynchronous exit carries that report
+// rather than a wrapper around it.
+char const* k_missing_sql = "SELECT id, name FROM uniorm_it_async_missing";
+char const* k_range_sql =
+  "SELECT id, name, age, balance, note, created FROM uniorm_it_user"
+  " WHERE id BETWEEN ? AND ? ORDER BY id";
+
+std::string report_of(backend::backend_error const& error) {
+  return std::string(error.what());
+}
+
+std::string report_of(std::exception_ptr bad) {
+  if (!bad) {
+    return std::string();
+  }
+  try {
+    std::rethrow_exception(bad);
+  } catch (backend::backend_error const& error) {
+    return report_of(error);
+  } catch (...) {
+    return std::string();
+  }
+}
+
+std::vector<User> read_band(orm& db, std::int64_t floor) {
+  return db.query<User>()
+    .where(ge(&User::id, floor))
+    .order_by(&User::id)
+    .all();
+}
+
+std::optional<User> row_at(orm& db, std::int64_t id) {
+  return db.query<User>().where(eq(&User::id, id)).one();
+}
+
+// Every segment below works inside 9100..9199 and clears it on both ends, so a
+// run that died in one of them does not decide what the next one counts.
+void clear_band(orm& db) {
+  db.execute_update(
+    "DELETE FROM uniorm_it_user WHERE id BETWEEN 9100 AND 9199");
+}
+
+// The failure caught on the far side of a co_await, inside a body.
+async::task<void> guard_one_read(async::orm& session, std::string& report,
+  bool& reported, std::size_t& rows_read) {
+  try {
+    auto found = co_await session.query<User>(k_missing_sql);
+    rows_read = found.size();
+  } catch (backend::backend_error const& error) {
+    reported = true;
+    report = report_of(error);
+  }
+  co_return;
+}
+
+// The same failure with nothing catching it: it comes out of the drive action.
+async::task<std::size_t> read_straight(async::orm& session) {
+  auto found = co_await session.query<User>(k_missing_sql);
+  co_return found.size();
+}
+
+void test_async_failure_reaches_every_exit(
+  std::string const& conn_string, orm& db) {
+  clear_band(db);
+
+  std::string baseline;
+  bool sync_reported = false;
+  try {
+    db.query<User>(k_missing_sql);
+  } catch (backend::backend_error const& error) {
+    sync_reported = true;
+    CHECK(error.backend_name() == std::string("odbc"));
+    baseline = report_of(error);
+  }
+  CHECK(sync_reported);
+  CHECK(baseline.find('[') != std::string::npos);
+
+  std::string blocked_report;
+  std::string awaited_report;
+  std::string escaped_report;
+  std::string handed_report;
+  std::string callback_report;
+  std::vector<User> callback_rows(1);
+  std::size_t awaited_rows = 0;
+  std::size_t escaped_rows = 0;
+  bool blocked_reported = false;
+  bool awaited_reported = false;
+  bool guarded_escaped = false;
+  bool escaped_reported = false;
+  bool handed_reported = false;
+  bool kept_reported = false;
+  bool callback_answered = false;
+  {
+    async::orm session(conn_string);
+    map_entities(session);
+
+    try {
+      session.query<User>(k_missing_sql).block();
+    } catch (backend::backend_error const& error) {
+      blocked_reported = true;
+      blocked_report = report_of(error);
+    }
+    CHECK(session.pending() == 0);
+
+    auto guarded =
+      guard_one_read(session, awaited_report, awaited_reported, awaited_rows);
+    try {
+      guarded.block();
+    } catch (...) {
+      guarded_escaped = true;
+    }
+
+    try {
+      auto straight = read_straight(session);
+      escaped_rows = straight.block();
+    } catch (backend::backend_error const& error) {
+      escaped_reported = true;
+      escaped_report = report_of(error);
+    }
+    CHECK(session.pending() == 0);
+
+    session.query<User>(k_missing_sql)
+      .start([&](std::exception_ptr bad) {
+        handed_reported = true;
+        handed_report = report_of(bad);
+      });
+
+    // The other half of what start() promises: a body that lands is reported
+    // nowhere, and no thread here waits for this write.
+    session.execute_update(
+      "INSERT INTO uniorm_it_user (id, name, age, balance)"
+      " VALUES (?, ?, ?, ?)",
+      params{ std::int64_t{ 9100 }, std::string("handed"), std::int32_t{ 5 },
+        1.0 })
+      .start([&](std::exception_ptr) { kept_reported = true; });
+
+    session.query<User>(k_missing_sql, params{},
+      [&](std::vector<User> rows, std::exception_ptr bad) {
+        callback_answered = true;
+        callback_rows = std::move(rows);
+        callback_report = report_of(bad);
+      });
+  }
+
+  CHECK(blocked_reported);
+  CHECK(awaited_reported);
+  CHECK(!guarded_escaped);
+  CHECK(escaped_reported);
+  CHECK(handed_reported);
+  CHECK(callback_answered);
+  CHECK(!kept_reported);
+  CHECK(awaited_rows == 0);
+  CHECK(escaped_rows == 0);
+  CHECK(blocked_report == baseline);
+  CHECK(awaited_report == baseline);
+  CHECK(escaped_report == baseline);
+  CHECK(handed_report == baseline);
+  CHECK(callback_report == baseline);
+  CHECK(callback_rows.empty());
+
+  auto const kept = row_at(db, std::int64_t{ 9100 });
+  CHECK(kept.has_value());
+  CHECK(kept->name == "handed");
+  clear_band(db);
+}
+
+async::task<void> commit_a_write(async::orm& session, bool& opened,
+  bool& closed) {
+  auto tx = co_await session.begin();
+  opened = tx.active();
+  co_await session.execute_update(
+    "INSERT INTO uniorm_it_user (id, name, age, balance)"
+    " VALUES (?, ?, ?, ?)",
+    params{ std::int64_t{ 9120 }, std::string("committed"), std::int32_t{ 6 },
+      1.0 });
+  co_await tx.commit();
+  closed = !tx.active();
+  co_return;
+}
+
+async::task<void> roll_back_a_write(async::orm& session, bool& closed) {
+  auto tx = co_await session.begin();
+  co_await session.execute_update(
+    "INSERT INTO uniorm_it_user (id, name, age, balance)"
+    " VALUES (?, ?, ?, ?)",
+    params{ std::int64_t{ 9121 }, std::string("rolled"), std::int32_t{ 7 },
+      1.0 });
+  co_await tx.rollback();
+  closed = !tx.active();
+  co_return;
+}
+
+// Reaching the end of the body without either verb is a legal shape: the handle
+// goes out of scope here, which is where this round trip happens.
+async::task<void> forget_to_close(async::orm& session) {
+  auto tx = co_await session.begin();
+  co_await session.execute_update(
+    "INSERT INTO uniorm_it_user (id, name, age, balance)"
+    " VALUES (?, ?, ?, ?)",
+    params{ std::int64_t{ 9122 }, std::string("forgotten"),
+      std::int32_t{ 8 }, 1.0 });
+  co_return;
+}
+
+void test_async_transaction_closes_its_round_trip(
+  std::string const& conn_string, orm& db) {
+  clear_band(db);
+  bool opened = false;
+  bool committed_closed = false;
+  bool rolled_back_closed = false;
+  {
+    async::orm session(conn_string);
+    map_entities(session);
+    auto kept = commit_a_write(session, opened, committed_closed);
+    kept.block();
+    CHECK(opened);
+    CHECK(committed_closed);
+
+    auto dropped = roll_back_a_write(session, rolled_back_closed);
+    dropped.block();
+    CHECK(rolled_back_closed);
+
+    auto forgotten = forget_to_close(session);
+    forgotten.block();
+    CHECK(session.pending() == 0);
+  }
+
+  CHECK(row_at(db, std::int64_t{ 9120 }).has_value());
+  CHECK(!row_at(db, std::int64_t{ 9121 }).has_value());
+  CHECK(!row_at(db, std::int64_t{ 9122 }).has_value());
+  CHECK(read_band(db, std::int64_t{ 9120 }).size() == 1);
+  clear_band(db);
+}
+
+// The four callback names against a real driver: each answer arrives as the
+// second argument, and what the body did is what the synchronous face reads
+// back once the session has gone quiet.
+void test_async_callback_crud(std::string const& conn_string, orm& db) {
+  clear_band(db);
+  std::vector<User> seeded{
+    User{ 9130, "nia", std::int32_t{ 31 }, 2.0, std::nullopt, std::nullopt },
+    User{ 9131, "omar", std::int32_t{ 32 }, 3.0, std::string("cb"),
+      std::nullopt }
+  };
+
+  std::size_t inserted = 0;
+  std::size_t updated = 0;
+  std::size_t removed = 0;
+  std::size_t duplicate_count = 0;
+  std::vector<User> read_back;
+  std::vector<User> read_after;
+  std::exception_ptr insert_failure;
+  std::exception_ptr read_failure;
+  std::exception_ptr update_failure;
+  std::exception_ptr remove_failure;
+  std::exception_ptr duplicate_failure;
+  std::exception_ptr after_failure;
+  {
+    async::orm session(conn_string);
+    map_entities(session);
+    session.insert(seeded, [&](std::size_t added, std::exception_ptr bad) {
+      inserted = added;
+      insert_failure = bad;
+    });
+    session.query<User>(k_range_sql, params{ std::int64_t{ 9130 },
+      std::int64_t{ 9131 } },
+      [&](std::vector<User> rows, std::exception_ptr bad) {
+        read_back = std::move(rows);
+        read_failure = bad;
+      });
+
+    std::vector<User> changed{ seeded };
+    changed[0].name = "nia_renamed";
+    changed[1].balance = 9.5;
+    session.update(changed, [&](std::size_t touched, std::exception_ptr bad) {
+      updated = touched;
+      update_failure = bad;
+    });
+
+    // The same keys again: the driver refuses, the answer is R{} with a real
+    // error in the second argument, and the queue keeps serving after it.
+    session.insert(seeded, [&](std::size_t added, std::exception_ptr bad) {
+      duplicate_count = added;
+      duplicate_failure = bad;
+    });
+    session.query<User>(k_range_sql, params{ std::int64_t{ 9130 },
+      std::int64_t{ 9131 } },
+      [&](std::vector<User> rows, std::exception_ptr bad) {
+        read_after = std::move(rows);
+        after_failure = bad;
+      });
+
+    std::vector<User> dropping{ seeded[1] };
+    session.remove(dropping, [&](std::size_t gone, std::exception_ptr bad) {
+      removed = gone;
+      remove_failure = bad;
+    });
+
+    // The barrier ~orm() would run, taken while the session stays open: every
+    // request this one accepted has answered by the time it comes back.
+    session.wait_all_operations();
+    CHECK(session.pending() == 0);
+    CHECK(inserted == 2);
+    CHECK(updated == 2);
+    CHECK(removed == 1);
+    CHECK(read_back.size() == 2);
+    CHECK(read_after.size() == 2);
+  }
+
+  CHECK(!insert_failure);
+  CHECK(!read_failure);
+  CHECK(!update_failure);
+  CHECK(!remove_failure);
+  CHECK(!after_failure);
+  CHECK(duplicate_failure);
+  CHECK(inserted == 2);
+  CHECK(updated == 2);
+  CHECK(removed == 1);
+  CHECK(duplicate_count == 0);
+  CHECK(read_back.size() == 2);
+  CHECK(same_row(read_back[0], seeded[0]));
+  CHECK(same_row(read_back[1], seeded[1]));
+  CHECK(read_after.size() == 2);
+  CHECK(read_after[0].name == "nia_renamed");
+  CHECK(read_after[1].balance == 9.5);
+
+  auto const sync_rows = read_band(db, std::int64_t{ 9130 });
+  CHECK(sync_rows.size() == 1);
+  CHECK(sync_rows[0].id == 9130);
+  CHECK(sync_rows[0].name == "nia_renamed");
+  clear_band(db);
+}
+
+async::task<void> write_and_read_once(async::orm& session,
+  std::size_t& written, std::vector<User>& rows) {
+  std::vector<User> batch{
+    User{ 9160, "opener", std::int32_t{ 60 }, 1.0, std::nullopt, std::nullopt }
+  };
+  written = co_await session.insert(batch);
+  rows = co_await session.query<User>()
+    .where(ge(&User::id, std::int64_t{ 9160 }))
+    .all();
+  co_return;
+}
+
+// A session that starts from nothing: the mapping goes through the forwarded
+// map(), and the connection itself is one operation on the same queue as the
+// work after it.
+void test_async_session_connects_as_an_operation(
+  std::string const& conn_string, orm& db) {
+  clear_band(db);
+  std::size_t written = 0;
+  std::vector<User> rows;
+  {
+    async::orm session;
+    session.map<User>(k_table)
+      .primary_key("id", &User::id)
+      .column("name", &User::name)
+      .column("age", &User::age)
+      .column("balance", &User::balance)
+      .column("note", &User::note)
+      .column("created", &User::created);
+    session.connect(conn_string).block();
+    auto work = write_and_read_once(session, written, rows);
+    work.block();
+    CHECK(session.pending() == 0);
+    session.disconnect().block();
+  }
+
+  CHECK(written == 1);
+  CHECK(rows.size() == 1);
+  CHECK(rows[0].name == "opener");
+  auto const stored = row_at(db, std::int64_t{ 9160 });
+  CHECK(stored.has_value());
+  CHECK(same_row(*stored, rows[0]));
+  clear_band(db);
+}
+
+// The session takes the connection string itself: no synchronous object appears
+// anywhere on this path, and the mapping written through the forwarded map() is
+// the one the queued statement renders against a live driver.
+void test_a_session_builds_on_its_own_connection_string(
+  std::string const& conn_string, orm& db) {
+  clear_band(db);
+  std::size_t written = 0;
+  std::vector<User> rows;
+  {
+    async::orm session(conn_string);
+    session.map<User>(k_table)
+      .primary_key("id", &User::id)
+      .column("name", &User::name)
+      .column("age", &User::age)
+      .column("balance", &User::balance)
+      .column("note", &User::note)
+      .column("created", &User::created);
+    std::vector<User> const batch{
+      User{ 9170, "solo", std::int32_t{ 70 }, 1.0, std::nullopt, std::nullopt },
+      User{ 9171, "standalone", std::int32_t{ 71 }, 2.0, std::string("direct"),
+        std::nullopt }
+    };
+    written = session.insert(batch).block();
+    rows = session.query<User>(
+      k_range_sql, params{ std::int64_t{ 9170 }, std::int64_t{ 9171 } })
+             .block();
+    CHECK(session.auto_commit());
+    CHECK(session.pending() == 0);
+  }
+
+  CHECK(written == 2);
+  CHECK(rows.size() == 2);
+  auto const stored = read_band(db, std::int64_t{ 9170 });
+  CHECK(stored.size() == 2);
+  CHECK(same_row(rows[0], *row_at(db, std::int64_t{ 9170 })));
+  CHECK(same_row(rows[1], *row_at(db, std::int64_t{ 9171 })));
+  clear_band(db);
+}
+
+// Two sessions are two connections, which is the only way this API goes in
+// parallel: one thread drives a coroutine while the calling thread takes the
+// callback answers. Each read is limited to the ids its own session wrote, so
+// nothing here depends on how the two interleaved.
+async::task<void> write_threaded_half(async::orm& session,
+  std::size_t& written, std::int64_t& counted) {
+  std::vector<User> batch{
+    User{ 9140, "side-a", std::int32_t{ 40 }, 1.0, std::nullopt, std::nullopt },
+    User{ 9141, "side-b", std::int32_t{ 41 }, 2.0, std::string("thread"),
+      std::nullopt }
+  };
+  written = co_await session.insert(batch);
+  counted = co_await session.query<User>()
+    .where(ge(&User::id, std::int64_t{ 9140 }))
+    .where(le(&User::id, std::int64_t{ 9141 }))
+    .count();
+  co_return;
+}
+
+void test_async_two_sessions_write_side_by_side(
+  std::string const& conn_string, orm& db) {
+  clear_band(db);
+  std::size_t thread_written = 0;
+  std::int64_t thread_counted = 0;
+  std::exception_ptr thread_failure;
+  std::size_t callback_written = 0;
+  std::size_t callback_rows = 0;
+  std::exception_ptr callback_failure;
+  std::exception_ptr callback_read_failure;
+  bool callback_read_answered = false;
+  {
+    std::thread other([&] {
+      async::orm threaded(conn_string);
+      map_entities(threaded);
+      try {
+        auto work = write_threaded_half(threaded, thread_written,
+          thread_counted);
+        work.block();
+      } catch (...) {
+        thread_failure = std::current_exception();
+      }
+    });
+
+    async::orm local(conn_string);
+    map_entities(local);
+    std::vector<User> rows{
+      User{ 9150, "side-c", std::int32_t{ 50 }, 1.0, std::nullopt,
+        std::nullopt },
+      User{ 9151, "side-d", std::int32_t{ 51 }, 2.0, std::string("two"),
+        std::nullopt }
+    };
+    local.insert(rows, [&](std::size_t added, std::exception_ptr bad) {
+      callback_written = added;
+      callback_failure = bad;
+    });
+    local.query<User>(k_range_sql, params{ std::int64_t{ 9150 },
+      std::int64_t{ 9151 } },
+      [&](std::vector<User> found, std::exception_ptr bad) {
+        callback_rows = found.size();
+        callback_read_answered = true;
+        callback_read_failure = bad;
+      });
+
+    other.join();
+  }
+
+  CHECK(!thread_failure);
+  CHECK(!callback_failure);
+  CHECK(!callback_read_failure);
+  CHECK(thread_written == 2);
+  CHECK(thread_counted == 2);
+  CHECK(callback_written == 2);
+  CHECK(callback_read_answered);
+  CHECK(callback_rows == 2);
+
+  auto const all = read_band(db, std::int64_t{ 9140 });
+  CHECK(all.size() == 4);
+  clear_band(db);
+}
+
 }  // namespace
 
 int main() {
@@ -1483,6 +2115,13 @@ int main() {
     test_pool(conn_string);
     test_pool_maintenance(conn_string);
     test_connection_pieces(dsn, user, pwd);
+    test_async_reads(conn_string, db);
+    test_async_failure_reaches_every_exit(conn_string, db);
+    test_async_transaction_closes_its_round_trip(conn_string, db);
+    test_async_callback_crud(conn_string, db);
+    test_async_session_connects_as_an_operation(conn_string, db);
+    test_a_session_builds_on_its_own_connection_string(conn_string, db);
+    test_async_two_sessions_write_side_by_side(conn_string, db);
 
     db.execute_update(std::string("DROP TABLE ") + k_table);
     db.execute_update(std::string("DROP TABLE ") + k_pair_table);

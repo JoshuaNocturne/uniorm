@@ -49,6 +49,12 @@ See [docs/design.md](docs/design.md) for the full design.
   transaction when the connection autocommits — in manual mode the chunks join
   the caller's
 - **RAII transactions** — automatic rollback on destruction
+- **Optional asynchronous face** (`async.hpp`) — the same synchronous contract
+  in `uniorm::async::task<T>`: one session runs one operation at a time, three
+  drive actions (`co_await`, `block()`, `start()`), and executors the caller can
+  name for where a body runs and where its continuation lands. The four CRUD
+  names also take a plain callback, for a caller who wants one call and one
+  answer
 - **Connection pool** — lazy creation, checkout timeout; a global
   single-threaded maintainer runs heartbeats and reclaims idle connections
 - **Live schema introspection** — `orm::schema()` and `connection::schema()`
@@ -395,6 +401,121 @@ pools keyed on DSN and UID, each built with default `pool_options`. Call
 `connection_pool_registry::configure()` for that connection string to change
 them.
 
+### Asynchronous face
+
+Nothing here is a second database path: a task body *is* the synchronous call it
+wraps — `orm::execute_update`, the fetch loop, a whole batch sweep — on a
+thread the caller does not wait on. The driver's own asynchronous entry points
+are not involved, because the connectors do not have them.
+
+```cpp
+#include <uniorm/async.hpp>
+
+uniorm::async::task<void> rename(uniorm::async::orm& db) {
+    auto tx = co_await db.begin();
+    co_await db.execute_update("UPDATE users SET name = ? WHERE id = ?",
+                               uniorm::params{"Ada", 7});
+    co_await tx.commit();   // dropping without it rolls back, and that blocks
+}
+
+int main() {
+    uniorm::async::orm db;
+    db.map<User>("users")                  // configuration is forwarded by name
+        .primary_key("id", &User::id)
+        .column("name", &User::name);
+    db.connect("DSN=mydb;UID=user;PWD=secret").block();
+
+    rename(db).block();                    // park this thread until it is over
+    db.execute_update("DELETE FROM visits", uniorm::params{})
+      .start([](std::exception_ptr bad) {  // hand it over and keep going
+        if (bad) { /* the write is lost; this handler is the only trace */ }
+      });
+    auto names = db.query<User>().all().block();
+}                                          // ~orm waits for handed-over work
+```
+
+Five promises the shape makes:
+
+- **The worker count is the ceiling.** `default_executor_size(n)` before the
+  first task decides it; afterwards the pool only grows, since a worker already
+  inside a driver call cannot be lifted out of it. Parallelism is more sessions,
+  never more tasks on one.
+- **A handed-over failure has exactly one exit.** `start()` takes an
+  `on_failure` handler and calls it for nothing else: a body that lands is not
+  reported, and a body that throws is reported nowhere else. `block()` and
+  `co_await` deliver that same `exception_ptr` by rethrowing it. Whatever the
+  handler itself throws stops at the library boundary — it is the last thing
+  between a failed operation and the thread that owns it, and neither of the two
+  places that run it may unwind.
+- **Queueing on one session is not going in parallel.** A session keeps one
+  operation in flight and runs the rest in the order they were driven —
+  `co_await`, `block()` and `start()` share one FIFO. A request waiting its turn
+  holds no thread; `pending()` counts them, and past `submit_limit()` (1024 to
+  start with) the drive action throws `submit_overflow` and leaves the task
+  undriven, so trying it again later is a legal shape — except at a `co_await`,
+  which has no call site to throw from: there the refusal becomes that await's
+  own failure and reaches the body's `catch`, exactly where a driver error
+  arrives.
+  `wait_all_operations()` is the barrier `~orm()` runs, taken while the session
+  stays open — what a long-lived session needs to settle everything it handed
+  over without dropping its connection. It waits only on requests the queue
+  accepted.
+- **A continuation changes threads by default.** The next link of a chain lands
+  on whichever worker finished the read. `run_on(executor&)` says where blocking
+  work goes, `resume_on(executor&)` where it comes back to; a one-off script
+  names neither. A session opens on the same three inputs the synchronous object
+  takes — a connection string, the four pieces, a pool to lease from — so
+  `uniorm::orm` need not appear in the program at all. `map` and the row, batch
+  and identifier knobs are forwarded names writing the one wrapped object; they
+  belong to the moments when nothing is in flight, since they change the same
+  state the queue exists to protect.
+- **Four blocking points are admitted rather than overlooked:** the catalog
+  reads that stayed synchronous (`validate()`, `schema()`,
+  `resolve_identifiers()`, reached through `sync()`), the rollback
+  `~async::transaction` takes as a fallback, the wait `~orm()` performs on work
+  this session handed over, and that same wait called by name through
+  `wait_all_operations()`. That same destructor rolls back every transaction
+  handle still open while the connection underneath it is still alive — a
+  handle may outlive its session, and asking it afterwards says so instead of
+  reaching through a dead connection.
+
+One call, one answer needs none of that, so `insert` / `update` / `remove` /
+`query<T>` each also take a callback. This is a second face over the same
+session, not a second path to the database: the operation handed to the queue is
+the very one the coroutine face awaits.
+
+```cpp
+// db is the session from the sample above: connected, with the User mapping on
+// it, and it does not know which face a request came from.
+db.insert(users, [](std::size_t added, std::exception_ptr bad) {
+    if (bad) { /* added is 0 here, not a partial count */ return; }
+    std::printf("%zu rows in\n", added);
+});
+
+db.query<User>("SELECT id, name FROM users WHERE id > ?",
+               uniorm::params{std::int64_t{9000}},
+               [](std::vector<User> rows, std::exception_ptr bad) {
+    if (bad) { return; }
+    use(rows);
+});
+```
+
+**Check the second argument first**: on failure the first is `R{}`. The callback
+answers on the thread that ran the operation, while that operation still holds
+its turn on the session, so a slow callback holds up the next request on the
+same session — and it is why `~orm()` waits for every callback it owes, which
+makes capturing locals by reference legal. An empty `on_done` is refused at
+the call: it would answer nothing, and the destructor would wait on a callback
+that can never arrive. One that throws stops where it threw — that answer had
+already been given, and the session takes the next request. A queue full of
+requests throws `submit_overflow` at the call site, as it does for `block()`
+and `start()`, and a refused request
+never answers afterwards: nothing was asked. `resume_on` has no say here, since
+there is no continuation to hand over — but `run_on` does: a session handed an
+executor only a test pumps will wait in `~orm()` for a turn that never runs.
+This face covers the four CRUD names
+only — the builder terminals, `connect` and `begin` stay task-shaped.
+
 ### Code generation (uniorm-gen)
 
 ```sh
@@ -500,8 +621,13 @@ include/uniorm/       public headers (the only include root consumers need)
   mapping/            entity mapping registry
   builder/            predicate expressions and the fluent query/update/delete builders
   schema.hpp          the introspection contract every backend answers to
+  async.hpp           the task-shaped face, declarations and templates only:
+                        task<T>, executor, async::orm, async::transaction
+                        (not in the umbrella header, so coroutines stay opt-in)
 src/                  implementation (built into libuniorm.so); private headers
                         sit beside their .cpp and are reached by relative name
+  async/              the default worker pool, the session FIFO, and every
+                        async body that is not a template
   backend/            scheme parsing and the backend registry
   odbc/               ODBC backend: adapter, handle wrappers, errors, and the
                         catalog reads that answer schema()
@@ -530,7 +656,7 @@ Connector/ODBC with server-side prepares, and on PostgreSQL through psqlODBC.
 One golden header serves all three families, because the fixture tables are
 spelled the way all of them parse.
 
-v2 is underway, and four pieces have landed on top of v1:
+v2 is underway, and five pieces have landed on top of v1:
 
 - **The backend abstraction** — a driver-neutral interface plus a scheme
   registry, with ODBC moved behind it and linked `PRIVATE`. A build with
@@ -554,6 +680,16 @@ v2 is underway, and four pieces have landed on top of v1:
   every backend implements; a backend that wants none of the four pieces says so
   with `capability_not_supported`, the same shape as every other optional
   capability here.
+- **An asynchronous surface over the same contract** — `async.hpp` runs the
+  synchronous calls on a worker pool, ordered per session, and changes no
+  backend contract and no line of SQL. Its machinery is covered without a
+  server, over a fake backend; against a live one, the integration suite reads
+  the same fixture through both faces and compares the rows field by field, so
+  "one path" is checked rather than assumed. It is emulation because the
+  drivers left nothing else on the table: the connector reports `SQL_AM_NONE`
+  for `SQL_ASYNC_MODE`, refuses the two ODBC 3.8 async information words, and
+  the driver manager exports no `SQLCompleteAsync`. A later backend that does
+  have native async replaces this layer with no caller changing a line.
 
 ### What CI guards
 

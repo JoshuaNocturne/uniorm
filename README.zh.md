@@ -621,3 +621,7 @@ backend 要 `array_rowcount_totals`，没有它就一组一次 execute 地扫。
 撞出来的。
 
 后续为 libpq / Oracle OCI 原生 backend 等，见设计文档 §5 与 §9。
+
+## 许可证
+
+MIT，见 [LICENSE](LICENSE)。

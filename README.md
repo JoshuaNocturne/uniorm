@@ -736,3 +736,7 @@ and the gap is worth its keeping, since the one real metadata loss found so far
 came out of exactly such a cell.
 
 Next: native libpq and Oracle OCI backends — see design doc §5 and §9.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

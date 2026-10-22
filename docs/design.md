@@ -190,7 +190,9 @@ uniorm/
 那些读取挪进 ODBC backend 后，工具只剩公开头可用，也就回到了公开边界这一侧。
 公开头一旦 `#include` 私有头便无法解析，边界由编译器强制；库内的 `<sql.h>`
 只出现在 `backends/odbc/` 之下，对外头文件既不带驱动类型，也不带 ODBC 链接依赖
-（`ODBC::ODBC` 是 PRIVATE）。
+（`ODBC::ODBC` 是 PRIVATE）。反向的边界同样由编译器强制：每个安装头各自编成
+一个翻译单元（`uniorm_header_check`，只编不链），公开头不能靠邻居先 include
+才过得去。
 
 公开头只留声明：非模板成员的定义一律进同名 `.cpp`（`orm.cpp`、`decimal.cpp`、
 `async.cpp` 都按这条走）。定义搬出类外时导出标记不会跟着走——类外的

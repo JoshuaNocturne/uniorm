@@ -39,6 +39,27 @@ add_test(NAME unit_tests COMMAND uniorm_unit_tests)
 # uniorm.dll beside the core target, not the test, so copy it over.
 uniorm_copy_runtime_dlls(uniorm_unit_tests)
 
+# Each installed header has to compile on its own. The umbrella is a
+# convenience, so a consumer that names one header directly cannot be
+# expected to have included another one first; and the installed-tree check
+# in install_smoke compares file lists, not compilations, so a header that
+# only compiles behind a neighbour's include passes it. One TU per header,
+# compiled and never linked: a missing include becomes a build failure here
+# rather than a surprise in someone else's project.
+file(GLOB_RECURSE uniorm_public_headers RELATIVE ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/include/uniorm/*.hpp)
+set(uniorm_header_check_sources "")
+foreach(header IN LISTS uniorm_public_headers)
+    string(REGEX REPLACE "[/:.]" "_" slug ${header})
+    set(check_source ${CMAKE_CURRENT_BINARY_DIR}/header_checks/${slug}.cpp)
+    # file(GENERATE) writes only when the content changes, so reconfiguring
+    # does not recompile every one of these TUs.
+    file(GENERATE OUTPUT ${check_source} CONTENT "#include <${header}>\n")
+    list(APPEND uniorm_header_check_sources ${check_source})
+endforeach()
+add_library(uniorm_header_check OBJECT ${uniorm_header_check_sources})
+target_link_libraries(uniorm_header_check PRIVATE uniorm::uniorm)
+
 if(UNIORM_BACKEND_ODBC)
     # The white-box targets below still link uniorm::odbc so a driver-side
     # symbol is reachable at build time. Under the plugin shape (design.md

@@ -695,7 +695,10 @@ v2 is underway, and five pieces have landed on top of v1:
 
 Four jobs. `core` configures the ODBC-free build over a pair of `sql.h` and
 `sqlext.h` stubs that do nothing but report an error, so a driver type reaching
-the public headers fails the one compile standing watch over that. `driver`
+the public headers fails the one compile standing watch over that. All four also
+compile one translation unit per installed header (`uniorm_header_check`, built
+and never linked), so a public header that only parses behind a neighbour's
+include fails this build instead of a consumer's project. `driver`
 carries three legs, each pairing a connector with the server it is used
 against, and each asking which server answered before it builds — PostgreSQL
 answers `SHOW SERVER_VERSION`, since `SELECT VERSION()` there starts with the

@@ -10,6 +10,10 @@ add_library(uniorm_gen_core STATIC
 )
 target_link_libraries(uniorm_gen_core PUBLIC uniorm::uniorm)
 target_include_directories(uniorm_gen_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+# Naming folds through the core's one case folding, which is the core's
+# private detail; the tool is built in this tree, not from an installed
+# prefix, so it reads that file where it lies.
+target_include_directories(uniorm_gen_core PUBLIC ${PROJECT_SOURCE_DIR}/src)
 
 add_executable(uniorm-gen main.cpp)
 # The generator opens a live connection through registry::create, so it needs

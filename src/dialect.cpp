@@ -1,6 +1,6 @@
 #include "uniorm/dialect.hpp"
 
-#include <uniorm/detail/identifier.hpp>
+#include "identifier.hpp"
 #include <uniorm/error.hpp>
 
 namespace uniorm {

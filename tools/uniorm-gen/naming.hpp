@@ -3,7 +3,7 @@
 #include <string>
 #include <string_view>
 
-#include <uniorm/detail/identifier.hpp>
+#include "identifier.hpp"
 
 namespace uniorm::gen {
 

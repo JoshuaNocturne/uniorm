@@ -116,8 +116,6 @@ uniorm/
 │   ├── detail/
 │   │   ├── entity_binding.hpp   # 注册实体的结果列直绑（按列名定位序号）
 │   │   ├── fetch_rows.hpp       # 实体读与投影读共用的块读循环与取一行
-│   │   ├── identifier.hpp       # 全库唯一的那一处 ASCII 折叠：凡比较或发出
-│   │   │                        # 标识符名字的都经它（§4.8、§5.2、§6.2）
 │   │   ├── pfr.hpp              # 自实现聚合体反射（字段数探测 + 展开，上限 64）
 │   │   ├── projection.hpp       # 聚合 struct 投影绑定（field_binding 体系）
 │   │   ├── traits.hpp           # is_optional_v 等共享 traits
@@ -128,6 +126,9 @@ uniorm/
 │       ├── builder.hpp          # query<T> / update<T> / remove<T> / update_builder / remove_builder
 │       └── expression.hpp       # member_key / predicate / 谓词构造器
 ├── src/                         # 核心实现（编译进 libuniorm）；私有头贴着 .cpp 存放
+│   ├── identifier.hpp           # 全库唯一的那一处 ASCII 折叠：凡比较或发出
+│   │                            # 标识符名字的都经它（§4.8、§5.2、§6.2）；
+│   │                            # 核心、backend 与生成器共读
 │   ├── orm_mapping.hpp          # 实体写的 WHERE 解析与 SET/WHERE 列划分（纯映射规则）
 │   ├── statement_cache.hpp      # LRU 预编译语句缓存（存 statement_iface，容量固定 64）
 │   ├── async/                   # 异步表面的函数体：async.cpp 装会话与句柄、
@@ -183,11 +184,14 @@ uniorm/
 `uniorm/decimal.hpp` 传递闭包内的头文件留在 `include/`，
 其余下沉：核心的私有头与实现贴邻放在 `src/`，backend 的私有头贴邻放在 `backends/<scheme>/`，
 都用引号相对名互相引用。于是 `src/` 不在 `uniorm` 目标的任何 include 路径上（同目录
-引用无需路径），只有两个白盒单测目标显式带 `-I`：核心侧的 `uniorm_unit_tests`
-用 `-I src` 读 `src/orm_mapping.hpp` 一类私有头，backend 侧的 `uniorm_odbc_unit_tests`
-用 `-I backends` 读 `backends/odbc/*.hpp` 的句柄层。`uniorm-gen`
-曾在其列——它自己调 `SQLTables` / `SQLColumns` 这些目录函数，就得请出它们的声明；
-那些读取挪进 ODBC backend 后，工具只剩公开头可用，也就回到了公开边界这一侧。
+引用无需路径），只有跨目录点名核心私有头的目标显式带 `-I src`。
+`uniorm_unit_tests` 读 `src/orm_mapping.hpp` 一类；那唯一一处 ASCII
+折叠 `src/identifier.hpp` 由核心、ODBC backend 与生成器共读，所以
+`uniorm_odbc`、`uniorm_gen_core` 与 `uniorm_integration_tests` 也带上它
+——折叠只能有一个来源，而它既不是公开头，也不属于任何一家的目录。
+backend 侧的 `uniorm_odbc_unit_tests` 另带 `-I backends` 读句柄层。
+`uniorm-gen` 曾在 `-I` 之列是为了 `SQLTables` / `SQLColumns` 的声明；
+那些读取挪进 ODBC backend 后，驱动那侧回到了公开边界，剩下的只有这把折叠。
 公开头一旦 `#include` 私有头便无法解析，边界由编译器强制；库内的 `<sql.h>`
 只出现在 `backends/odbc/` 之下，对外头文件既不带驱动类型，也不带 ODBC 链接依赖
 （`ODBC::ODBC` 是 PRIVATE）。反向的边界同样由编译器强制：每个安装头各自编成

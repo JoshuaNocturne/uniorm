@@ -8,9 +8,9 @@
 #include <string_view>
 #include <vector>
 
-#include <uniorm/detail/identifier.hpp>
 #include <uniorm/schema.hpp>
 #include "connection.hpp"
+#include "identifier.hpp"
 
 namespace uniorm::odbc {
 

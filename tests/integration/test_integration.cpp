@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "../unit/check.hpp"
+#include "identifier.hpp"
 
 #include <uniorm/async.hpp>
 #include <uniorm/backend/error.hpp>
@@ -19,7 +20,6 @@
 #include <uniorm/connection_spec.hpp>
 #include <uniorm/converter.hpp>
 #include <uniorm/decimal.hpp>
-#include <uniorm/detail/identifier.hpp>
 #include <uniorm/detail/time.hpp>
 #include <uniorm/dialect.hpp>
 #include <uniorm/mapping/registry.hpp>

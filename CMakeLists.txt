@@ -67,7 +67,9 @@ target_include_directories(uniorm PUBLIC
     $<INSTALL_INTERFACE:include>
 )
 # Private headers sit beside their sources in src/ and are included by relative
-# name, so src/ is on no include path; consumers cannot reach them.
+# name, so src/ is on no include path of the core's; consumers cannot reach
+# them. A target that names one across directories -- the case folding the
+# backend and the generator share with the core -- carries -I src itself.
 # The core carries no driver dependency: each backend is its own shared
 # library, sitting outside src/ so its build shape is obvious at a glance
 # (see backends/odbc/CMakeLists.txt), and pulls in the driver it needs.

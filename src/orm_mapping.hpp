@@ -14,8 +14,8 @@
 #include <utility>
 #include <vector>
 
-#include <uniorm/detail/identifier.hpp>
 #include <uniorm/dialect.hpp>
+#include "identifier.hpp"
 #include <uniorm/error.hpp>
 #include <uniorm/mapping/registry.hpp>
 #include <uniorm/schema.hpp>

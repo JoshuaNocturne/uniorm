@@ -1,7 +1,7 @@
 #pragma once
 
-// Private detail: the one case folding used wherever this library compares or
-// emits an identifier name. Installed because the headers that fold are.
+// The one case folding used wherever this library compares or emits an
+// identifier name: the core, the ODBC backend and the generator share it.
 
 #include <algorithm>
 #include <string>

@@ -83,7 +83,8 @@ if(UNIORM_BACKEND_ODBC)
     # Reaching the backend's private headers by name ("odbc/error.hpp") is
     # exactly what the plugin-shape split makes the source of truth for
     # visibility, so -I here is the whole surface the tests can peek at.
-    target_include_directories(uniorm_odbc_unit_tests PRIVATE ${PROJECT_SOURCE_DIR}/backends)
+    target_include_directories(uniorm_odbc_unit_tests PRIVATE
+        ${PROJECT_SOURCE_DIR}/backends ${PROJECT_SOURCE_DIR}/src)
     add_test(NAME odbc_unit_tests COMMAND uniorm_odbc_unit_tests)
     uniorm_copy_runtime_dlls(uniorm_odbc_unit_tests)
 
@@ -91,6 +92,10 @@ if(UNIORM_BACKEND_ODBC)
         integration/test_integration.cpp
     )
     target_link_libraries(uniorm_integration_tests PRIVATE uniorm::odbc)
+    # The integration case folds the names it reads back, so it names the
+    # core's private folding header rather than a second copy of the rule.
+    target_include_directories(uniorm_integration_tests PRIVATE
+        ${PROJECT_SOURCE_DIR}/src)
     add_test(NAME integration_tests COMMAND uniorm_integration_tests)
     set_tests_properties(integration_tests PROPERTIES
         SKIP_RETURN_CODE 77

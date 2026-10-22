@@ -30,6 +30,10 @@ if(WIN32)
 endif()
 
 target_compile_features(uniorm_odbc PUBLIC cxx_std_20)
+# The one ASCII case folding is the core's, and the catalog compares names
+# through it, so this backend reaches one file into src/ -- the private
+# directory that install rules ship nothing from.
+target_include_directories(uniorm_odbc PRIVATE ${PROJECT_SOURCE_DIR}/src)
 target_link_libraries(uniorm_odbc
     PUBLIC uniorm::uniorm
     PRIVATE ODBC::ODBC

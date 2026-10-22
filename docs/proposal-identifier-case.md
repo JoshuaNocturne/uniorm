@@ -299,8 +299,8 @@ MySQL 的 `INT` 报 integer，成员是 `std::int32_t`。把后一份头拿到�
 
 1. **步骤 1（B + §5 前提）**：目录读取按名字再筛（判据见 §5）；`validate()` 的候选诊
    断（含目录侧的 ASCII 折叠比较，步骤 2 复用同一个 helper）。无 API 变更。约 80–120
-   行含测试。**已落地**：折叠单一来源进 `include/uniorm/detail/identifier.hpp`，核心
-   与 `uniorm-gen` 的 `naming.cpp` 共用它，于是全库只有一处 ASCII 折叠规则；
+   行含测试。**已落地**：折叠单一来源进 `src/identifier.hpp`，核心与
+   `uniorm-gen` 的 `naming.cpp` 共用它，于是全库只有一处 ASCII 折叠规则；
    `validate_entity()` 的两条落空消息带上 `(only case differs from '…')`，假目录用例
    逐字钉住（`test_orm_validate`）。
 2. **步骤 2（C）**：`dialect::identifier_case` 与 `quote_identifier` 里的 ASCII 折
@@ -326,7 +326,7 @@ MySQL 的 `INT` 报 integer，成员是 `std::int32_t`。把后一份头拿到�
 草图各补一对访问器，§4.7 的 `validate()` 注释收下 §4.3 那条一致性规则；§5.2 写下"名字
 按名字问，不按 pattern 问"（§5 的落地形状），§6.2/§6.3 各自接上生成器侧，§6.4 写明配置
 键统一为大小写不敏感；§9 给 D 立了第 11 条并写明触发条件；§3 目录树收下新的
-`detail/identifier.hpp`，§8 测试清单收下三个新用例。README 中英两侧同步也做了——策略
+`src/identifier.hpp`，§8 测试清单收下三个新用例。README 中英两侧同步也做了——策略
 是一对访问器，不写进 README 就没人知道它存在。措辞上留了一处收敛：`orm` 的注释、
 `dialect` 的注释与 README 两侧都只说"`validate()` 按同一策略问目录，落空时报目录侧的
 拼法"，不写"校验收的就是查询会发出去的那个名字"（design.md 的两处草图起初漏收，见那里）；

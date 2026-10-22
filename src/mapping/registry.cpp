@@ -1,7 +1,7 @@
 #include "uniorm/mapping/registry.hpp"
 
 #include <uniorm/backend/error.hpp>
-#include <uniorm/detail/identifier.hpp>
+#include "../identifier.hpp"
 
 namespace uniorm {
 

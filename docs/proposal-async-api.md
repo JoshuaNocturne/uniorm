@@ -720,7 +720,7 @@ relaxed atomic（`async.cpp:36` 读它）：并发改它不会撕裂，只是哪
 本仓三处依赖"析构时替你收拾"的设施，收拾动作本身是数据库往返：
 
 - `pooled_connection::~pooled_connection()` → `connection_pool::release()`，未提
-  交的先 rollback 再复位 autocommit（`src/pool.cpp:255-277`、`:282-286`）；
+  交的先 rollback 再复位 autocommit（`src/pool.cpp:257-279`、`:284-288`）；
 - `transaction::~transaction()` → 未提交则 rollback
   （契约就写在 `include/uniorm/transaction.hpp:9-11`）；
 - 批量写里那个 `std::optional<transaction>`（`src/orm.cpp:677-681`）。
@@ -744,7 +744,7 @@ relaxed atomic（`async.cpp:36` 读它）：并发改它不会撕裂，只是哪
 
 - **size-1 池上重连会自锁。** `orm::connect()` 是在旧租约还握着的时候去求
   `registry.acquire()`，同一条 size-1 池上必然撞到 `acquire_timeout`
-  （`src/pool.cpp:234-238`）。同步下它抛 `pool_timeout`；异步下这一趟挂在 worker
+  （`src/pool.cpp:236-240`）。同步下它抛 `pool_timeout`；异步下这一趟挂在 worker
   上，等待期间那条 worker 就废了。修法（先放旧租约再取新的、失败时恢复）要和
   `tests/unit/test_identifier_resolution.cpp` 依赖的"连接失败保留旧租约"一起设
   计，不在本提案范围内动它；第一版把"重连前先 `co_await disconnect()`"写成要求。

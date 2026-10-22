@@ -1,9 +1,13 @@
 #include "check.hpp"
 
+#include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <thread>
+#include <vector>
 
 #include <uniorm/backend/backend.hpp>
 #include <uniorm/backend/error.hpp>
@@ -239,6 +243,168 @@ void test_spec_pool_refills_from_the_spec() {
   fail_next_rollback = false;
 }
 
+// A full pool parks its waiter on that pool alone: the registry's lock is
+// dropped before the wait, so a first lease of another key is not made to sit
+// out someone else's acquire_timeout.
+void test_registry_waiter_does_not_stall_other_keys() {
+  uniorm::connection_pool_registry& registry =
+    uniorm::connection_pool_registry::instance();
+  std::string const full = "poolfake://x;DSN=stallfull;UID=who";
+  std::string const open_key = "poolfake://x;DSN=stallother;UID=who";
+  uniorm::pool_options tight = pool_options_for();
+  tight.size = 1;
+  tight.acquire_timeout = std::chrono::milliseconds(600);
+  registry.configure(full, tight);
+
+  uniorm::pooled_connection held = registry.acquire(full);
+  CHECK(bool(held));
+  bool waiter_timed_out = false;
+  bool waiter_kept_a_lease = false;
+  std::thread waiter([&] {
+    try {
+      uniorm::pooled_connection blocked = registry.acquire(full);
+      waiter_kept_a_lease = bool(blocked);
+    } catch (uniorm::pool_timeout const&) {
+      waiter_timed_out = true;
+    } catch (...) {
+    }
+  });
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));  // let it park
+
+  auto started = std::chrono::steady_clock::now();
+  uniorm::pooled_connection elsewhere = registry.acquire(open_key);
+  auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+    std::chrono::steady_clock::now() - started).count();
+  CHECK(bool(elsewhere));
+  CHECK(elapsed < 300);
+
+  waiter.join();
+  CHECK(waiter_timed_out);
+  CHECK(!waiter_kept_a_lease);
+}
+
+// A heartbeat is a real round trip through the connection layer, so the
+// maintainer path needs a statement that answers: prepare, execute, describe
+// as no columns (nothing here fetches) and reset on the way back into the
+// connection's cache.
+struct beat_state {
+  std::atomic<unsigned long long> executes{ 0 };
+};
+
+class beat_statement : public uniorm::backend::statement_iface {
+public:
+  explicit beat_statement(std::shared_ptr<beat_state> state)
+    : state_(std::move(state)) {}
+
+  void prepare(std::string_view) override {}
+  void execute() override {
+    state_->executes.fetch_add(1, std::memory_order_relaxed);
+  }
+  void bind_parameter(std::size_t, uniorm::sql_value const&) override {}
+  void bind_column(
+    std::size_t, uniorm::backend::column_buffer const&) override {}
+  void bind_batch_params(std::vector<uniorm::params> const&) override {}
+  void set_row_array_size(std::size_t) override {}
+  void set_paramset_size(std::size_t) override {}
+  void reset() override {}
+  bool fetch() override {
+    return false;
+  }
+  std::size_t affected_rows() const override {
+    return 0;
+  }
+  std::vector<uniorm::column_info> column_meta() const override {
+    return {};
+  }
+  std::size_t rows_fetched() const override {
+    return 0;
+  }
+  std::string read_long_text(std::size_t) override {
+    throw std::logic_error("the heartbeat fake fetches no text");
+  }
+  std::vector<std::byte> read_long_bytes(std::size_t) override {
+    throw std::logic_error("the heartbeat fake fetches no bytes");
+  }
+  uniorm::backend::batch_writer_iface& prepare_batch() override {
+    throw std::logic_error("the heartbeat fake writes no batches");
+  }
+
+private:
+  std::shared_ptr<beat_state> state_;
+};
+
+class beat_connection : public uniorm::backend::connection_iface {
+public:
+  explicit beat_connection(std::shared_ptr<beat_state> state)
+    : state_(std::move(state)) {}
+
+  void open(std::string_view) override {}
+  void open(uniorm::connection_spec const&) override {}
+  void close() override {}
+  bool is_open() const noexcept override {
+    return true;
+  }
+  void set_autocommit(bool) override {}
+  void commit() override {}
+  void rollback() override {}
+  uniorm::backend::capabilities caps() const noexcept override {
+    return {};
+  }
+  std::string dbms_name() const override {
+    return "beat";
+  }
+  std::unique_ptr<uniorm::backend::statement_iface>
+  create_statement() override {
+    return std::make_unique<beat_statement>(state_);
+  }
+  void* native_handle() noexcept override {
+    return nullptr;
+  }
+
+private:
+  std::shared_ptr<beat_state> state_;
+};
+
+// Registration and maintenance are the two threads that meet over the
+// scheduler's own bookkeeping: the worker walks every pool's next deadline
+// while another thread is still adding one, and a pool added since the last
+// pass may die before the pass that would have pruned it. No CHECK can see a
+// torn deadline here, which is why the shape is worth keeping: it is the
+// schedule a thread sanitizer gets to examine.
+void test_registration_meets_the_maintainer() {
+  auto state = std::make_shared<beat_state>();
+  uniorm::backend::registry::instance().register_backend(
+    "beat", [state] { return std::make_unique<beat_connection>(state); });
+
+  uniorm::pool_options opts;
+  opts.target = "beat://x";
+  opts.size = 1;
+  opts.acquire_timeout = std::chrono::milliseconds(500);
+  opts.heartbeat_interval = std::chrono::milliseconds(1);
+
+  uniorm::connection_pool kept(opts);
+  {
+    uniorm::pooled_connection lease = kept.acquire();
+  }  // handed back, so there is an idle connection to heartbeat
+
+  std::size_t latecomers_beat = 0;
+  for (int round = 0; round < 32; ++round) {
+    auto latecomer = std::make_unique<uniorm::connection_pool>(opts);
+    {
+      uniorm::pooled_connection lease = latecomer->acquire();
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    if (latecomer->heartbeats_executed() > 0) {
+      ++latecomers_beat;
+    }
+    latecomer.reset();
+  }
+
+  CHECK(kept.heartbeats_executed() >= 1);
+  CHECK(latecomers_beat >= 1);
+  CHECK(state->executes.load() >= 1);
+}
+
 }  // namespace
 
 void test_pool() {
@@ -251,4 +417,6 @@ void test_pool() {
   test_orm_leases_by_spec();
   test_orm_reconnects_by_spec();
   test_spec_pool_refills_from_the_spec();
+  test_registry_waiter_does_not_stall_other_keys();
+  test_registration_meets_the_maintainer();
 }

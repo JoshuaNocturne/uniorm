@@ -25,6 +25,8 @@ struct pool_detail::shared_state {
   std::size_t under_maintenance = 0;
   std::size_t created = 0;
   std::atomic<unsigned long long> heartbeats{ 0 };
+  // Scheduler bookkeeping, not the pool's: every read and write of it is under
+  // the scheduler's mutex, from either add() or the worker between passes.
   std::chrono::steady_clock::time_point next_tick;
 
   bool expired(idle_entry const& e) const {
@@ -101,11 +103,11 @@ struct scheduler {
   }
 
   void add(std::shared_ptr<pool_detail::shared_state> const& p) {
-    p->next_tick =
-      std::chrono::steady_clock::now() + p->options.heartbeat_interval;
     bool need_start;
     {
       std::lock_guard lock(mutex);
+      p->next_tick =
+        std::chrono::steady_clock::now() + p->options.heartbeat_interval;
       pools.push_back(p);
       need_start = !running && !stop;
       if (need_start) {
@@ -162,11 +164,11 @@ struct scheduler {
         sp->run_maintenance();
       }
       auto next = std::chrono::steady_clock::now();
+
+      lock.lock();
       for (auto& sp : due) {
         sp->next_tick = next + sp->options.heartbeat_interval;
       }
-
-      lock.lock();
     }
   }
 
@@ -384,21 +386,26 @@ pooled_connection connection_pool_registry::acquire(
 
 pooled_connection connection_pool_registry::acquire_keyed(
   std::string const& key, pool_options opts) {
-  std::lock_guard lock(mutex_);
-  auto it = pools_.find(key);
-  if (it == pools_.end()) {
-    auto [new_it, _] = pools_.emplace(
-      key, std::make_unique<connection_pool>(std::move(opts)));
-    it = new_it;
+  std::shared_ptr<connection_pool> pool;
+  {
+    std::lock_guard lock(mutex_);
+    auto it = pools_.find(key);
+    if (it == pools_.end()) {
+      auto made = std::make_shared<connection_pool>(std::move(opts));
+      it = pools_.emplace(key, std::move(made)).first;
+    }
+    pool = it->second;
   }
-  return it->second->acquire();
+  // Outside the registry lock: a full pool parks here for acquire_timeout, and
+  // holding the lock across that would stall every other key's first acquire.
+  return pool->acquire();
 }
 
 void connection_pool_registry::configure(
   std::string const& connection_string, pool_options opts) {
   opts.target = connection_string;
   std::lock_guard lock(mutex_);
-  auto pool = std::make_unique<connection_pool>(std::move(opts));
+  auto pool = std::make_shared<connection_pool>(std::move(opts));
   pools_.emplace(make_key(connection_string), std::move(pool));
 }
 
@@ -406,7 +413,7 @@ void connection_pool_registry::configure(
   connection_spec const& spec, pool_options opts) {
   opts.target = spec;
   std::lock_guard lock(mutex_);
-  auto pool = std::make_unique<connection_pool>(std::move(opts));
+  auto pool = std::make_shared<connection_pool>(std::move(opts));
   pools_.emplace(make_key(spec), std::move(pool));
 }
 

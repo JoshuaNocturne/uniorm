@@ -135,7 +135,9 @@ private:
   pooled_connection acquire_keyed(std::string const& key, pool_options opts);
 
   std::mutex mutex_;
-  std::map<std::string, std::unique_ptr<connection_pool>> pools_;
+  // Shared so a lookup can hand the pool out and release the lock before the
+  // caller waits on it.
+  std::map<std::string, std::shared_ptr<connection_pool>> pools_;
 };
 
 }  // namespace uniorm

@@ -501,6 +501,12 @@ jobs:
           test -f "$client/sdk/include/oci.h"
           test -f "$client/libclntsh.so"
           echo "OCI_ROOT=$client" >> "$GITHUB_ENV"
+          # An unzipped Instant Client keeps its members loose at the root, and
+          # libclntsh asks for them by unversioned name (libnnz.so, the core
+          # library) with no path of its own to be found by: a RUNPATH on the
+          # binary resolves only what that binary links, so the rest of the
+          # client reaches the loader through LD_LIBRARY_PATH alone.
+          echo "LD_LIBRARY_PATH=$client" >> "$GITHUB_ENV"
           # The one thing this client asks the operating system for. Ubuntu
           # renamed the package under the time_t transition, so take whichever
           # name resolves, and take neither if the library is already there.
@@ -551,6 +557,11 @@ jobs:
         if: failure()
         run: |
           ls -l "$OCI_ROOT" 2>/dev/null || echo 'no client tree to show'
+          # What the loader could not place, from the same environment the test
+          # ran in -- an unlisted member of the client tree looks like this and
+          # nothing else.
+          ldd build/backends/oracle_oci/libuniorm_oracle.so 2>/dev/null |
+            grep 'not found' || true
           # A refused logon is written out beside the working directory before
           # anything can report it, and it is the only record when the failure
           # never reached a statement.

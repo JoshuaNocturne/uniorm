@@ -175,7 +175,7 @@ uniorm/
 ├── docs/async-sequence.md       # 异步表面的时序图：类型怎么搭手
 ├── README.md / README.zh.md     # 双语入口文档
 ├── .clang-format                # Google 风格基线（未挂 hook，流水线也不校验格式）
-├── .github/workflows/ci.yml     # 两条形状：无 ODBC 的编译契约 + 双驱动对活库跑 ctest
+├── .github/workflows/ci.yml     # 编译契约（无 ODBC）+ backend 对活库跑 ctest
 └── .gitignore
 ```
 

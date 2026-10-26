@@ -723,9 +723,17 @@ carries three legs, each pairing a connector with the server it is used
 against, and each asking which server answered before it builds — PostgreSQL
 answers `SHOW SERVER_VERSION`, since `SELECT VERSION()` there starts with the
 server's name rather than a number. A leg whose tests skip fails, so five
-passes mean the server was really reached. All four are green on the runner:
-`core` over one test, each leg over five, off servers answering 8.4.11,
-`11.8.9-MariaDB-ubu2404` and 17.11.
+passes mean the server was really reached. `oracle-oci` is the fourth job and
+keeps that rule with no driver manager in the loop: it installs Oracle's client
+library, loads the backend by scheme name and runs the same integration suite
+against a container running Oracle Free. Four ctest entries there, where a
+connector leg has five — no ODBC layer to unit-test, no perf case to run.
+Three legs are green on the runner — `core` over one test, each leg over five,
+off servers answering 8.4.11, `11.8.9-MariaDB-ubu2404` and 17.11. The Oracle
+job's client install and suite were replayed against a live server off the
+runner, and what the runner has yet to confirm is its own half: the image pull,
+how long the first start takes behind the health gate, and which libaio package
+its Ubuntu ships.
 
 ### Two answers the code had to learn to ask about
 

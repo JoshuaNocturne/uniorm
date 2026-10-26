@@ -59,6 +59,20 @@ name: ci
 # matrix picking the image, the port and the probe statement, one service
 # carrying three families' env prefixes, and the preflight turning away a DSN
 # that answers as some other server. docs/design.md keeps the whole account.
+#
+# The fourth job is the Oracle OCI backend, and it stays out of that matrix
+# because none of it is ODBC: the backend links libclntsh, the core dlopens it
+# by scheme name, and the server is a container image no driver here can be
+# pointed at. What was replayed before writing it down is the client and the
+# suite -- Oracle's public 23.26.4 zip for basic and sdk, the tree configured
+# with OCI_ROOT at that directory, and the same integration suite green over a
+# live server from it, with the three catalog stages reporting themselves
+# skipped because this backend asks the server nothing. The client version is
+# pinned for the reason the connector versions are: which DDL names a server
+# takes, and how a NUMBER arrives as text, are now assertions in that suite.
+# Unconfirmed is the runner's own half -- the image pull, how long its first
+# start takes behind the health gate, and which libaio package name its Ubuntu
+# carries.
 
 on:
   push:
@@ -415,3 +429,133 @@ jobs:
           cat "$HOME/.odbc.ini"
           echo 'select 1' |
             isql -v "$UNIORM_IT_DSN" "$UNIORM_IT_USER" "$UNIORM_IT_PWD" || true
+
+  oracle-oci:
+    name: oracle-oci on oracle-free
+    runs-on: ubuntu-latest
+    needs: core
+    timeout-minutes: 40
+
+    # This one is not a leg of the matrix above because it goes through no
+    # driver manager at all: the backend links a client library, and the core
+    # reaches it by dlopen on the scheme name. So the job installs that library
+    # and starts a server, and what it proves is the same thing the matrix
+    # proves of a connector -- that a plugin outside the core carries the whole
+    # suite -- over a family no ODBC driver in this file can be pointed at.
+    env:
+      # Job env wins over the workflow map, and this leg has no DSN to name:
+      # the target is host:port/service, which is what the suite folds into the
+      # connect string for scheme "oracle".
+      UNIORM_IT_BACKEND: oracle
+      UNIORM_IT_DSN: 127.0.0.1:1521/FREEPDB1
+      UNIORM_IT_USER: SYSTEM
+      UNIORM_IT_PWD: uniorm-ci-pwd
+
+    services:
+      oracle:
+        # slim, because the leg needs no option the base image lacks;
+        # faststart, because the flavour's whole point is a database already
+        # expanded for a container that is started once and thrown away.
+        # healthcheck.sh is the image's own gate, and a first start creates the
+        # pluggable database, so the window is measured in minutes: 30 tries at
+        # 10s, where the default would report a server still coming up as one
+        # that will not.
+        image: gvenzl/oracle-free:slim-faststart
+        env:
+          ORACLE_PASSWORD: uniorm-ci-pwd
+        ports:
+          - 1521:1521
+        options: >-
+          --health-cmd healthcheck.sh
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 30
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install the Oracle client library
+        run: |
+          # The public zip tree, not the yum repo: its el9 package names ask
+          # for (libaio(x86-64) or libaio1(x86-64)) and a glibc the resolver
+          # here reads as Oracle Linux, so apt cannot take them as they are.
+          # The unzipped layout -- library loose at the root, headers under
+          # sdk/include -- is the one cmake/FindOracleOCI.cmake searches, and
+          # OCI_ROOT is the hint it was written for.
+          version=23.26.4.0.0
+          tree=2326400
+          root="$RUNNER_TEMP/oci"
+          mkdir -p "$root"
+          base=https://download.oracle.com/otn_software/linux/instantclient
+          for part in basic sdk; do
+            curl -fSL --retry 3 -o "$root/$part.zip" \
+              "$base/$tree/instantclient-$part-linux.x64-$version.zip"
+            # -o, not a bare -q: both archives carry a META-INF/, so the second
+            # one would be asked about, and a prompt that reads EOF is a
+            # nonzero exit here rather than an overwrite.
+            unzip -qo "$root/$part.zip" -d "$root"
+          done
+          client="$root/instantclient_23_26"
+          # Both halves or nothing: a header tree without its library would
+          # configure against a different client than the one it links.
+          test -f "$client/sdk/include/oci.h"
+          test -f "$client/libclntsh.so"
+          echo "OCI_ROOT=$client" >> "$GITHUB_ENV"
+          # The one thing this client asks the operating system for. Ubuntu
+          # renamed the package under the time_t transition, so take whichever
+          # name resolves, and take neither if the library is already there.
+          if ! ldconfig -p | grep -q 'libaio\.so\.1'; then
+            sudo apt-get update
+            sudo apt-get install -y libaio1t64 ||
+              sudo apt-get install -y libaio1
+          fi
+
+      - name: Configure
+        run: >
+          cmake -S . -B build
+          -DUNIORM_BACKEND_ODBC=OFF
+          -DUNIORM_BUILD_TOOLS=OFF
+          -DUNIORM_BACKEND_ORACLE_OCI=ON
+          -DCMAKE_CXX_FLAGS="$CXXWARN"
+
+      - name: Build
+        run: cmake --build build -j "$(nproc)"
+
+      - name: Test
+        run: |
+          set -o pipefail
+          ctest --test-dir build --output-on-failure -V | tee ctest.log
+          # The same rule the matrix legs keep: 77 is a skip and ctest calls
+          # that a pass, so a leg that never reached its server fails here.
+          if grep -q 'Skipped' ctest.log; then
+            echo '::error::a database test skipped instead of running.'
+            grep -A5 'did not run' ctest.log || true
+            exit 1
+          fi
+          # And the suite names the server it reached, from the banner the
+          # connection itself reports. Reaching a server is not the gate;
+          # reaching the one this job's name claims is.
+          banner="$(sed -n 's/^.*dbms = //p' ctest.log | head -1)"
+          case "$banner" in
+            Oracle*)
+              echo "server behind the OCI leg: $banner"
+              ;;
+            *)
+              echo "::error::the OCI leg did not answer as Oracle"
+              echo "  it answered '${banner:-nothing}'"
+              exit 1
+              ;;
+          esac
+
+      - name: Show what the client and the server said
+        if: failure()
+        run: |
+          ls -l "$OCI_ROOT" 2>/dev/null || echo 'no client tree to show'
+          # A refused logon is written out beside the working directory before
+          # anything can report it, and it is the only record when the failure
+          # never reached a statement.
+          cat sqlnet.log 2>/dev/null || true
+          container="$(docker ps -q --filter publish=1521 | head -1)"
+          if [ -n "$container" ]; then
+            docker logs --tail 60 "$container" 2>&1 || true
+          fi

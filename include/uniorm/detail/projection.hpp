@@ -156,7 +156,7 @@ public:
     if (ind == backend::no_total ||
         ind > static_cast<std::int64_t>(slot_size_) - 1) {
       // Full value from the backend; replaces the partial bound buffer.
-      target = stmt_->read_long_text(column_);
+      target = stmt_->read_long_text(column_, row_index);
     } else {
       auto len = static_cast<std::size_t>(ind);
       target.reserve(len);
@@ -202,7 +202,7 @@ public:
     bool truncated = ind == backend::no_total ||
       ind > static_cast<std::int64_t>(slot_size_);
     if (truncated) {
-      target = stmt_->read_long_bytes(column_);  // full value, replaces
+      target = stmt_->read_long_bytes(column_, row_index);  // full value
     } else {
       auto len = static_cast<std::size_t>(ind);
       target.reserve(len);

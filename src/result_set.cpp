@@ -182,7 +182,7 @@ struct result_set::impl {
       // Any negative left (SQL_NO_TOTAL, SQL_NTS) means the driver gave no
       // length; casting one to size_t would read out of bounds.
       if (ind < 0 || ind > static_cast<std::int64_t>(capacity) - 1) {
-        return stmt->read_long_text(i + 1);
+        return stmt->read_long_text(i + 1, row_index);
       }
       return std::string(
         s.text_buf.data() + offset, static_cast<std::size_t>(ind));
@@ -194,7 +194,7 @@ struct result_set::impl {
       bool truncated =
         ind < 0 || ind > static_cast<std::int64_t>(capacity);
       if (truncated) {
-        return stmt->read_long_bytes(i + 1);
+        return stmt->read_long_bytes(i + 1, row_index);
       }
       return std::vector<std::byte>(s.bin_buf.begin() + offset,
         s.bin_buf.begin() + offset + static_cast<std::ptrdiff_t>(ind));

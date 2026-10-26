@@ -1578,8 +1578,8 @@ struct statement_iface {
     std::size_t rows_fetched() const;
     std::size_t result_row_estimate() const;               // 默认 0（未知）
     void set_paramset_size(std::size_t);
-    std::string read_long_text(std::size_t column);
-    std::vector<std::byte> read_long_bytes(std::size_t column);
+    std::string read_long_text(std::size_t column, std::size_t row);
+    std::vector<std::byte> read_long_bytes(std::size_t column, std::size_t row);
     void reset();
 };
 

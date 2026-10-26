@@ -135,7 +135,12 @@ public:
     bound_[column - 1].indicator[row] = backend::no_total;
   }
 
-  std::string read_long_text(std::size_t column) override {
+  // Records the row a continuation read was asked for, so a test can tell
+  // whether the read path named the row the caller was materializing.
+  std::vector<std::size_t> long_text_rows;
+
+  std::string read_long_text(std::size_t column, std::size_t row) override {
+    long_text_rows.push_back(row);
     return long_text_[column - 1];
   }
 
@@ -146,7 +151,7 @@ public:
   void prepare(std::string_view) override {}
   void bind_parameter(std::size_t, sql_value const&) override {}
   void bind_batch_params(std::vector<params> const&) override {}
-  std::vector<std::byte> read_long_bytes(std::size_t) override {
+  std::vector<std::byte> read_long_bytes(std::size_t, std::size_t) override {
     return {};
   }
   backend::batch_writer_iface& prepare_batch() override {
@@ -357,6 +362,29 @@ void test_converter_projection() {
   tight_proj.fill_into(wide, 0);
   CHECK(wide.state == status::shipped);
   CHECK(wide.note && *wide.note == status::paid);
+
+  // The read names the row being materialized, so a block whose overrun sits
+  // past the first row still hands over that row's value rather than the
+  // first one's.
+  fake_statement block({
+    { "id", sql_type::bigint, 8, false },
+    { "state", sql_type::varchar, 4, true },
+    { "note", sql_type::varchar, 4, true },
+  });
+  detail::projection<read_row> block_proj;
+  block_proj.set_row_array_size(2);
+  block_proj.bind(block);
+  block.put(1, 1, std::int64_t{ 9 });
+  block.put_text(2, 0, "fresh");
+  block.put_text(3, 0, "shipped");
+  block.put_overflow(2, 1, "shipped");
+  block.put_overflow(3, 1, "paid");
+  read_row later{};
+  block_proj.fill_into(later, 1);
+  CHECK(later.state == status::shipped);
+  CHECK(later.note && *later.note == status::paid);
+  std::vector<std::size_t> const named_rows{ 1, 1 };
+  CHECK(block.long_text_rows == named_rows);
 }
 
 void test_converter_steal() {

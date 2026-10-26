@@ -319,10 +319,10 @@ public:
   std::size_t rows_fetched() const override {
     return 0;
   }
-  std::string read_long_text(std::size_t) override {
+  std::string read_long_text(std::size_t, std::size_t) override {
     throw std::logic_error("the heartbeat fake fetches no text");
   }
-  std::vector<std::byte> read_long_bytes(std::size_t) override {
+  std::vector<std::byte> read_long_bytes(std::size_t, std::size_t) override {
     throw std::logic_error("the heartbeat fake fetches no bytes");
   }
   uniorm::backend::batch_writer_iface& prepare_batch() override {

@@ -589,12 +589,15 @@ std::vector<column_info> backend_statement::column_meta() const {
   return meta;
 }
 
-std::string backend_statement::read_long_text(std::size_t column) {
+// SQLGetData addresses the driver's current row of the fetched block, which no
+// call here moves, so the row the caller names is the one the driver is on.
+std::string backend_statement::read_long_text(
+  std::size_t column, std::size_t /*row*/) {
   return get_data_char(stmt_, static_cast<SQLUSMALLINT>(column));
 }
 
 std::vector<std::byte> backend_statement::read_long_bytes(
-  std::size_t column) {
+  std::size_t column, std::size_t /*row*/) {
   return get_data_binary(stmt_, static_cast<SQLUSMALLINT>(column));
 }
 

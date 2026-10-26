@@ -124,10 +124,10 @@ public:
   void set_paramset_size(std::size_t size) override {
     paramset_size_ = size;
   }
-  std::string read_long_text(std::size_t) override {
+  std::string read_long_text(std::size_t, std::size_t) override {
     throw std::logic_error("unexpected long text read");
   }
-  std::vector<std::byte> read_long_bytes(std::size_t) override {
+  std::vector<std::byte> read_long_bytes(std::size_t, std::size_t) override {
     throw std::logic_error("unexpected long bytes read");
   }
   void reset() override {

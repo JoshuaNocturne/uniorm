@@ -168,9 +168,15 @@ struct statement_iface {
   virtual void set_paramset_size(std::size_t size) = 0;
 
   // Continuation reads for values that did not fit the bound buffer
-  // (indicator is no_total or exceeds capacity). column is 1-based.
-  virtual std::string read_long_text(std::size_t column) = 0;
-  virtual std::vector<std::byte> read_long_bytes(std::size_t column) = 0;
+  // (indicator is no_total or exceeds capacity). column is 1-based, row is the
+  // index within the block just fetched, and both name the value the caller is
+  // materializing: a read takes that row's value, so asking twice is a repeat
+  // and walking the block in any order gives the same answers. A backend whose
+  // driver addresses only one row of a block may read that row instead, which
+  // is what it did before the row was named.
+  virtual std::string read_long_text(std::size_t column, std::size_t row) = 0;
+  virtual std::vector<std::byte> read_long_bytes(
+    std::size_t column, std::size_t row) = 0;
 
   // Cache-reuse contract: called before a cached statement is rebound for
   // the same SQL text. Closing the cursor and dropping this statement's own

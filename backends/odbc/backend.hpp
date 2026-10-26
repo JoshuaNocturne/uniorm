@@ -33,8 +33,9 @@ public:
   void set_row_array_size(std::size_t size) override;
   std::size_t rows_fetched() const override;
   void set_paramset_size(std::size_t size) override;
-  std::string read_long_text(std::size_t column) override;
-  std::vector<std::byte> read_long_bytes(std::size_t column) override;
+  std::string read_long_text(std::size_t column, std::size_t row) override;
+  std::vector<std::byte> read_long_bytes(
+    std::size_t column, std::size_t row) override;
   void reset() override;
 
 private:

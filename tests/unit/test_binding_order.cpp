@@ -138,10 +138,10 @@ public:
   backend::batch_writer_iface& prepare_batch() override {
     throw std::logic_error("unused by the read path");
   }
-  std::string read_long_text(std::size_t) override {
+  std::string read_long_text(std::size_t, std::size_t) override {
     throw std::logic_error("unexpected long text read");
   }
-  std::vector<std::byte> read_long_bytes(std::size_t) override {
+  std::vector<std::byte> read_long_bytes(std::size_t, std::size_t) override {
     throw std::logic_error("unexpected long bytes read");
   }
   void reset() override {

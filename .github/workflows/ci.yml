@@ -508,12 +508,28 @@ jobs:
           # client reaches the loader through LD_LIBRARY_PATH alone.
           echo "LD_LIBRARY_PATH=$client" >> "$GITHUB_ENV"
           # The one thing this client asks the operating system for. Ubuntu
-          # renamed the package under the time_t transition, so take whichever
-          # name resolves, and take neither if the library is already there.
-          if ! ldconfig -p | grep -q 'libaio\.so\.1'; then
+          # renamed the package under the time_t transition and its SONAME with
+          # it -- libaio.so.1t64 -- while the client still asks for
+          # libaio.so.1, so the search must not be satisfied by the t64 name as
+          # a prefix: that finds a library that cannot be the one the loader
+          # wants, and the client then fails to load for a reason this step
+          # already concluded was handled.
+          if ! ldconfig -p | grep -qE 'libaio\.so\.1([[:space:]]|$)'; then
             sudo apt-get update
             sudo apt-get install -y libaio1t64 ||
               sudo apt-get install -y libaio1
+          fi
+          # Give the client the name it asks for, in the directory the loader is
+          # already told to search, and say so out loud rather than leaving a
+          # dlopen failure as the only record.
+          t64="$(ldconfig -p |
+            sed -n 's/.*=> \(.*libaio\.so\.1t64\)$/\1/p' | head -1)"
+          if [ -n "$t64" ]; then
+            ln -sf "$t64" "$client/libaio.so.1"
+            echo "libaio.so.1 -> $t64"
+          elif ! ldconfig -p | grep -qE 'libaio\.so\.1([[:space:]]|$)'; then
+            echo "::error::no libaio for the Oracle client to ask for"
+            exit 1
           fi
 
       - name: Configure

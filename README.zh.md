@@ -2,48 +2,51 @@
 
 [English](README.md)
 
-现代 C++20 数据库访问层，核心是驱动中立的：连接串里的 scheme 选择
-backend。默认构建的那一家是 ODBC，Oracle OCI backend 由构建开关显式打开。
-实体映射、成员指针查询构建、事务、连接池与异步表面都建在这层核心之上。
+现代 C++20 数据库访问层，核心是驱动中立的：连接串里的 scheme 选择 backend，
+API 本身不点任何一家的客户端名。自带两家：默认构建的 ODBC，以及由构建开关
+打开的 Oracle OCI。实体映射、成员指针查询构建、事务、连接池与异步都建在
+这层核心之上。
 
 权威 API 参考见 [docs/design.md](docs/design.md)。
 
 ## 特性
 
 - **同步 API + 异常错误体系**：所有失败以 `uniorm_error` 派生树抛出
-  （`column_not_found`/`type_mismatch`/`mapping_error`/`pool_timeout`）；驱动侧
-  失败以 `backend::backend_error` 到达并携带 SQLSTATE 诊断，backend 答不了的
-  读取以 `backend::capability_not_supported` 到达
-- **内部统一 UTF-8**：字符串一律以窄字符（`SQL_C_CHAR`）绑定；编码转换发生在
-  驱动侧，不在本库
-- **预编译 + 绑定变量**：用户值一律经 `SQLBindParameter`，杜绝拼接注入
+  （`column_not_found`/`type_mismatch`/`mapping_error`/`pool_timeout`）；
+  backend 侧失败以 `backend::backend_error` 到达并携带原生诊断（ODBC 那家是
+  SQLSTATE 与消息），backend 答不了的读取以
+  `backend::capability_not_supported` 到达
+- **内部统一 UTF-8**：字符串一律以窄字节递交（ODBC 那家是 `SQL_C_CHAR`）；
+  与服务端编码的转换留在 backend 里，不在本库
+- **预编译 + 绑定变量**：用户值一律走 backend 的绑定调用（ODBC 那家是
+  `SQLBindParameter`），杜绝拼接注入
 - **透明的语句缓存**：按 SQL 文本的 LRU 缓存，重复执行免 prepare（观测：
   `statement_cache_hits()`/`misses()`/`statement_cache_size()`，
   `clear_statement_cache()` 清空）
 - **三种使用层次**：裸 SQL（`execute` / `execute_update` + `params`）、聚合投影
   （`db.query<Row>(sql)`，零注册）、实体映射（`db.query<T>()`）
 - **实体直接绑定**：`query<T>::all()/one()` 将结果列直接绑到实体字段
-  （`SQLBindCol`），跳过行物化
+  （ODBC 那家是 `SQLBindCol`），跳过行物化
 - **自定义类型映射**：特化 `uniorm::converter<T>` 即命名域类型所绑定的 SQL
   表示；strict 模式的 `validate()` 会拿它与活库的列类型比对
 - **精确定点小数值**：`uniorm::decimal_t` 存尾数 + scale，按值比较、逐值零分配；
   DECIMAL/NUMERIC 列默认生成为无损的 `std::string` 成员，按列 `cpp_type` 覆写即
   换成 `decimal_t`
 - **批量写入**：`db.insert(rows)` 与批量 `db.update(rows)` /
-  `db.remove(rows)`：一条占位符语句经数组参数绑定
-  （`SQL_ATTR_PARAMSET_SIZE`）展开，按 `paramset_size` 分批；连接处于
-  autocommit 时整批扫描包进事务
+  `db.remove(rows)`：一条占位符语句按参数组数组发出（ODBC 那家是
+  `SQL_ATTR_PARAMSET_SIZE`），按 `paramset_size` 分批；连接处于 autocommit
+  时整批扫描包进事务
 - **RAII 事务**：析构自动回滚
-- **可选的异步表面**（`async.hpp`）：同一个同步契约套上
+- **可选的异步**（`async.hpp`）：同一个同步契约套上
   `uniorm::async::task<T>`：一把会话同时只跑一个操作，三种 drive 动作
   （`co_await`、`block()`、`start()`）；四个 CRUD 名字还各有一层收回调的重载
 - **连接池**：懒创建、借还超时；所有池共用一条全局维护线程执行心跳保活与
   空闲超时回收
 - **活库 schema 自省**：`orm::schema()` 与 `connection::schema()` 交出一个
   `uniorm::schema_meta`：库名、表清单，以及每张表的列、主键、外键与索引
-- **方言自适应**：标识符引号与分页语法按 `SQL_DBMS_NAME` 推断
-  （MySQL/MariaDB 用反引号 + LIMIT/OFFSET，其余 ANSI）；标识符拼法另有一把
-  部署级开关，`keep`（默认）/ `lower` / `upper`
+- **方言自适应**：标识符引号与分页语法按服务端自报的家门推断（ODBC 那家是
+  `SQL_DBMS_NAME`：MySQL/MariaDB 用反引号 + LIMIT/OFFSET，其余 ANSI）；
+  标识符拼法另有一把部署级开关，`keep`（默认）/ `lower` / `upper`
 - **代码生成**：`uniorm-gen` 连活库读取 schema，或读一份建表脚本，生成实体
   struct + 注册函数（TOML 覆写类型/类名/跳过表）
 - **可插拔 backend**：连接串 scheme 选择后端（`odbc://...`、`oracle://...`；裸
@@ -139,9 +142,9 @@ std::size_t n = db.execute_update(
 
 `connection_spec` 把四件套交给 scheme 所属的那家 backend，因为只有它知道这些
 该怎么拼：ODBC 那家写成 `DSN=` / `UID=` / `PWD=`，该包花括号的值就包上。
-`orm::connect(...)` 收同一个形状。它并不声称够用——驱动关键字、端口、TLS 策略
-这些都仍归串管，而串是每个 backend 都要实现的原语。同一个库，一份用 spec 建、
-一份用串建，是两个池。
+`orm::connect(...)` 收同一个形状。它并不声称够用——backend 自己的关键字、端口、
+TLS 策略这些都仍归串管，而串是每个 backend 都要实现的原语。同一个库，一份用
+spec 建、一份用串建，是两个池。
 
 ### 聚合投影（零注册）
 
@@ -317,12 +320,12 @@ std::size_t held = pool.capacity(); // 另有 idle_count() 与
 每个池按默认 `pool_options` 建立。想改这些默认值，就对该连接串调用
 `connection_pool_registry::configure()`。
 
-### 异步表面
+### 异步
 
 这里没有第二条数据库通路：一个 task 的函数体**就是**它包着的这次同步调用——
-`orm::execute_update`、那个取行循环、整段批量扫描——跑在一条调用方不等着的线程
-上。驱动根本没有异步入口，所以这是仿真；哪一家 backend 真有原生异步，就把这一层
-换掉，调用方一行不改。
+`orm::execute_update`、那个取行循环、整段批量扫描——跑在一条调用方不等着的
+线程上。ODBC 连接器没有原生异步入口，所以这一层是仿真；哪一家 backend 真有
+原生异步，就把它换掉，调用方一行不改。
 
 ```cpp
 #include <uniorm/async.hpp>
@@ -388,7 +391,7 @@ db.query<User>("SELECT id, name FROM users WHERE id > ?",
 
 **先看第二个参数**：失败时第一个是 `R{}`。回调跑在"跑了这次操作的那条线程"上，
 而且是在这一格还没交回去的时候——回调慢，同一把会话的下一条请求就跟着等；换来的
-是 `~orm()` 一定会等到自己欠的每个回调，所以按引用捕获局部变量是合法的。这一面
+是 `~orm()` 一定会等到自己欠的每个回调，所以按引用捕获局部变量是合法的。这一层
 只覆盖四个 CRUD 名字：builder 的三个终端、`connect`、`begin` 仍是 task 形。
 
 ### 代码生成（uniorm-gen）
@@ -437,8 +440,9 @@ cpp_type = "std::string"       # 单列类型覆写
 ctest --test-dir build --output-on-failure
 ```
 
-- **unit_tests**：纯内存测试，基于 fake backend 与 fake 目录运行，且不链接
-  ODBC，公共 API 一旦泄漏驱动类型即编译失败。它还收纳生成器的配置与输出用例
+- **unit_tests**：纯内存测试，基于 fake backend 与 fake 目录运行，且不链接任何
+  backend 库，公共 API 一旦泄漏驱动类型即编译失败。它还收纳生成器的配置与
+  输出用例
 - **odbc_unit_tests**：私有 ODBC 句柄层、它的错误转换，以及目录行按名字再筛
   那条判据（仅驱动管理器，无需 DSN）
 - **oracle_oci_unit_tests**：Oracle backend 自己那一层——占位符改写、它的类型表，

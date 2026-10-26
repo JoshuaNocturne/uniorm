@@ -3,9 +3,10 @@
 [中文文档](README.zh.md)
 
 A C++20 database access layer with a driver-neutral core: the scheme in a
-connection string selects the backend. ODBC is built by default, an Oracle OCI
-backend sits behind a build option. Entity mapping, a member-pointer query
-builder, transactions, pooling, and an asynchronous face sit on top of it.
+connection string selects the backend, and the API itself names no vendor's
+client. Two backends ship: ODBC, built by default, and Oracle OCI, behind a
+build option. Entity mapping, a member-pointer query builder, transactions,
+pooling, and async sit on top of that core.
 
 The full API reference is [docs/design.md](docs/design.md).
 
@@ -13,13 +14,15 @@ The full API reference is [docs/design.md](docs/design.md).
 
 - **Exceptions** — every failure throws from the `uniorm_error` tree
   (`column_not_found`, `type_mismatch`, `mapping_error`, `pool_timeout`); a
-  driver failure arrives as `backend::backend_error` carrying SQLSTATE
-  diagnostics, and a read no backend can serve as
-  `backend::capability_not_supported`
-- **UTF-8 internally** — strings bind narrow (`SQL_C_CHAR`); encoding
-  conversion stays in the driver
-- **Prepared statements + bind variables** — values always go through
-  `SQLBindParameter`, no interpolation
+  backend failure arrives as `backend::backend_error` carrying the native
+  diagnostics (`SQLSTATE` and message on ODBC), and a read no backend can
+  serve as `backend::capability_not_supported`
+- **UTF-8 internally** — strings travel as narrow bytes (`SQL_C_CHAR` on
+  ODBC); conversion from whatever encoding the server speaks stays in the
+  backend
+- **Prepared statements + bind variables** — user values always go through the
+  backend's bind call (`SQLBindParameter` on ODBC), never string
+  interpolation
 - **Statement cache** — LRU keyed by SQL text; `statement_cache_hits()`,
   `statement_cache_misses()`, `statement_cache_size()`,
   `clear_statement_cache()`
@@ -27,7 +30,8 @@ The full API reference is [docs/design.md](docs/design.md).
   `params`), aggregate projection (`db.query<Row>(sql)`, zero registration),
   entity mapping (`db.query<T>()`)
 - **Direct entity binding** — `query<T>::all()/one()` bind result columns
-  straight onto entity fields (`SQLBindCol`), skipping row materialization
+  straight onto entity fields (`SQLBindCol` on ODBC), skipping row
+  materialization
 - **Custom type mapping** — specializing `uniorm::converter<T>` names the SQL
   representation a domain type binds as; strict `validate()` compares it
   against the live column type
@@ -36,11 +40,11 @@ The full API reference is [docs/design.md](docs/design.md).
   columns default to a lossless `std::string` member and a per-column
   `cpp_type` override swaps in `decimal_t`
 - **Batch writes** — `db.insert(rows)` and batch `update` / `remove`: one row
-  of placeholders sent with array parameter binding
-  (`SQL_ATTR_PARAMSET_SIZE`), chunked by `paramset_size`, wrapped in a
+  of placeholders sent as an array of parameter sets
+  (`SQL_ATTR_PARAMSET_SIZE` on ODBC), chunked by `paramset_size`, wrapped in a
   transaction when the connection autocommits
 - **RAII transactions** — automatic rollback on destruction
-- **Asynchronous face** (`async.hpp`) — the same synchronous calls as
+- **Async** (`async.hpp`) — the same synchronous calls as
   `uniorm::async::task<T>`: one session runs one operation at a time, three
   drive actions (`co_await`, `block()`, `start()`), and the four CRUD names also
   take a plain callback
@@ -50,8 +54,9 @@ The full API reference is [docs/design.md](docs/design.md).
   out a `uniorm::schema_meta`: the database name, the tables, and per table its
   columns, primary key, foreign keys and indexes
 - **Dialect adaptation** — identifier quoting and paging syntax inferred from
-  `SQL_DBMS_NAME` (backticks + LIMIT/OFFSET for MySQL/MariaDB, ANSI otherwise),
-  plus an identifier spelling policy: `keep` (default), `lower` or `upper`
+  what the server reports about itself (`SQL_DBMS_NAME` on ODBC: backticks +
+  LIMIT/OFFSET for MySQL/MariaDB, ANSI otherwise), plus an identifier spelling
+  policy: `keep` (default), `lower` or `upper`
 - **Code generation** — `uniorm-gen` reads a live schema, or a DDL file, and
   generates entity structs plus registration functions (TOML overrides for
   types, class names, skipped tables)
@@ -148,11 +153,11 @@ std::size_t n = db.execute_update(
 
 The `connection_spec` is handed to the backend that owns the scheme, because
 only that backend knows how its pieces must be spelled: the ODBC one writes
-`DSN=` / `UID=` / `PWD=` and braces a value that needs it. `orm::connect(...)`
-takes the same shape. It claims no completeness — a driver keyword, a port, a
-TLS policy all belong to the string form, which stays the primitive every
-backend implements. A spec and a string that reach the same server keep
-separate pools.
+`DSN=` / `UID=` / `PWD=` and braces a value that needs it.
+`orm::connect(...)` takes the same shape. It claims no completeness — a
+backend's own keyword, a port, a TLS policy all belong to the string form,
+which stays the primitive every backend implements. A spec and a string that
+reach the same server keep separate pools.
 
 ### Aggregate projection (zero registration)
 
@@ -342,13 +347,13 @@ keyed on DSN and UID, each built with default `pool_options`. Call
 `connection_pool_registry::configure()` for that connection string to change
 them.
 
-### Asynchronous face
+### Async
 
-Nothing here is a second database path: a task body *is* the synchronous call it
-wraps — `orm::execute_update`, the fetch loop, a whole batch sweep — on a thread
-the caller does not wait on. The drivers have no native asynchronous entry
-points, so this is emulation; a backend that does have them replaces the layer
-with no caller changing a line.
+Nothing here is a second database path: a task body *is* the synchronous call
+it wraps — `orm::execute_update`, the fetch loop, a whole batch sweep — on a
+thread the caller does not wait on. ODBC connectors expose no native async
+entry points, so this is emulation; a backend that does have them replaces the
+layer with no caller changing a line.
 
 ```cpp
 #include <uniorm/async.hpp>
@@ -428,10 +433,11 @@ uniorm-gen --dsn=mydb --user=u --password=p \
 uniorm-gen --input-ddl=schema.sql --out=build/gen [--name=app]
 ```
 
-Exactly one of `--dsn`, `--connection-string`, `--input-ddl` is required, as is
-`--out`. `--catalog` and `--schema` narrow where tables are looked for, by name
-rather than as ODBC patterns (a `%` there matches nothing); `--name` renames the
-output unit and `--tables` takes a comma-separated list.
+Exactly one of `--dsn`, `--connection-string`, `--input-ddl` is required, as
+is `--out`. `--catalog` and `--schema` narrow where tables are looked for:
+each name is matched by name, not as a wildcard pattern, so a `%` there
+matches nothing (the run says so). `--name` renames the output unit and
+`--tables` takes a comma-separated list.
 
 `--input-ddl` reads a create-table script instead of a live server, so that run
 opens no connection. It takes the MySQL and PostgreSQL spellings of
@@ -471,8 +477,8 @@ ctest --test-dir build --output-on-failure
 ```
 
 - **unit_tests** — in-memory tests over a fake backend and a fake catalog;
-  links no ODBC, so a driver type leaking into the public API fails to
-  compile. Carries the generator's config and output tests too
+  links no backend library, so a driver type leaking into the public API fails
+  to compile. Carries the generator's config and output tests too
 - **odbc_unit_tests** — the private ODBC handle layer, its error translation,
   the catalog's name re-filter (driver manager only, no DSN required)
 - **oracle_oci_unit_tests** — the placeholder rewrite, Oracle's type table,

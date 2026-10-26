@@ -1,12 +1,14 @@
 # uniorm v1 设计文档
 
-状态：v1 实现完成（单元测试 + MariaDB 集成测试 + 性能基准通过）
-日期：2026-09-09（本版按当前代码逐节核对，偏差集中记于"已知缺口"——该节现已为空）
+状态：v1 实现完成；v2 进行中——backend 抽象、plugin 化、逐名解析、
+`connection_spec`、异步表面与 Oracle OCI 那一家都已落地（§5、§9）
+日期：2026-10-26（本版按当前代码逐节核对，偏差集中记于"已知缺口"——该节现已为空）
 
 ## 1. 目标与范围
 
 uniorm 是一个现代化的 C++ 数据库访问层：核心构建在驱动中立的 backend 接口之上
-（§5.2），v1 落地实现的 backend 只有 ODBC 一个，而不是各数据库的专有 C 客户端。
+（§5.2）。v1 落地的 backend 只有 ODBC 一个，而不是各数据库的专有 C 客户端；v2
+之上按同一形状长出第二家 Oracle OCI，两家都是独立 plugin（§5.4）。
 
 ### v1 范围（In Scope）
 
@@ -74,7 +76,7 @@ uniorm 是一个现代化的 C++ 数据库访问层：核心构建在驱动中�
 │ scheme 注册表 / capabilities / 中立列缓冲        │
 ├────────────────────────────────────────────────┤
 │ environment / connection / statement 句柄 RAII   │  ODBC backend
-│ odbc_error / diagnostics                        │  （当前唯一内置实现）
+│ odbc_error / diagnostics                        │  （plugin 之一，另一家 §5.4）
 └────────────────────────────────────────────────┘
 ```
 
@@ -138,16 +140,20 @@ uniorm/
 │                                #  按 scheme 从 <libdir>/uniorm/backends dlopen）
 ├── backends/                    # 每家 backend 一个独立 shared library，与 src/
 │                                #  同级：链接形状与"是不是核心的一部分"一眼可辨
-│   └── odbc/                    # libuniorm_odbc.so，导出 plugin 契约
-│       ├── CMakeLists.txt       # 独立 shared 目标，PRIVATE 链 ODBC::ODBC，
-│       │                        #  装到 <libdir>/uniorm/backends/
-│       ├── export.hpp           # 私有 UNIORM_ODBC_API 宏（跨 DSO 的可见性）
-│       ├── backend.hpp          # backend 契约的 ODBC 实现（含 odbc_batch_writer）
-│       ├── environment.hpp / connection.hpp / statement.hpp   # 句柄 RAII
-│       ├── handles.hpp          # 句柄 RAII 模板、traits
-│       ├── native_types.hpp     # SQL_* → sql_type 映射表（驱动编码只活在这里）
-│       ├── schema_catalog.hpp/.cpp   # uniorm::schema_meta 的 ODBC 实现
-│       └── error.hpp            # odbc_error / diagnostics
+│   ├── odbc/                    # libuniorm_odbc.so，导出 plugin 契约
+│   │   ├── CMakeLists.txt       # 独立 shared 目标，PRIVATE 链 ODBC::ODBC，
+│   │   │                        #  装到 <libdir>/uniorm/backends/
+│   │   ├── export.hpp           # 私有 UNIORM_ODBC_API 宏（跨 DSO 的可见性）
+│   │   ├── backend.hpp          # backend 契约的 ODBC 实现（含 odbc_batch_writer）
+│   │   ├── environment.hpp / connection.hpp / statement.hpp   # 句柄 RAII
+│   │   ├── handles.hpp          # 句柄 RAII 模板、traits
+│   │   ├── native_types.hpp     # SQL_* → sql_type 映射表（驱动编码只活在这里）
+│   │   ├── schema_catalog.hpp/.cpp   # uniorm::schema_meta 的 ODBC 实现
+│   │   └── error.hpp            # odbc_error / diagnostics
+│   └── oracle_oci/              # libuniorm_oracle.so（scheme "oracle"）：plugin
+│                                #  契约的第二家，同一组句柄 RAII，外加 `?` 到
+│                                #  `:n` 的改写（sql_text）与它自己的类型表；
+│                                #  不链任何 ODBC，目录读取尚未答（§5.4）
 ├── tools/uniorm-gen/            # 代码生成：uniorm_gen_core(STATIC) + uniorm-gen(CLI)
 │   ├── main.cpp                 # 参数解析与编排（唯一进 CLI 的源文件）
 │   ├── schema_reader.cpp/.hpp   # backend 自省 → schema 模型（筛选/分组在这层）
@@ -164,9 +170,13 @@ uniorm/
 │   │                            # test_async_orm.cpp，另加 uniorm-gen 的
 │   │                            # 纯逻辑用例）与
 │   │                            # uniorm_odbc_unit_tests（句柄 RAII、错误派生、
-│   │                            # 目录行再筛的判据）
-│   ├── integration/             # 需活连接：test_integration.cpp、test_gen_e2e.cpp
-│   │                            # 与 golden/gen_it_schema.hpp（生成物快照）
+│   │                            # 目录行再筛的判据）、uniorm_oracle_oci_unit_tests
+│   │                            # （占位符改写、它自己的类型表、连接串怎么切分）
+│   ├── integration/             # 需活连接：test_integration.cpp 一份源码出两个
+│   │                            # ctest 名字，UNIORM_IT_BACKEND 决定它走 ODBC 还是
+│   │                            # 按 scheme 载 Oracle plugin；另有
+│   │                            # test_gen_e2e.cpp 与 golden/gen_it_schema.hpp
+│   │                            # （生成物快照）
 │   ├── install/                 # 外部消费者工程（install_smoke 用它走 find_package）
 │   ├── install_smoke.cmake.in   # 安装面冒烟脚本（cmake -P）
 │   └── perf/                    # test_perf.cpp（ctest 标签 perf）
@@ -1530,8 +1540,9 @@ env 可覆盖成单一目录，用于测试和非常规部署。
 
 ### 5.2 backend 接口（v2 里程碑 1，已实现）
 
-接口位于 `include/uniorm/backend/backend.hpp`，ODBC 是唯一内置实现——不在核心库里，
-而是自己一份 `libuniorm_odbc.so`（`backends/odbc/backend.cpp`，见 §5.1）。核心 API（查询
+接口位于 `include/uniorm/backend/backend.hpp`，两家实现都不在核心库里：ODBC 是自己
+一份 `libuniorm_odbc.so`（`backends/odbc/backend.cpp`，见 §5.1），Oracle OCI 是自己
+一份 `libuniorm_oracle.so`（§5.4）。核心 API（查询
 构建器、映射、池、事务）只依赖接口；能力缺失时应当抛清晰错误而非静默降级。
 `capabilities` 上只有两条真分岔——
 `columnar_batch` 与 `array_rowcount_totals`——各有一条更慢的退路可走，其余缺什么
@@ -1728,18 +1739,23 @@ PQputCopyData(pg, ...);                     // 用户自行驱动原生操作
 静态转回来且不核对类型；这份读取契约一度挂在它上面（当时叫
 `backend::schema_metadata`），现已挪出、钩子已删。COPY / LISTEN-NOTIFY / OCI
 数组绑定这类真不可移植的特性因此暂无封装，走上面的原生句柄；要不要类型化的
-门面，等 §5.4 那两家 backend 落地再定。
+门面，按 §5.4 落地的进度一家家再定——OCI 那家已经在树里，它暂未用到这种门面。
 
 ### 5.4 已确认的 backend 优先级
 
-1. **libpq**（PostgreSQL）——COPY、LISTEN/NOTIFY、异步 I/O
-2. **Oracle OCI**——数组绑定及 OCI 专有特性
+1. **Oracle OCI**——**已落地**：`backends/oracle_oci/`，scheme `"oracle"`，装成
+   `libuniorm_oracle.so`，CI 为它单开一支作业（§8）。它接四件套，也只实现
+   `open(std::string_view)` 那条原语；两件 OCI 专有特性还没接——原生数组绑定
+   （§9 第 3 条剩下的那一半）与目录读取，后者让它对 `orm::schema()` 报
+   `capability_not_supported`
+2. **libpq**（PostgreSQL）——COPY、LISTEN/NOTIFY、异步 I/O，**未落地**
 
 两者均来自既有项目中必须绕开 ODBC 的实际经验。四件套（§5.2）正是为它们留的路：
 libpq 把它拼成空格分隔的 conninfo，OCI 连串都没有——用户名与口令是
-`OCISessionBegin` 各自的实参。两家也都仍只需实现 `open(std::string_view)`
-那条原语，四件套按需接。能力清单不为它们的特性集预留标志位：
-一家 backend 落地后，只有核心真需要分岔的地方才进清单（§5.2）。
+`OCISessionBegin` 各自的实参。落地的那家仍只需实现 `open(std::string_view)`
+那条原语，四件套按需接。能力清单不为特性集预留标志位：
+一家 backend 落地后，只有核心真需要分岔的地方才进清单（§5.2）——OCI 那家交出的
+两个标志如今都是 `false`，走的正是各自那条更慢的退路。
 
 ## 6. uniorm-gen 代码生成工具
 
@@ -1924,7 +1940,7 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
 
 除末条安装冒烟是 `cmake -P` 脚本外，下列用例都是编译进 CTest 的 C++ 程序。
 
-- **单元测试**（无数据库，已实现，拆为两个目标）：
+- **单元测试**（无数据库，已实现；核心一份，每家启用的 backend 另有一份白盒）：
   `uniorm_unit_tests` 不链接 ODBC——`test_pfr`（字段数探测/展开/concept 负例）、`test_row`
   （value_cast/收窄/optional/文本字面量按需解析成算术目标）、
   `test_params`（值归一化）、`test_converter`
@@ -2018,7 +2034,16 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
   对 `userxorders` 不算——后者正是 pattern 里 `_` 的通配，两侧任一为空则留）、
   `test_odbc_error_is_backend_error`（`odbc_error` 就是 `backend_error`，
   无需二次翻译）；
-- **集成测试**（已实现，DSN/凭据由 `UNIORM_IT_DSN` / `UNIORM_IT_USER` / `UNIORM_IT_PWD` 指定，连接串按 `UNIORM_IT_BACKEND` 选中那一家的语法拼（默认 odbc，凭据以 `UID`/`PWD` 写进串里），同一份凭据也按四件套连一次——两条路线连到同一处才算对上，而且四件套那一侧不止跑一条语句：目录里认得出这张夹具表（backend 不答目录时这一段自己报 skip）、`orm` 能从串换乘过来、调用方自己拿四件套建的池也借得出连接，一个不存在的 target 则由驱动直接拒（`SQLDriverConnect` 不带提示，CI 上不会等输入）；连不上时 ctest SKIP）：execute/params 往返、动态行（含 `connection::execute` 显式块取行大小 0 退回逐行）、DECIMAL 动态路径（`DECIMAL(20,4)` / `(20,0)` / `(38,0)` 取回精确定点字面量与 `column_info::scale`，按需解析成 double、scale-0 解析成 int64，带小数或超 int64 范围的字面量抛 `type_mismatch`，NULL 仍报 `is_null`）、DECIMAL 映射路径（`DECIMAL(20,4)` / 一个最宽标度列（精度按这一家收得下的写法）/ `(20,0)` 三列配 `decimal_t` 与 `std::optional<decimal_t>` 成员：批量插入与实体读回逐字核对 `to_literal`（含那个最宽标度列第 30 位为 1 的值——没有任何整型或 double 装得下它）、聚合投影、动态行 `get<decimal_t>`、以 `decimal_t` 为右值的 `where(gt(&T::amount, ...))` 落到同一字面量）、聚合投影（含长字符串与 timestamp）、注册实体读手写 SQL（列序打乱仍按列名配对，缺列报 `column_not_found`）、converter 往返（批量插入、实体物化含 NULL、
+  `uniorm_oracle_oci_unit_tests` 链接 Oracle 那一家——`test_oracle_oci_sql_text`
+  （`?` 改写成 `:1 / :2` 时按出现顺序编号，落进引号里的那个算文本不算占位：单引号的
+  字面量、双引号的标识符、Oracle 那套 `q'X…X'` 的另类引法都各自成段，成对写出的引号
+  不结束它所在的那段）、`test_oracle_oci_types`（`NUMBER` 的精度与标度落在哪个
+  `sql_type` 上，以及 native 类型码那张表——`SQLT_INT` 的 `NUMBER(1,0)` 是那条形状
+  规则唯一被推翻的地方，它归 `boolean`，因为实体里的 `bool` 绑的正是它）、
+  `test_oracle_oci_connection`（没有 target 直接拒；`user/pass@host:port/service` 按
+  最后一个 `@` 切，连接描述符里不含 `@` 而口令可以，于是这一刀总是落在对的位置；出错
+  时消息只带连接那半，用户名与口令一个字也不进去）；
+- **集成测试**（已实现，DSN/凭据由 `UNIORM_IT_DSN` / `UNIORM_IT_USER` / `UNIORM_IT_PWD` 指定，连接串按 `UNIORM_IT_BACKEND` 选中那一家的语法拼（默认 odbc，凭据以 `UID`/`PWD` 写进串里），同一份凭据也按四件套连一次——两条路线连到同一处才算对上，而且四件套那一侧不止跑一条语句：目录里认得出这张夹具表（backend 不答目录时这一段自己报 skip）、`orm` 能从串换乘过来、调用方自己拿四件套建的池也借得出连接，一个不存在的 target 则由这一家自己直接拒（ODBC 侧 `SQLDriverConnect` 不带提示，Oracle 侧不认识的 service 回 `ORA-12154`，CI 上都不会等输入）；连不上时 ctest SKIP）：execute/params 往返、动态行（含 `connection::execute` 显式块取行大小 0 退回逐行）、DECIMAL 动态路径（`DECIMAL(20,4)` / `(20,0)` / `(38,0)` 取回精确定点字面量与 `column_info::scale`，按需解析成 double、scale-0 解析成 int64，带小数或超 int64 范围的字面量抛 `type_mismatch`，NULL 仍报 `is_null`）、DECIMAL 映射路径（`DECIMAL(20,4)` / 一个最宽标度列（精度按这一家收得下的写法）/ `(20,0)` 三列配 `decimal_t` 与 `std::optional<decimal_t>` 成员：批量插入与实体读回逐字核对 `to_literal`（含那个最宽标度列第 30 位为 1 的值——没有任何整型或 double 装得下它）、聚合投影、动态行 `get<decimal_t>`、以 `decimal_t` 为右值的 `where(gt(&T::amount, ...))` 落到同一字面量）、聚合投影（含长字符串与 timestamp）、注册实体读手写 SQL（列序打乱仍按列名配对，缺列报 `column_not_found`）、converter 往返（批量插入、实体物化含 NULL、
 `in` 谓词、投影、构建器 `set`/批量 update、动态行 `get<T>`）、orm validate（含 strict
 的列缺失/可空/类型族三条失败路径）、查询构建器全谓词与分页（末了拿 `build_select()`
 的文本比对这条连接自己那家方言的引号；再把策略声明成 `upper` 重发一次——表名跟着升
@@ -2120,9 +2145,14 @@ commit/rollback/析构回滚、批量插入（含空 optional 写 NULL、1500 �
   时注册，不需要数据库）：`cmake --install` 到 `<build>/install_smoke/prefix` → 核对
   config/targets/头文件/库都已就位，且装出的头文件集合与 `include/uniorm` 逐一相符；
   核对 `<libdir>/uniorm/backends/libuniorm_odbc.so*` 随 `UNIORM_BACKEND_ODBC` 该
-  有则有（两级 soname 文件都在）、该无则无；在 Linux 上还 `readelf -d` 装出来的
+  有则有（两级 soname 文件都在）、该无则无；`libuniorm_oracle.so*` 随
+  `UNIORM_BACKEND_ORACLE_OCI` 是同一条判据（Windows 下它落在
+  `<bindir>/uniorm/backends/`），两家的 export 集也各按自己的选项该有则有。这一趟
+  不 dlopen Oracle 那家——跑它的机器上没有 Oracle 可连——证的是装出去的目录正是
+  loader 为 scheme `"oracle"` 写下的那一个；在 Linux 上还 `readelf -d` 装出来的
   `libuniorm.so.<major>.<minor>` 断言 `DT_NEEDED` 里既无 `libodbc` 也无
-  `libuniorm_odbc`（拆分是否真的落到链接期，只在这一步说数）→ 按本次构建的形状
+  `libuniorm_odbc`、既无 `libclntsh` 也无 `libuniorm_oracle`（拆分是否真的落到
+  链接期，只在这一步说数）→ 按本次构建的形状
   配置并构建 `tests/install/` 这个外部工程（刻意不设 `CMAKE_CXX_STANDARD`，链接
   行始终是 `uniorm::uniorm` 一家，靠 `SMOKE_UNIORM_HAS_ODBC` 决定消费者断言
   哪一侧）：ON 时装出的 plugin 存在，消费者以 `UNIORM_PLUGIN_PATH` env 把 loader
@@ -2148,22 +2178,36 @@ commit/rollback/析构回滚、批量插入（含空 optional 写 NULL、1500 �
   生成的授权与 `mariadb-admin ping` 健康门（约 20 s 转 healthy）也一并验了；提交过
   三趟，头一趟卡在 YAML 校验，第二趟作业真跑起来了、`core` 当场抓出一处真漏，第三趟三支作业
   全绿——前两样的账都在下面。此后驱动那一支沿服务端铺开成四条腿、量完又收回两条，收回之后
-  又长出第三条（psqlODBC 对 PostgreSQL 17）：这副四支作业的形状先在 runner 的同族镜像里
+  又长出第三条（psqlODBC 对 PostgreSQL 17）：这副四支作业——`core` 加三条腿，四个
+  实例——的形状先在 runner 的同族镜像里
   按作业原样重放过，随后就在 runner 上跑绿了——四支作业全绿，三条驱动腿各自跑满除 `perf`
-  外的五条，服务端依次答 8.4.11、`11.8.9-MariaDB-ubu2404` 与 17.11）：
+  外的五条，服务端依次答 8.4.11、`11.8.9-MariaDB-ubu2404` 与 17.11。再往后长出的两支
+  都不在驱动那一条上：`core-windows` 是 `core` 的 Windows 孪生，同一份
+  `UNIORM_BACKEND_ODBC=OFF`、`UNIORM_BUILD_TOOLS=OFF` 的构建换 MSVC 编、flags 给
+  `/W4`，ctest 只取 `unit_tests`——它守的是核心与公共头在 MSVC 下编得干净，plugin 的
+  `LoadLibraryExA` 那条路径不在它覆盖面里（没有一支 Windows 作业装 backend）；`oracle-oci`
+  是第四支作业，它不进驱动的矩阵，因为环里没有驱动管理器——现装 Oracle 客户端库、按
+  scheme 名载 plugin、对一只 Oracle Free 容器跑同一套集成测试，注册四条 ctest 而非
+  五条：它有自己的白盒单测与同一套集成测试顶上，少掉的那一条正是 `gen_e2e`——生成器
+  读的是活库目录，而只有 ODBC 那一家答得上，所以这一支把 `UNIORM_BUILD_TOOLS` 关着。
+  今天 runner 上的形状是四支作业定义、六个
+  实例，服务端多答一家 `Oracle AI Database 26ai Free Release 23.26.3.0.0`）：
   一支 `UNIORM_BACKEND_ODBC=OFF`
-  的构建跑 `unit_tests` 与 `install_smoke`，前者替 §3 那条"驱动类型不漏进 statement
-  层之上的公开头"把关，后者顺带验一次"没有 backend 装进 prefix 时消费者拿不到
-  `uniorm::odbc`"这条负向承诺——OFF 时 export 集就不生成，find_package 组件校验
-  直接拒。这条承诺此前只在注释里，没有任何东西在守它。另一支是三条腿，每条拿自家的连接器连自家的
+  的构建只跑 `unit_tests`，它替 §3 那条"驱动类型不漏进 statement 层之上的公开头"把关。
+  `install_smoke` 不在这支上，runner 上真跑它的是三条驱动腿与 Oracle 那一支：前者是
+  `UNIORM_BACKEND_ODBC=ON` 的一侧，plugin 装进 prefix，消费者把 loader 指过去便跨过
+  `registry::create`；后者正好是 OFF 的一侧，`UNIORM_PLUGIN_PATH` 指到空目录，裸 DSN
+  依旧 `unknown_scheme`、`odbc` 从头到尾没进注册表。ON 与 OFF 于是各有作业在守——这条
+  负向承诺此前只在注释里，没有任何东西在守它。另一支是三条腿，每条拿自家的连接器连自家的
   服务端，各对自己的服务容器跑除 `perf` 外的全部五条：MySQL Connector/ODBC 取自 MySQL
   自己的 apt 组件（Ubuntu 归档里没有它），MariaDB Connector/ODBC 只能从 tag 拉源码构建
   （Ubuntu 任何发行版都不打包它，上游 release 也不带二进制），psqlODBC 是三支里唯一 Ubuntu
   自己打包的那一支——`odbc-postgresql`（实测 16.00），装出 `psqlodbca.so` 与
   `psqlodbcw.so`，按同一 narrow-char 边界注册 `a` 那一支；服务端三格是 `mysql:8.4`
   （实测 8.4.11）、`mariadb:11`（实测 11.8.9）与 `postgres:17`（实测 17.7）。跨着连的那两种
-  配法不跑：CI 守的是正常用法，一支对着自家厂商都不支持的服务器不属于那种。这笔取舍的代价记
-  在下面的量里——唯一那处读丢就是从被砍掉的格子里撞出来的。留着三根服务端轴不是因为
+  配法不跑，也不记成欠账：CI 守的是正常用法，一支对着自家厂商都不支持的服务器不属于那种，
+  跨着连从来不在支持轴上。历史上唯一那处真读丢恰好撞在矩阵铺开时多出来的那一格里，它的
+  取证记在下面的量里——那是一次曝光的去处，不是一笔要还的账。留着三根服务端轴不是因为
   SQL 会长得不一样——`dialect::detect` 对两个 MySQL 线的 banner 给同一套引号与分页，
   对 PostgreSQL 的 banner 给 ANSI 那套默认，而那条 else 分支此前没有任何一条腿真走到
   它——而是因为 `uniorm-gen` 读的是 **服务端答的元数据**：本地拿真 MySQL 服务端跑这套
@@ -2181,13 +2225,14 @@ commit/rollback/析构回滚、批量插入（含空 optional 写 NULL、1500 �
   `mariadb-admin`、`postgres:17` 只有 `pg_isready`——那道门不携口令，授权仍是预检的事——
   故健康命令按 matrix 给；`services` 的 env 三套前缀都写，三个镜像
   各读自己那半、取值相同，端口映射也按 matrix 给，因为两支 MySQL 线听 3306、
-  PostgreSQL 听 5432。四支作业都带 `-Wall -Wextra`——今天零告警，
-  但不 `-Werror`，免得依赖头升级把与回归无关的红压进分支。三条数据库腿的测试以 `-V` 跑，
-  因为 §8 那个用例会记下每个名字实际存成了什么拼法，而那一行出自一个通过的用例，ctest
-  对通过的用例不出它的输出。三条数据库腿各有一道报警：
+  PostgreSQL 听 5432。除 `core-windows` 外都带 `-Wall -Wextra`——它把 flags 换成 MSVC
+  的 `/W4`——今天零告警，但不 `-Werror`，免得依赖头升级把与回归无关的红压进分支。跑数据库
+  的四支（三条驱动腿与 Oracle 那一支）测试都以 `-V` 跑，因为 §8 那个用例会记下每个名字实际
+  存成了什么拼法，而那一行出自一个通过的用例，ctest
+  对通过的用例不出它的输出。四支各有一道报警：
   测试连不上就返回 77，而 ctest 把 77 记成 Skip 并照样打印"100% tests passed"，所以作业
-  见到输出里的 `Skipped` 即判失败（真正的失败交给 `set -o pipefail`，测试条数不写死），
-  并在构建之前先用 `isql` 问过是哪台服务端答的：每条腿带一个 `server_prefix`（引号不能省，
+  见到输出里的 `Skipped` 即判失败（真正的失败交给 `set -o pipefail`，测试条数不写死）。
+  三条驱动腿还在构建之前先用 `isql` 问过是哪台服务端答的：每条腿带一个 `server_prefix`（引号不能省，
   `11.` 裸写会被 YAML 读成数字 11，那前缀任何 MariaDB banner 都对得上），拿**该腿自己的**
   那句版本查询的 banner 去比前缀，对不上即红——问哪句也是服务端自己的选择，PostgreSQL 的
   `SELECT VERSION()` 答 `PostgreSQL 17.7 (…)`，开头是个词不是数字，那条腿因此问
@@ -2234,7 +2279,9 @@ commit/rollback/析构回滚、批量插入（含空 optional 写 NULL、1500 �
   `backends/odbc/schema_catalog.cpp`），公开头不再声明 `sql_type_from_native`；`core`
   作业另加一道 shadow：往 include 路径最前放一对读下去即报错的 `sql.h`/`sqlext.h`，再用一次
   反面编译确认它们确实抢在了系统头之前——且要求那次编译非报我们那句 `#error` 不可，编不动
-  的编译器同样会"失败"，而那不算守卫生效。两处都改完后再提交一趟，三支作业在 runner 上全绿：
+  的编译器同样会"失败"，而那不算守卫生效。这笔搬迁之后，除 `tests/perf` 那条裸 ODBC
+  基线，`sql.h` 只在 `backends/odbc/` 里出现：`core` 那道 shadow 拦的从此是一个方向，
+  不再是某一次具体的回归。两处都改完后再提交一趟，三支作业在 runner 上全绿：
   `core` 带着 shadow 编过，mariadb 腿的 golden 仍逐字节相符——也是按当时的比法。
   全绿之后这支沿服务端铺开成 2×2 四条腿，量完又收回两条——上面那笔取舍就是从这趟下的。
   本地量到的：两支连接器都能连上 `8.4.11`，用户是 `caching_sha2_password`、走 TCP、
@@ -2248,7 +2295,7 @@ commit/rollback/析构回滚、批量插入（含空 optional 写 NULL、1500 �
   把当前这棵树按数据库腿的形状配置（`UNIORM_BACKEND_ODBC=ON`、`UNIORM_BUILD_TOOLS=ON`、
   `-Wall -Wextra`）跑 `ctest -LE perf`，两台服务端各连一次——四格五条全绿，一条 Skip 也没有。
   四格都绿过一次，留哪两格便成了取舍而不是没得选：留下两条同名腿，拿掉的跨格从此没有
-  CI 覆盖，那笔账记在 §9。
+  CI 覆盖——这不是一笔欠账，理由就是上面那条配法，§9 也不把它列成待做。
   第三条腿的账全在 runner 的同族镜像里量，四问都有答案。**包与文件**：psqlODBC 是三支里
   唯一 Ubuntu 自己打包的（universe 的 `odbc-postgresql`，实测 `1:16.00.0000-1`），装出
   `psqlodbca.so` 与 `psqlodbcw.so`，注册的仍是窄字符边界选中的 `a` 那一支，路径经
@@ -2294,7 +2341,8 @@ commit/rollback/析构回滚、批量插入（含空 optional 写 NULL、1500 �
 
 **v1 欠账**（`decimal_t` 随 0.2.0 落地、CI 的三条作业既在它们所要用的镜像里按作业原样重放过
 一遍、也在 GitHub 上跑绿之后，本清单一度清空；驱动那一支沿服务端铺开成四条腿、收回两条、
-又长出第三条，这副四支作业在 GitHub 上再次全绿之后，只剩一件事，见打包条目末尾）：
+又长出第三条，此后又长出 `oracle-oci` 与 `core-windows` 两支，四支作业定义在 GitHub 上
+全绿——本清单如今没有待做项，逐条下落见各条目末尾与 §8）：
 
 - ~~ODBC 宽字符路径（§4.2）~~ **已按该条目自己给出的第二条路了结**：确认不做，
   删掉零调用者的 `utf8_to_utf16` / `utf16_to_utf8` 与只有它们会抛出的公开类型
@@ -2324,22 +2372,26 @@ commit/rollback/析构回滚、批量插入（含空 optional 写 NULL、1500 �
   注册、`isql` 预检、`-LE perf` 过滤后的五条，连同作业那段 `services`（授权与健康门）也
   都在镜像里绿过。GitHub 也已经真跑过它了：头一趟只有 YAML 校验拦下的一件事（`services`
   块读不到 `env` 上下文），改完的第二趟作业起了、`core` 抓出一处真漏并已修，第三趟三支作业
-  全绿（两处细节都在 §8）。**待做**如今只剩一样。原先其一——长出第三条腿后的这副形状还没被
-  runner 看过——已经结掉：驱动腿
-  一度沿服务端铺开成四条腿，在装着 CI 那两支连接器的 `ubuntu:24.04` 容器里按当前构建跑满
-  四格全绿，随后收回两条同名腿（CI 守的是正常用法，§8），第三条腿是在这副两腿上长出来的，
-  它和另两条都在 runner 的同族镜像里按作业原样各自跑满五条（§8）；作业自己那副形状
-  （矩阵选镜像、按镜像给的端口、健康门与那句版本查询、`services` 里三套 env 前缀）随后在
-  runner 上四支全绿。剩下的一样是一笔认下的欠账：跨格（MariaDB 连接器对 MySQL 服务端、
-  Connector/ODBC 对 MariaDB 服务端）从此没有 CI 覆盖，而唯一那次真读丢正是从跨格撞出来的。
+  全绿（两处细节都在 §8）。原先留的两样都已结掉。其一——长出第三条腿后的
+  这副形状还没被 runner 看过——已经结掉：驱动腿一度沿服务端铺开成四条腿，
+  在装着 CI 那两支连接器的 `ubuntu:24.04` 容器里按当前构建跑满四格全绿，
+  随后收回两条同名腿（CI 守的是正常用法，§8），第三条腿是在这副两腿上长出
+  来的，它和另两条都在 runner 的同族镜像里按作业原样各自跑满五条（§8）；
+  作业自己那副形状（矩阵选镜像、按镜像给的端口、健康门与那句版本查询、
+  `services` 里三套 env 前缀）随后在 runner 上四支全绿。另一样是跨格
+  （MariaDB 连接器对 MySQL 服务端、Connector/ODBC 对 MariaDB 服务端）从此
+  没有 CI 覆盖：那不是要还的账，跨着连不在支持轴上（§8）。此后又长出
+  `oracle-oci` 与 `core-windows` 两支，各自也在 runner 上绿着，今天的形状
+  是四支作业定义、六个实例（§8）。
   `uniorm-gen` 的元数据读取已挪到 `orm::schema()` 之后（§6.2）；挪动前后对
   同一份夹具逐字节相同：那格要不要补一道门，看它那时暴露出什么，届时再定。
 
 原有路线图：
 
 1. ~~backend 接口提取~~ **已完成（里程碑 1）**：中立接口 + scheme 注册表，
-   ODBC 迁移至接口之后，ODBC 改 PRIVATE 链接，核心单测不链接 ODBC
-   （见 §5）。**待做**：libpq backend、Oracle OCI backend（见 §5.4）
+   ODBC 迁移至接口之后，核心单测不链接 ODBC（见 §5）；它那时还只是核心
+   PRIVATE 链的一家，此后整家拆成 plugin（§5.1、条目 8）。两家都已落地，剩下的
+   **待做**是 libpq 那一家，和 OCI 那家还没接上的目录读取（§5.4）。
 2. Unit of Work / 脏检查 / 级联
 3. ~~批量操作~~ **已完成**：`SQL_ATTR_PARAMSET_SIZE` 数组绑定 + 块取行，
    列式（`batch_writer_iface`）与行式（`bind_batch_params`）双通道（见 §4.5.2）。
@@ -2368,8 +2420,10 @@ commit/rollback/析构回滚、批量插入（含空 optional 写 NULL、1500 �
    `UNIORM_ABI_VERSION` 绑到同一份 `major.minor`：核心与 plugin 不同 minor 直接
    拒载，链接期失败不足以覆盖 dlopen 期的错配。`find_package(uniorm COMPONENTS
    odbc)` 那条路已废；`uniormOdbcTargets.cmake` 仍安装，只为仓内白盒测试直链
-   `uniorm::odbc` 保留。**待做**：libpq/OCI 各自落地时按同一形状再加一份 plugin
-   与一份白盒 export 集；Windows 的 `LoadLibrary` 路径留待独立一次改动。
+   `uniorm::odbc` 保留，OCI 那一家照同一形状也有一份 plugin 与一份白盒 export
+   （§5.4）。Windows 的 `LoadLibraryExA` 路径也已在 loader 里实现（§5.1），只是
+   没有一支 Windows 作业装 backend，它不在 CI 覆盖面里（§8）。**待做**只剩 libpq
+   那一家按同一形状再加一份。
 9. ~~能力清单落地：`capabilities` 的四个未读标志各自找到真实消费点~~ **已完成**：
    四个占位已删，清单只剩 `columnar_batch` 与 `array_rowcount_totals`，两条各有
    读者（§5.2）；后者随 §8 那条 PostgreSQL 腿落地。
@@ -2382,8 +2436,9 @@ commit/rollback/析构回滚、批量插入（含空 optional 写 NULL、1500 �
 11. ~~标识符逐名解析~~ **已实现**：显式 `resolve_identifiers(catalog, schema)`，
     不在 `validate()` 中隐式执行；声明保留，结果单独保存并原子安装（§4.8）。
     首版范围为 PostgreSQL、MySQL/MariaDB 的明确命名空间内普通表。公共布局和
-    `schema_meta` 虚表发生变化，版本改为 0.3.0 / SONAME 0.3，消费者与第三方
-    backend 需要重新编译；不能仅因某个类型的 sizeof 没变就混用旧二进制。
+    `schema_meta` 虚表的变化把版本推到 0.3.0 / SONAME 0.3，消费者与第三方
+    backend 需要重新编译；不能仅因某个类型的 sizeof 没变就混用旧二进制（此后
+    0.4.0 又因 backend 拆分动过一次，见条目 8）。
 
 ## 10. 评审待定点
 

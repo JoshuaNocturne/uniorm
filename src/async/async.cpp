@@ -121,11 +121,12 @@ bool orm::auto_commit() const noexcept {
   return db_.auto_commit();
 }
 
-dialect::identifier_case orm::identifier_case() const noexcept {
+std::optional<dialect::identifier_case>
+orm::identifier_case() const noexcept {
   return db_.identifier_case();
 }
 
-void orm::identifier_case(dialect::identifier_case policy) {
+void orm::identifier_case(std::optional<dialect::identifier_case> policy) {
   db_.identifier_case(policy);
 }
 

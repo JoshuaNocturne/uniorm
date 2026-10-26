@@ -80,8 +80,9 @@ public:
   // --- Identifier spelling ---
   // How the SQL this connection generates quotes its names. Kept on the
   // connection because that is where the server's other quirks are known.
-  dialect::identifier_case identifier_case() const noexcept;
-  void identifier_case(dialect::identifier_case policy);
+  // No value means the dialect detected from the server's name answers it.
+  std::optional<dialect::identifier_case> identifier_case() const noexcept;
+  void identifier_case(std::optional<dialect::identifier_case> policy);
 
   // The dialect built from the server's name and the policy above, made on
   // first use.
@@ -117,7 +118,12 @@ private:
   std::shared_ptr<detail::statement_cache> stmt_cache_;
   // Mirrors the last mode the backend was told; ODBC connects autocommitting.
   bool autocommit_ = true;
-  dialect::identifier_case identifiers_ = dialect::identifier_case::keep;
+  // A declared spelling policy; empty defers to the server's own dialect.
+  std::optional<dialect::identifier_case> identifiers_;
+  // The fold that dialect answered, kept so clearing a policy needs no second
+  // question to the server.
+  dialect::identifier_case dialect_identifiers_ =
+    dialect::identifier_case::keep;
   // Built on first spelling. A closed connection is never reopened, so the
   // server facts it holds cannot go stale; the policy is rewritten in place.
   std::optional<dialect> sql_dialect_;

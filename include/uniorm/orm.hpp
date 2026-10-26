@@ -278,9 +278,10 @@ public:
   void auto_commit(bool enabled);
 
   // --- Identifier spelling ---
-  // Re-applied on every lease; resolved mappings bypass this policy.
-  dialect::identifier_case identifier_case() const noexcept;
-  void identifier_case(dialect::identifier_case policy);
+  // Re-applied on every lease; resolved mappings bypass this policy. No value
+  // means the SQL follows the dialect of whatever server this leases.
+  std::optional<dialect::identifier_case> identifier_case() const noexcept;
+  void identifier_case(std::optional<dialect::identifier_case> policy);
 
   // --- Cache observability ---
   unsigned long long statement_cache_hits() const;
@@ -308,7 +309,7 @@ private:
   std::size_t paramset_size_ = default_paramset_size;
   bool auto_commit_ = true;  // commit mode applied to every connection
   // Spelling policy applied to every connection, as auto_commit_ is.
-  dialect::identifier_case identifiers_ = dialect::identifier_case::keep;
+  std::optional<dialect::identifier_case> identifiers_;
 
   void ensure_connected() const;
 

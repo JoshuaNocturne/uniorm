@@ -1116,6 +1116,55 @@ void test_mysql_and_literal_namespace_quoting() {
     { params(std::int64_t{ 7 }).values() });
 }
 
+void test_the_servers_own_fold_answers_before_any_policy() {
+  recording_fixture fixture;
+  auto& state = *fixture.state;
+  state.product = "Oracle";
+
+  std::size_t opens = 0;
+  {
+    orm database(fixture.pool);
+    database.map<event>("User_Account").primary_key("UserId", &event::id);
+    // Nobody declared a policy, so the habit the banner names is what goes
+    // out.
+    CHECK(!database.identifier_case());
+    CHECK(database.query<event>().build_select() ==
+          "SELECT \"USERID\" FROM \"USER_ACCOUNT\"");
+    // Declaring keep is a decision of its own, not the absence of one.
+    database.identifier_case(dialect::identifier_case::keep);
+    CHECK(database.query<event>().build_select() ==
+          "SELECT \"UserId\" FROM \"User_Account\"");
+    database.identifier_case(dialect::identifier_case::lower);
+    CHECK(database.query<event>().build_select() ==
+          "SELECT \"userid\" FROM \"user_account\"");
+    // Undeclaring returns to the answer this connection already read, without
+    // asking the server again.
+    opens = state.opens;
+    database.identifier_case(std::nullopt);
+    CHECK(database.query<event>().build_select() ==
+          "SELECT \"USERID\" FROM \"USER_ACCOUNT\"");
+  }
+
+  // A lease that declares nothing does not inherit the policy the lease before
+  // it declared: the pool hands back the same connection, dialect and all.
+  {
+    orm strict(fixture.pool);
+    strict.map<event>("User_Account").primary_key("UserId", &event::id);
+    strict.identifier_case(dialect::identifier_case::keep);
+    CHECK(strict.query<event>().build_select() ==
+          "SELECT \"UserId\" FROM \"User_Account\"");
+  }
+  CHECK(state.opens == opens);
+  {
+    orm following(fixture.pool);
+    following.map<event>("User_Account").primary_key("UserId", &event::id);
+    CHECK(!following.identifier_case());
+    CHECK(following.query<event>().build_select() ==
+          "SELECT \"USERID\" FROM \"USER_ACCOUNT\"");
+  }
+  CHECK(state.opens == opens);
+}
+
 }  // namespace
 
 void test_identifier_resolution() {
@@ -1131,4 +1180,5 @@ void test_identifier_resolution() {
   test_direct_crud(false);
   test_direct_crud(true);
   test_mysql_and_literal_namespace_quoting();
+  test_the_servers_own_fold_answers_before_any_policy();
 }

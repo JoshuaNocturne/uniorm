@@ -605,9 +605,9 @@ class connection {
     std::string dbms_name() const;             // SQL_DBMS_NAME，方言推断输入
     backend::capabilities caps() const noexcept;
 
-    // 标识符拼法：部署声明一次，管这条连接发出的每一条 SQL（见 §4.8）
-    dialect::identifier_case identifier_case() const noexcept;   // 默认 keep
-    void identifier_case(dialect::identifier_case policy);
+    // 标识符拼法：空＝不声明，跟着 banner 探出的那家方言走（见 §4.8）
+    std::optional<dialect::identifier_case> identifier_case() const noexcept;
+    void identifier_case(std::optional<dialect::identifier_case> policy);
     dialect const& sql_dialect();     // banner 探测与上面的策略合成的那一份
 
     schema_meta& schema() const;               // 表自省，见 5.2
@@ -843,8 +843,9 @@ class orm {                             // 非线程安全，按线程/会话持
     std::size_t row_array_size() const noexcept;  void row_array_size(std::size_t);  // default_row_array_size = 100
     std::size_t paramset_size() const noexcept;   void paramset_size(std::size_t);   // default_paramset_size = 1000
     bool auto_commit() const noexcept;            void auto_commit(bool);            // true：即连接的 autocommit 属性（见 §4.9）
-    dialect::identifier_case identifier_case() const noexcept;
-    void identifier_case(dialect::identifier_case);   // keep：标识符拼法，租到连接时重贴（见 §4.8）
+    std::optional<dialect::identifier_case> identifier_case() const noexcept;
+    // 标识符拼法：空＝不声明，跟着连接的方言走；租到连接时重贴（见 §4.8）
+    void identifier_case(std::optional<dialect::identifier_case>);
 
     template <class T> mapping_builder<T> map(std::string_view table);  // 重复注册抛 mapping_error
     template <class T> entity_meta const& meta() const;                 // 未注册抛 mapping_error
@@ -1051,10 +1052,12 @@ struct dialect {
 ```
 
 折叠只按 ASCII，不走 locale：同一个名字因进程 locale 不同而指向两张表，比大小写
-本身更糟。三值里 `keep` 是现状——不声明的人行为一字不变。策略住在 `connection`
-（banner 与它是同一处的两个输入），`connection::sql_dialect()` 把探测与策略合成一
-份方言、首次用到才建；未解析映射的 SQL 和校验按该策略折叠。`orm` 在租到连接时
-重贴策略，与 `auto_commit` 相同。不从连接串解析额外配置。
+本身更糟。策略可不声明：不声明就按 banner 探出的那家方言折——Oracle 折 `upper`，
+其余家答 `keep`，所以不认识这套的人行为一字不变；声明了以声明为准，`keep` 也是
+一次声明。策略住在 `connection`（banner 与它是同一处的两个输入），
+`sql_dialect()` 把探测与策略合成一份方言、首次用到才建；未解析映射的 SQL 和校验
+按该策略折叠。`orm` 在租到连接时重贴策略，与 `auto_commit` 相同：没有声明就贴回
+没有声明，前一次租约的声明不跟着连接回来。不从连接串解析额外配置。
 
 **显式逐名解析（0.3）**：注册后调用
 `resolve_identifiers(catalog, schema)`，只处理指定命名空间里的普通表。
@@ -1844,8 +1847,9 @@ backend（§5.2）；句柄层里那条 DSN 专用的 `SQLConnect` 通路失去�
 4. SQL 类型 ↔ C++ 类型映射遵循 §4.3 表，可被配置覆写。
 
 进注册调用的表名与列名是**源目录的逐字拼法**，生成期不折叠：拼法是那家目录的事实，
-而"该发哪一种"要到连接建立之后才知道，所以它交给部署声明的 `identifier_case`，在
-标识符出口应用（§4.8）。一份产物因此可以服务存储拼法不同的两家。
+而"该发哪一种"要到连接建立之后才知道，所以它交给连接上的 `identifier_case`：方言
+认得的家自己答、部署可覆写，都在标识符出口应用（§4.8）。一份产物因此可以服务
+存储拼法不同的两家。
 
 生成物只输出到指定目录，视为不可手改。头文件仅依赖
 `<uniorm/orm.hpp>`、`<uniorm/mapping/registry.hpp>`、`<uniorm/decimal.hpp>`
@@ -1929,7 +1933,8 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
   `to_double` / `to_int64` 及两者越界、动态行经 `value_cast<decimal_t>` 与
   `converter<decimal_t>` 的读写往返）、
   `test_expression`（谓词 SQL 生成、方言、分页；`identifier_case` 三值是纯函数，
-  连同只折 ASCII 字母这一条一起钉住——非 ASCII 名字原样返回，`lower` 也不碰）、
+  连同只折 ASCII 字母这一条一起钉住——非 ASCII 名字原样返回，`lower` 也不碰；
+  `detect()` 各家折不折也钉在这里，只有 Oracle 顺带答 `upper`）、
   `test_registry`
   （映射注册/populate/read 闭包/错误路径）、`test_orm_crud_helpers`
   （实体 CRUD 的映射级归一：全部键列推断、WHERE 字段解析与 SET 分区、

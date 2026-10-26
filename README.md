@@ -269,14 +269,18 @@ spelling also depends on server configuration. Stored spelling and the server's
 case-sensitivity are different properties.
 
 ```cpp
-db.identifier_case(uniorm::dialect::identifier_case::upper);  // default: keep
+db.identifier_case(uniorm::dialect::identifier_case::upper);  // default: unset
 ```
 
-`keep` — the default — emits declared names verbatim. `lower` and `upper` fold
-ASCII letters and nothing else, so a name in another alphabet cannot fold onto a
-different one. Set it once, after connecting; the `orm` re-applies it to every
-connection it leases, the way it does `auto_commit`. `validate()` asks the
-catalog under the same policy, and a miss says which spelling the catalog has:
+Left unset, the SQL follows the server's own dialect: Oracle folds unquoted
+names to upper case and needs nothing declared, every other server keeps
+declared names verbatim. Declaring `keep` is a decision of its own, not the
+absence of one. `lower` and `upper` fold ASCII letters and nothing else, so a
+name in another alphabet cannot fold onto a different one. Set it once, after
+connecting; the `orm` re-applies it to every connection it leases, the way it
+does `auto_commit`, and unsetting it hands the answer back to the server.
+`validate()` asks the catalog under the same policy, and a miss says which
+spelling the catalog has:
 
     table not found: USER_ACCOUNTS (only case differs from 'user_accounts')
 

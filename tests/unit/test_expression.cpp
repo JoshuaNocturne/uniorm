@@ -141,9 +141,32 @@ void test_expression() {
           dialect::qualification::catalog);
     CHECK(dialect{}.table_qualification ==
           dialect::qualification::unsupported);
-    for (auto dbms_name : { "", "SQLite", "SQL Server", "Oracle" }) {
+    for (auto dbms_name : { "", "SQLite", "SQL Server" }) {
       CHECK(dialect::detect(dbms_name).table_qualification ==
             dialect::qualification::unsupported);
+    }
+    dialect oracle = dialect::detect("Oracle");
+    // Folding unquoted names to upper case is this server's own habit, so the
+    // banner answers it and no deployment has to declare the policy.
+    CHECK(oracle.identifiers == dialect::identifier_case::upper);
+    CHECK(oracle.quote_identifier("col") == "\"COL\"");
+    CHECK(oracle.quote_exact_identifier("col") == "\"col\"");
+    CHECK(oracle.ansi_pagination);
+    CHECK(oracle.pagination(std::size_t{ 5 }, 10) ==
+          " OFFSET 10 ROWS FETCH NEXT 5 ROWS ONLY");
+    CHECK(oracle.table_qualification == dialect::qualification::schema);
+    CHECK(dialect::detect(
+      "Oracle Database 21c Express Edition Release 21.3.0.0.0 - Production")
+      .identifiers == dialect::identifier_case::upper);
+    // No other vendor's fold is answered here: a name stays as declared until
+    // someone says otherwise.
+    for (auto dbms_name : { "MySQL", "MariaDB", "PostgreSQL", "SQL Server",
+      "" }) {
+      auto detected = dialect::detect(dbms_name);
+      CHECK(detected.identifiers == dialect::identifier_case::keep);
+      // Which is what a caller that asks for a label back has to be handed:
+      // the spelling it wrote, untouched.
+      CHECK(detected.fold_identifier("Mixed_Case") == "Mixed_Case");
     }
   }
   {

@@ -236,13 +236,15 @@ PostgreSQL 上通常存成小写；MySQL/MariaDB 的表名拼写还取决于服�
 目录保留的拼写和数据库比较名称时是否区分大小写，是两件不同的事。
 
 ```cpp
-db.identifier_case(uniorm::dialect::identifier_case::upper);  // 默认 keep
+db.identifier_case(uniorm::dialect::identifier_case::upper);  // 默认不声明
 ```
 
-默认的 `keep` 原样发出声明的名字；`lower` 与 `upper` 只折 ASCII 字母，别的字母表
-里的名字不会被折到另一个名字上。连接之后声明一次即可，`orm` 每次租到连接都会重贴
-上去，与 `auto_commit` 同一个解法。`validate()` 按同一个策略去问目录，落空的消息
-点名目录里那一侧的拼法：
+不声明时跟着服务器自己那家方言走：Oracle 把不加引号的名字折成大写，那里什么都不
+用声明；其余家原样发出声明的名字。把 `keep` 声明出来是一个决定，不是没有决定。
+`lower` 与 `upper` 只折 ASCII 字母，别的字母表里的名字不会被折到另一个名字上。
+连接之后声明一次即可，`orm` 每次租到连接都会重贴上去，与 `auto_commit` 同一个
+解法；撤掉声明就把答案交还给服务器。`validate()` 按同一个策略去问目录，落空的
+消息点名目录里那一侧的拼法：
 
     table not found: USER_ACCOUNTS (only case differs from 'user_accounts')
 

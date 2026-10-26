@@ -76,6 +76,12 @@ dialect dialect::detect(std::string_view dbms_name) {
     detected.table_qualification = qualification::catalog;
   } else if (lower.find("postgresql") != std::string::npos) {
     detected.table_qualification = qualification::schema;
+  } else if (lower.find("oracle") != std::string::npos) {
+    // What a table belongs to is called a schema here and nowhere else. An
+    // unquoted name is also stored upper-cased, so the fold comes with the
+    // banner rather than waiting on the deployment to declare it.
+    detected.table_qualification = qualification::schema;
+    detected.identifiers = identifier_case::upper;
   }
   return detected;
 }

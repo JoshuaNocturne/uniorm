@@ -588,9 +588,9 @@ public:
   // the connection.
   bool auto_commit() const noexcept;
 
-  dialect::identifier_case identifier_case() const noexcept;
+  std::optional<dialect::identifier_case> identifier_case() const noexcept;
 
-  void identifier_case(dialect::identifier_case policy);
+  void identifier_case(std::optional<dialect::identifier_case> policy);
 
   // The catalog side keeps no asynchronous door on purpose: validate / schema /
   // resolve_identifiers / clear_identifier_resolution, plus native_connection.

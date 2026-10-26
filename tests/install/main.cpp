@@ -71,6 +71,9 @@ int main() {
   expect(!mysql.ansi_pagination, "MariaDB pages with LIMIT/OFFSET");
   uniorm::dialect const generic = uniorm::dialect::detect("PostgreSQL");
   expect(generic.quote_identifier("t") == "\"t\"", "ANSI quoting by default");
+  uniorm::dialect const oracle = uniorm::dialect::detect("Oracle");
+  expect(oracle.quote_identifier("t") == "\"T\"",
+    "a dialect folds what its server folds");
   uniorm::sql_type const dec = uniorm::sql_type::decimal;
   expect(std::string(uniorm::sql_type_name(dec)) == "DECIMAL",
     "sql_type_name names DECIMAL");

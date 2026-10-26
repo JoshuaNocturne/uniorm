@@ -19,8 +19,8 @@ namespace {
 
 // Begin a lease in the mode its new owner asked for, discarding any pending
 // work a previous lease left behind: enabling autocommit would commit it.
-void adopt_connection(
-  connection& conn, bool autocommit, dialect::identifier_case identifiers) {
+void adopt_connection(connection& conn, bool autocommit,
+  std::optional<dialect::identifier_case> identifiers) {
   if (!conn.autocommit()) {
     conn.rollback();
   }
@@ -334,11 +334,12 @@ void orm::auto_commit(bool enabled) {
   auto_commit_ = enabled;
 }
 
-dialect::identifier_case orm::identifier_case() const noexcept {
+std::optional<dialect::identifier_case> orm::identifier_case() const noexcept {
   return identifiers_;
 }
 
-void orm::identifier_case(dialect::identifier_case policy) {
+void orm::identifier_case(
+  std::optional<dialect::identifier_case> policy) {
   if (pooled_conn_ && pooled_conn_->get().is_open()) {
     pooled_conn_->get().identifier_case(policy);
   }

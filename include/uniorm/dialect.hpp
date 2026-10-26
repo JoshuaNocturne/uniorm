@@ -13,8 +13,9 @@ namespace uniorm {
 // pagination syntax.
 struct UNIORM_API dialect {
   // How generated SQL spells the identifiers it quotes. A server decides
-  // whether a name is case-sensitive and what it stores; this is the
-  // deployment's answer, applied to names the mapping spells any other way.
+  // whether a name is case-sensitive and what it stores. A dialect built by
+  // hand keeps; detect() answers for a server whose habit it knows, and a
+  // deployment can override that answer.
   enum class identifier_case { keep, lower, upper };
   enum class qualification { unsupported, schema, catalog };
 

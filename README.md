@@ -69,7 +69,7 @@ The full API reference is [docs/design.md](docs/design.md).
 ## Requirements
 
 - A C++20 compiler; the build asks for nothing but `cxx_std_20`
-- CMake ≥ 3.20
+- CMake ≥ 3.21
 - unixODBC (`find_package(ODBC)`) and an ODBC driver for the target database,
   only while `UNIORM_BACKEND_ODBC=ON`
 - Oracle Call Interface (an Instant Client, or a full client's SDK), only while
@@ -87,13 +87,15 @@ cmake --build build -j
 | `CMAKE_BUILD_TYPE` | `Debug` | Debug / Release / RelWithDebInfo / MinSizeRel |
 | `UNIORM_BUILD_TESTS` | `ON` | Build unit/integration/perf tests |
 | `UNIORM_BUILD_TOOLS` | `ON` | Build tools (`uniorm-gen`) |
-| `UNIORM_BACKEND_ODBC` | `ON` | Build the ODBC backend into `libuniorm`; off leaves a core-only library with no backend, and `UNIORM_BUILD_TOOLS=ON` is then a configure error |
+| `UNIORM_BACKEND_ODBC` | `ON` | Build the ODBC backend plugin (`libuniorm_odbc.so`); off leaves a core-only library with no backend, and `UNIORM_BUILD_TOOLS=ON` is then a configure error |
 | `UNIORM_BACKEND_ORACLE_OCI` | `OFF` | Build the Oracle OCI backend (target `uniorm_oracle_oci`, loaded as `libuniorm_oracle`); needs Oracle Call Interface on the machine configuring it |
 
 The product is a shared library, `libuniorm.so` (headers in
-`include/uniorm/`), `VERSION` 0.3.0 and `SOVERSION` 0.3. This release changes
-public layouts and the metadata vtable: rebuild consumers and third-party
-backends, and do not mix 0.2 headers or binaries with it.
+`include/uniorm/`), `VERSION` 0.4.0 and `SOVERSION` 0.4. Each enabled backend
+is a library of its own, `libuniorm_<scheme>.so`, and the core links no driver.
+The SONAME and the plugin ABI gate move together on `major.minor`, so a plugin
+built against another minor is refused at load — rebuild consumers and
+third-party backends with the core rather than mixing binaries.
 
 ### Installing
 
@@ -102,9 +104,11 @@ cmake --install build --prefix /path/to/prefix
 ```
 
 That puts the versioned library (plus its `SOVERSION` symlinks; on Windows the
-DLL and its import library) in `<libdir>/`, every public header in
-`<prefix>/include/uniorm/`, a package config in `<libdir>/cmake/uniorm/`, and
-the `uniorm-gen` CLI in `<bindir>/`. A consumer needs nothing else:
+DLL and its import library) in `<libdir>/`, each enabled backend in
+`<libdir>/uniorm/backends/` (`<bindir>/uniorm/backends/` on Windows), every
+public header in `<prefix>/include/uniorm/`, a package config in
+`<libdir>/cmake/uniorm/`, and the `uniorm-gen` CLI in `<bindir>/`. A consumer
+needs nothing else:
 
 ```cmake
 find_package(uniorm REQUIRED CONFIG)
@@ -112,7 +116,9 @@ target_link_libraries(my_app PRIVATE uniorm::uniorm)
 ```
 
 The C++20 requirement travels with the target, so no `CMAKE_CXX_STANDARD` of
-the consumer's own. Source integration is unchanged: `add_subdirectory` or
+the consumer's own. Which backend loads is decided at run time by the scheme,
+from that `uniorm/backends/` directory; `UNIORM_PLUGIN_PATH` overrides where
+the loader looks. Source integration is unchanged: `add_subdirectory` or
 FetchContent hands over the same target and installs nothing. The install rules
 apply only when uniorm is the top-level project, and the CLI installs only with
 `UNIORM_BUILD_TOOLS=ON`.
@@ -514,7 +520,7 @@ include/uniorm/       public headers (the only include root consumers need)
                         (not in the umbrella header, so coroutines stay opt-in)
 src/                  implementation (built into libuniorm.so)
   async/              the default worker pool, the session FIFO
-  backend/            scheme parsing and the backend registry
+  backend/            scheme parsing, the registry, the plugin loader
   statement_cache.hpp prepared-statement LRU cache
   orm_mapping.hpp     what an entity write matches on and assigns
 backends/odbc/        ODBC backend (the only <sql.h> in the tree)
@@ -536,21 +542,22 @@ and the `uniorm-gen` end-to-end flow. The same suite passes on MariaDB, on MySQL
 through Connector/ODBC with server-side prepares, and on PostgreSQL through
 psqlODBC.
 
-v2 is underway, with five pieces landed on top of v1: the driver-neutral backend
-abstraction (ODBC moved behind it, linked `PRIVATE`), introspection as a public
-contract, identifier spelling as a deployment policy, `connection_spec`, and the
-asynchronous face.
+v2 is underway, with the pieces landed on top of v1: the driver-neutral backend
+abstraction — each backend now a separate plugin the core loads by scheme at
+run time — introspection as a public contract, identifier spelling as a
+deployment policy, `connection_spec`, the async layer, and a second backend
+(Oracle OCI) built on that same contract.
 
-CI runs four jobs. `core` and `oracle-oci` stand alone; `driver` carries three
-legs, each pairing a connector with the server it is used against. All four also
-compile one translation unit per installed header, so a public header that only
-parses behind a neighbour's include fails here instead of in a consumer's
-project, and a leg whose tests skip fails, so a green leg means the server was
-really reached. All four are green on the runner.
+CI runs four job definitions, six instances: `core`, `core-windows` and
+`oracle-oci` stand alone, while `driver` carries three legs, each pairing a
+connector with the server it is used against. Every instance also compiles one
+translation unit per installed header, so a public header that only parses
+behind a neighbour's include fails here instead of in a consumer's project, and
+a leg whose tests skip fails, so a green leg means the server was really
+reached. All six are green on the runner.
 
-Open: the cross pairings — MariaDB's connector against MySQL's server, and
-Connector/ODBC against MariaDB's — are out of CI by choice; design doc §9 books
-that as a named gap. Next: native libpq and Oracle OCI backends, §5 and §9.
+Open: a libpq backend, and in the OCI one the native array binding and the
+catalog reads it has yet to answer — see design doc §5.4 and §9.
 
 ## License
 

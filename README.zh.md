@@ -57,7 +57,7 @@ API 本身不点任何一家的客户端名。自带两家：默认构建的 ODB
 ## 要求
 
 - C++20 编译器——构建只要求 `cxx_std_20`，不编码任何版本下限
-- CMake ≥ 3.20
+- CMake ≥ 3.21
 - unixODBC（`find_package(ODBC)`）及目标数据库的 ODBC 驱动——仅在
   `UNIORM_BACKEND_ODBC=ON` 时需要
 - Oracle Call Interface（Instant Client，或完整客户端的 SDK）——仅在
@@ -78,12 +78,14 @@ cmake --build build -j
 | `CMAKE_BUILD_TYPE` | `Debug` | Debug / Release / RelWithDebInfo / MinSizeRel |
 | `UNIORM_BUILD_TESTS` | `ON` | 构建单元/集成/性能测试 |
 | `UNIORM_BUILD_TOOLS` | `ON` | 构建工具（`uniorm-gen`） |
-| `UNIORM_BACKEND_ODBC` | `ON` | 将 ODBC backend 编入 `libuniorm`；关闭后只剩一个没有任何 backend 的核心库，此时 `UNIORM_BUILD_TOOLS=ON` 是配置错误 |
+| `UNIORM_BACKEND_ODBC` | `ON` | 构建 ODBC backend 那一份 plugin（`libuniorm_odbc.so`）；关闭后只剩一个没有任何 backend 的核心库，此时 `UNIORM_BUILD_TOOLS=ON` 是配置错误 |
 | `UNIORM_BACKEND_ORACLE_OCI` | `OFF` | 构建 Oracle OCI backend（目标 `uniorm_oracle_oci`，装出去仍叫 `libuniorm_oracle`）；配置它的那台机器上要有 Oracle Call Interface |
 
 产物为动态库 `libuniorm.so`（头文件在 `include/uniorm/`），`VERSION` 为
-0.3.0，`SOVERSION` 取 major.minor（0.3）。本次发布改变了公共布局和元数据虚表，
-消费者与第三方 backend 必须重新编译，不可混用 0.2 的头文件或二进制。
+0.4.0，`SOVERSION` 取 major.minor（0.4）；每家启用的 backend 是自己的一份
+`libuniorm_<scheme>.so`，核心库不链任何驱动。`SONAME` 与 plugin 的 ABI 门一起按
+`major.minor` 走，minor 对不上的 plugin 装载时即被拒；消费者与第三方 backend
+请与核心同批重新编译，不要混用二进制。
 
 ### 安装
 
@@ -92,19 +94,21 @@ cmake --install build --prefix /path/to/prefix
 ```
 
 带版本号的动态库（含 `SOVERSION` 符号链接；Windows 下为 DLL 与导入库）进
-`<libdir>/`，全部 public 头文件进 `<prefix>/include/uniorm/`，包配置进
-`<libdir>/cmake/uniorm/`，`uniorm-gen` CLI 进 `<bindir>/`。消费者不需要本仓库的
-任何其他文件：
+`<libdir>/`，每家启用的 backend 进 `<libdir>/uniorm/backends/`（Windows 下是
+`<bindir>/uniorm/backends/`），全部 public 头文件进 `<prefix>/include/uniorm/`，
+包配置进 `<libdir>/cmake/uniorm/`，`uniorm-gen` CLI 进 `<bindir>/`。消费者不需要
+本仓库的任何其他文件：
 
 ```cmake
 find_package(uniorm REQUIRED CONFIG)
 target_link_libraries(my_app PRIVATE uniorm::uniorm)
 ```
 
-C++20 的要求随目标一起导出，消费者无需自己再设 `CMAKE_CXX_STANDARD`。源码集成
-方式不变：`add_subdirectory` 或 FetchContent 同样拿到 `uniorm::uniorm` 目标，且
-不安装任何东西。安装规则只在 uniorm 是顶层工程时生效，CLI 只在
-`UNIORM_BUILD_TOOLS=ON` 时安装。
+C++20 的要求随目标一起导出，消费者无需自己再设 `CMAKE_CXX_STANDARD`。用哪家
+backend 由运行时按 scheme 决定，从上面那个 `uniorm/backends/` 目录里取；
+`UNIORM_PLUGIN_PATH` 改写 loader 去哪找。源码集成方式不变：`add_subdirectory`
+或 FetchContent 同样拿到 `uniorm::uniorm` 目标，且不安装任何东西。安装规则只在
+uniorm 是顶层工程时生效，CLI 只在 `UNIORM_BUILD_TOOLS=ON` 时安装。
 
 ## 快速上手
 
@@ -478,7 +482,7 @@ include/uniorm/       公共头文件（消费者唯一需要的 include 根）
                         （不进总头文件，协程因此是按需 include 的）
 src/                  实现（构建为 libuniorm.so）
   async/              默认 worker 池、会话那条 FIFO
-  backend/            scheme 解析与 backend 注册表
+  backend/            scheme 解析、注册表与 plugin loader
   statement_cache.hpp 预编译语句 LRU 缓存
   orm_mapping.hpp     实体写入按什么匹配、赋哪些列
 backends/odbc/        ODBC backend（全仓库唯一出现 <sql.h> 之处）
@@ -499,19 +503,19 @@ v1 已完成，且每一条都对活库验过：三条访问路径（裸 SQL / �
 同一套测试在 MariaDB 上、经 Connector/ODBC 走服务端预处理在真 MySQL 上、经
 psqlODBC 在 PostgreSQL 上全绿。
 
-v2 进行中，v1 之上另外落地五块：驱动中立的 backend 抽象（ODBC 迁到接口之后、
-改为 `PRIVATE` 链接）、自省成为公开契约（`schema()`）、标识符拼法成为部署策略、
-`connection_spec`，以及同一个契约之上的异步表面。
+v2 进行中，v1 之上另外落地的有：驱动中立的 backend 抽象——每家 backend 如今是
+一份独立 plugin，核心在运行时按 scheme 载它——自省成为公开契约（`schema()`）、
+标识符拼法成为部署策略、`connection_spec`、同一个契约之上的异步层，以及按同一
+个契约长出来的第二家 backend（Oracle OCI）。
 
-CI 跑四支作业：`core` 与 `oracle-oci` 各自一支，`driver` 带三条腿，每条拿自家的
-连接器连自家会用的服务端。四支作业还各自把每个安装头单独编成一个翻译单元，公共
-头若要靠邻居先 include 才过得去，红的是这里而不是消费者的工程；任何一条测试被
-跳过都会让一支腿红，所以"五条全过"意味着确实连上了服务端。四支在 runner 上已
-全绿。
+CI 是四支作业定义、六个实例：`core`、`core-windows` 与 `oracle-oci` 各自一支，
+`driver` 带三条腿，每条拿自家的连接器连自家会用的服务端。六个实例还各自把每个
+安装头单独编成一个翻译单元，公共头若要靠邻居先 include 才过得去，红的是这里而
+不是消费者的工程；任何一条测试被跳过都会让一支腿红，所以"五条全过"意味着确实连
+上了服务端。六个实例在 runner 上已全绿。
 
-未结：跨格配法——MariaDB 连接器对 MySQL 服务端、Connector/ODBC 对 MariaDB
-服务端——不在 CI 里，这是选的不是漏的，设计文档 §9 把它记成一笔认下的缺口。
-后续为 libpq / Oracle OCI 原生 backend，见设计文档 §5 与 §9。
+未结：libpq backend，以及 OCI 那家还没接上的原生数组绑定与目录读取，见设计文档
+§5.4 与 §9。
 
 ## 许可证
 

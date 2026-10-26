@@ -155,6 +155,29 @@ if(UNIORM_BACKEND_ORACLE_OCI)
         ${PROJECT_SOURCE_DIR}/backends)
     add_test(NAME oracle_oci_unit_tests COMMAND uniorm_oracle_oci_unit_tests)
     uniorm_copy_runtime_dlls(uniorm_oracle_oci_unit_tests)
+
+    # The same suite over the Oracle plugin: one source, and the leg picks its
+    # server from UNIORM_IT_BACKEND. It links only the core because the plugin
+    # is dlopened by scheme, and linking it would put oci.h on this target's
+    # include path.
+    add_executable(uniorm_integration_oracle_tests
+        integration/test_integration.cpp
+    )
+    target_link_libraries(uniorm_integration_oracle_tests
+        PRIVATE uniorm::uniorm)
+    target_include_directories(uniorm_integration_oracle_tests PRIVATE
+        ${PROJECT_SOURCE_DIR}/src)
+    add_dependencies(uniorm_integration_oracle_tests uniorm_oracle_oci)
+    add_test(NAME integration_tests_oracle
+        COMMAND uniorm_integration_oracle_tests)
+    # ENVIRONMENT takes one ;-separated list of settings.
+    set(oracle_plugin_dir "$<TARGET_FILE_DIR:uniorm_oracle_oci>")
+    string(JOIN ";" oracle_integration_env
+        "UNIORM_IT_BACKEND=oracle" "UNIORM_PLUGIN_PATH=${oracle_plugin_dir}")
+    set_tests_properties(integration_tests_oracle PROPERTIES
+        SKIP_RETURN_CODE 77
+        ENVIRONMENT "${oracle_integration_env}")
+    uniorm_copy_runtime_dlls(uniorm_integration_oracle_tests)
 endif()
 
 # Install rules exist only for a top-level build, and this check configures and

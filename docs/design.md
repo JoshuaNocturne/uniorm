@@ -2018,12 +2018,12 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
   对 `userxorders` 不算——后者正是 pattern 里 `_` 的通配，两侧任一为空则留）、
   `test_odbc_error_is_backend_error`（`odbc_error` 就是 `backend_error`，
   无需二次翻译）；
-- **集成测试**（已实现，DSN/凭据由 `UNIORM_IT_DSN` / `UNIORM_IT_USER` / `UNIORM_IT_PWD` 指定，凭据以 `UID`/`PWD` 写进连接串，同一份凭据也按四件套连一次——两条路线连到同一处才算对上，而且四件套那一侧不止跑一条语句：目录里认得出这张夹具表、`orm` 能从串换乘过来、调用方自己拿四件套建的池也借得出连接，一个不存在的 target 则由驱动直接拒（`SQLDriverConnect` 不带提示，CI 上不会等输入）；连不上时 ctest SKIP）：execute/params 往返、动态行（含 `connection::execute` 显式块取行大小 0 退回逐行）、DECIMAL 动态路径（`DECIMAL(20,4)` / `(20,0)` / `(38,0)` 取回精确定点字面量与 `column_info::scale`，按需解析成 double、scale-0 解析成 int64，带小数或超 int64 范围的字面量抛 `type_mismatch`，NULL 仍报 `is_null`）、DECIMAL 映射路径（`DECIMAL(20,4)` / `(65,30)` / `(20,0)` 三列配 `decimal_t` 与 `std::optional<decimal_t>` 成员：批量插入与实体读回逐字核对 `to_literal`（含 65,30 列第 30 位为 1 的值——没有任何整型或 double 装得下它）、聚合投影、动态行 `get<decimal_t>`、以 `decimal_t` 为右值的 `where(gt(&T::amount, ...))` 落到同一字面量）、聚合投影（含长字符串与 timestamp）、注册实体读手写 SQL（列序打乱仍按列名配对，缺列报 `column_not_found`）、converter 往返（批量插入、实体物化含 NULL、
+- **集成测试**（已实现，DSN/凭据由 `UNIORM_IT_DSN` / `UNIORM_IT_USER` / `UNIORM_IT_PWD` 指定，连接串按 `UNIORM_IT_BACKEND` 选中那一家的语法拼（默认 odbc，凭据以 `UID`/`PWD` 写进串里），同一份凭据也按四件套连一次——两条路线连到同一处才算对上，而且四件套那一侧不止跑一条语句：目录里认得出这张夹具表（backend 不答目录时这一段自己报 skip）、`orm` 能从串换乘过来、调用方自己拿四件套建的池也借得出连接，一个不存在的 target 则由驱动直接拒（`SQLDriverConnect` 不带提示，CI 上不会等输入）；连不上时 ctest SKIP）：execute/params 往返、动态行（含 `connection::execute` 显式块取行大小 0 退回逐行）、DECIMAL 动态路径（`DECIMAL(20,4)` / `(20,0)` / `(38,0)` 取回精确定点字面量与 `column_info::scale`，按需解析成 double、scale-0 解析成 int64，带小数或超 int64 范围的字面量抛 `type_mismatch`，NULL 仍报 `is_null`）、DECIMAL 映射路径（`DECIMAL(20,4)` / 一个最宽标度列（精度按这一家收得下的写法）/ `(20,0)` 三列配 `decimal_t` 与 `std::optional<decimal_t>` 成员：批量插入与实体读回逐字核对 `to_literal`（含那个最宽标度列第 30 位为 1 的值——没有任何整型或 double 装得下它）、聚合投影、动态行 `get<decimal_t>`、以 `decimal_t` 为右值的 `where(gt(&T::amount, ...))` 落到同一字面量）、聚合投影（含长字符串与 timestamp）、注册实体读手写 SQL（列序打乱仍按列名配对，缺列报 `column_not_found`）、converter 往返（批量插入、实体物化含 NULL、
 `in` 谓词、投影、构建器 `set`/批量 update、动态行 `get<T>`）、orm validate（含 strict
 的列缺失/可空/类型族三条失败路径）、查询构建器全谓词与分页（末了拿 `build_select()`
 的文本比对这条连接自己那家方言的引号；再把策略声明成 `upper` 重发一次——表名跟着升
-上去、原来那条小写断言反过来不成立，出口仍只有一处，随后退回 `keep`）、标识符拼法
-的活目录一半（`UNIORM_IT_CASE_USER` 这段建表 DDL 不加引号，于是它存成大写还是小写由
+上去、原来那条小写断言反过来不成立，出口仍只有一处，随后取消声明、交回服务器自己的
+折叠）、标识符拼法的活目录一半（`UNIORM_IT_CASE_USER` 这段建表 DDL 不加引号，于是它存成大写还是小写由
 服务器自己的折叠决定；用例先读目录拿到服务器实际存的拼法，把表名与两个列名都声明成相
 反的拼法。`keep` 下 `validate()` 必须报错，报错的位置却不交给目录的比对规则决定：声明的
 名字与服务器存的只差大小写就一定有地方对不上，而对不上的总是表名——有的目录比名字区分

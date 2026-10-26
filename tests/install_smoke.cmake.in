@@ -17,6 +17,7 @@ set(SMOKE_BINDIR "@CMAKE_INSTALL_BINDIR@")
 set(SMOKE_INCLUDEDIR "@CMAKE_INSTALL_INCLUDEDIR@")
 set(SMOKE_HAS_TOOLS "@UNIORM_BUILD_TOOLS@")
 set(SMOKE_HAS_ODBC "@UNIORM_BACKEND_ODBC@")
+set(SMOKE_HAS_ORACLE_OCI "@UNIORM_BACKEND_ORACLE_OCI@")
 set(SMOKE_SHARED_SUFFIX "@CMAKE_SHARED_LIBRARY_SUFFIX@")
 set(SMOKE_SYSTEM_NAME "@CMAKE_SYSTEM_NAME@")
 
@@ -95,6 +96,48 @@ else()
   endif()
 endif()
 
+# The Oracle plugin is the same delivery promise one scheme over: the file has
+# to land where the core's loader looks for "oracle", with its sonames, and an
+# opted-out build must carry none. Nothing here dlopens it -- a machine running
+# this check has no Oracle to talk to -- so what is proven is the install
+# destination the loader's path is written against, not a live load.
+if(SMOKE_HAS_ORACLE_OCI)
+  if(SMOKE_SYSTEM_NAME STREQUAL "Windows")
+    set(oracle_plugin
+      "${SMOKE_PREFIX}/${SMOKE_BINDIR}/uniorm/backends/uniorm_oracle${SMOKE_SHARED_SUFFIX}")
+    if(NOT EXISTS "${oracle_plugin}")
+      message(FATAL_ERROR
+        "expected uniorm_oracle${SMOKE_SHARED_SUFFIX} under "
+        "${SMOKE_PREFIX}/${SMOKE_BINDIR}/uniorm/backends")
+    endif()
+  else()
+    file(GLOB oracle_plugin
+      "${SMOKE_PLUGIN_DIR}/libuniorm_oracle${SMOKE_SHARED_SUFFIX}*")
+    list(LENGTH oracle_plugin oracle_plugin_count)
+    if(oracle_plugin_count LESS 2)
+      message(FATAL_ERROR
+        "expected libuniorm_oracle${SMOKE_SHARED_SUFFIX} and its soname under "
+        "${SMOKE_PLUGIN_DIR}, found: ${oracle_plugin}")
+    endif()
+  endif()
+  if(NOT EXISTS "${SMOKE_PACKAGE_DIR}/uniormOracleOciTargets.cmake")
+    message(FATAL_ERROR
+      "this build carries the Oracle backend but no export set landed")
+  endif()
+else()
+  if(SMOKE_SYSTEM_NAME STREQUAL "Windows")
+    set(oracle_plugin
+      "${SMOKE_PREFIX}/${SMOKE_BINDIR}/uniorm/backends/uniorm_oracle${SMOKE_SHARED_SUFFIX}")
+  else()
+    set(oracle_plugin "${SMOKE_PLUGIN_DIR}/libuniorm_oracle${SMOKE_SHARED_SUFFIX}")
+  endif()
+  if(EXISTS "${oracle_plugin}")
+    message(FATAL_ERROR
+      "UNIORM_BACKEND_ORACLE_OCI=OFF but the plugin installed at "
+      "${oracle_plugin}")
+  endif()
+endif()
+
 # The whole of include/uniorm is public by construction, so an install rule
 # that starts filtering headers has to show up here.
 file(GLOB_RECURSE shipped_headers RELATIVE "${SMOKE_PREFIX}/${SMOKE_INCLUDEDIR}"
@@ -113,7 +156,7 @@ endif()
 # The whole point of the split is that the core .so carries no driver NEEDED.
 # Readelf only exists for ELF; other platforms keep the shape check to the
 # consumer's own runtime assertions below.
-if(SMOKE_HAS_ODBC AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+if((SMOKE_HAS_ODBC OR SMOKE_HAS_ORACLE_OCI) AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
   file(GLOB core_so_files "${SMOKE_PREFIX}/${SMOKE_LIBDIR}/libuniorm.so.*")
   list(FILTER core_so_files EXCLUDE REGEX "libuniorm_odbc")
   list(LENGTH core_so_files core_so_count)
@@ -132,6 +175,16 @@ if(SMOKE_HAS_ODBC AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
       if(core_dump MATCHES "NEEDED[^\n]*libuniorm_odbc")
         message(FATAL_ERROR
           "the core must not NEEDED the odbc plugin; loading is by dlopen:\n"
+          "${core_dump}")
+      endif()
+      if(core_dump MATCHES "NEEDED[^\n]*libclntsh")
+        message(FATAL_ERROR
+          "after the backend split, ${core_so} still NEEDs an Oracle client:\n"
+          "${core_dump}")
+      endif()
+      if(core_dump MATCHES "NEEDED[^\n]*libuniorm_oracle")
+        message(FATAL_ERROR
+          "the core must not NEEDED the oracle plugin; loading is by dlopen:\n"
           "${core_dump}")
       endif()
     endif()

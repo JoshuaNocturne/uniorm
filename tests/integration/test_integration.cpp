@@ -1,11 +1,14 @@
-// Integration tests against a live database via ODBC DSN.
-// DSN, user and password come from UNIORM_IT_DSN / UNIORM_IT_USER /
-// UNIORM_IT_PWD; returns 77 (ctest SKIP) when any of them is unset or the
-// database is unreachable. ASCII data only for now.
+// Integration tests against a live database, driven through one of the plugin
+// backends. UNIORM_IT_BACKEND names the scheme -- "odbc" (no setting needed)
+// or "oracle" -- and UNIORM_IT_DSN / UNIORM_IT_USER / UNIORM_IT_PWD carry the
+// target in that scheme's own grammar: a registered DSN for odbc, a
+// host[:port]/service for oracle. Returns 77 (ctest SKIP) when any of them is
+// unset or the database is unreachable. ASCII data only for now.
 
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
+#include <functional>
 #include <optional>
 #include <string>
 #include <thread>
@@ -103,15 +106,76 @@ char const* k_pair_table = "uniorm_it_pair";
 char const* k_order_table = "uniorm_it_order";
 char const* k_dec_table = "uniorm_it_decimal";
 char const* k_money_table = "uniorm_it_money";
+char const* k_num_table = "UNIORM_IT_NUMBER";
 // Unquoted DDL, so each server folds it the way it folds any name: MySQL and
 // MariaDB keep this spelling, PostgreSQL answers with all lower.
 char const* k_case_table = "UNIORM_IT_CASE_USER";
 std::string const long_note(1000, 'x');
 
+// The face this run drives. One suite serves both backends, so everything the
+// two do differently is either asked of the server or recorded from the scheme
+// that opened it -- never assumed from the leg that was written first.
+struct target_face {
+  std::string scheme;          // the plugin this run loads
+  std::string connect_string;  // what a connection is handed
+  std::string dsn;             // the target, in this scheme's grammar
+  std::string user;
+  std::string password;
+  // A 64-bit integral column, as this server's DDL spells it.
+  std::string integer_type;
+  std::string wide_decimal;    // the widest scale this server's DECIMAL takes
+  // Whether a decimal's text arrives carrying the column's declared scale.
+  bool pads_decimal_text = true;
+  // Whether this backend answers catalog reads at all; probed, not declared,
+  // so a backend that gains introspection picks these stages up by itself.
+  bool answers_catalog = false;
+  dialect server_dialect;      // detected from the banner this run read
+};
+
+target_face the_target;
+
+// Set by a stage that gives up on purpose, so the runner can name it skipped
+// rather than counting a stage that checked nothing as one that passed.
+char const* skip_reason = nullptr;
+
+// A dynamic read asks for a column by the label the server reports, which on a
+// server that folds unquoted names is not the spelling the query wrote.
+std::string label(std::string_view name) {
+  return the_target.server_dialect.fold_identifier(name);
+}
+
+// The two spellings a decimal column's text arrives in. A driver that formats
+// the value pads it to the column's scale; a server answering with its own
+// conversion gives the digits the value has. Both name the same number, and
+// this says which one this run was handed.
+char const* decimal_text(char const* scaled, char const* minimal) {
+  return the_target.pads_decimal_text ? scaled : minimal;
+}
+
+// Whatever this driver calls an error's code. SQLSTATE is five characters;
+// this server's number is an ORA- code. Either way what() puts it in brackets.
+bool state_is_well_formed(std::string_view state) {
+  if (the_target.scheme == "oracle") {
+    return state.rfind("ORA-", 0) == 0 && state.size() == 9;
+  }
+  return state.size() == 5;
+}
+
+// A few stages ask the server what it holds, which a backend is free not to
+// answer. Saying so keeps a skip from reading as a pass.
+bool catalog_available() {
+  if (the_target.answers_catalog) {
+    return true;
+  }
+  skip_reason = "this backend offers no catalog reads";
+  return false;
+}
+
 void prepare_schema(orm& db) {
+  std::string const id_type = the_target.integer_type;
   db.execute_update(std::string("DROP TABLE IF EXISTS ") + k_table);
   db.execute_update(std::string("CREATE TABLE ") + k_table +
-                      " (id BIGINT NOT NULL PRIMARY KEY,"
+                      " (id " + id_type + " NOT NULL PRIMARY KEY,"
                       " name VARCHAR(64) NOT NULL,"
                       " age INT NULL,"
                       " balance DOUBLE PRECISION NOT NULL,"
@@ -119,30 +183,30 @@ void prepare_schema(orm& db) {
                       " created TIMESTAMP NULL)");
   db.execute_update(std::string("DROP TABLE IF EXISTS ") + k_pair_table);
   db.execute_update(std::string("CREATE TABLE ") + k_pair_table +
-                      " (grp BIGINT NOT NULL,"
-                      " idx BIGINT NOT NULL,"
+                      " (grp " + id_type + " NOT NULL,"
+                      " idx " + id_type + " NOT NULL,"
                       " label VARCHAR(64) NOT NULL,"
                       " PRIMARY KEY (grp, idx))");
   db.execute_update(std::string("DROP TABLE IF EXISTS ") + k_order_table);
   db.execute_update(std::string("CREATE TABLE ") + k_order_table +
-                      " (id BIGINT NOT NULL PRIMARY KEY,"
+                      " (id " + id_type + " NOT NULL PRIMARY KEY,"
                       " state VARCHAR(16) NOT NULL,"
                       " note VARCHAR(16) NULL)");
   db.execute_update(std::string("DROP TABLE IF EXISTS ") + k_dec_table);
   db.execute_update(std::string("CREATE TABLE ") + k_dec_table +
-                      " (id BIGINT NOT NULL PRIMARY KEY,"
+                      " (id " + id_type + " NOT NULL PRIMARY KEY,"
                       " amount DECIMAL(20,4) NULL,"
                       " whole DECIMAL(20,0) NULL,"
                       " big DECIMAL(38,0) NULL)");
   db.execute_update(std::string("DROP TABLE IF EXISTS ") + k_money_table);
   db.execute_update(std::string("CREATE TABLE ") + k_money_table +
-                      " (id BIGINT NOT NULL PRIMARY KEY,"
+                      " (id " + id_type + " NOT NULL PRIMARY KEY,"
                       " amount DECIMAL(20,4) NOT NULL,"
-                      " wide DECIMAL(65,30) NULL,"
+                      " wide " + the_target.wide_decimal + " NULL,"
                       " whole DECIMAL(20,0) NOT NULL)");
   db.execute_update(std::string("DROP TABLE IF EXISTS ") + k_case_table);
   db.execute_update(std::string("CREATE TABLE ") + k_case_table +
-                      " (ID BIGINT NOT NULL PRIMARY KEY,"
+                      " (ID " + id_type + " NOT NULL PRIMARY KEY,"
                       " NAME VARCHAR(64) NOT NULL)");
   db.execute_update(std::string("INSERT INTO ") + k_case_table +
                       " (ID, NAME) VALUES (1, 'raised')");
@@ -177,11 +241,11 @@ void test_dynamic_rows(orm& db) {
   CHECK(rs.column_count() == 4);
   CHECK(rs.next());
   row r = rs.current();
-  CHECK(r.get<std::int64_t>("id") == 2);
+  CHECK(r.get<std::int64_t>(label("id")) == 2);
   CHECK(r.get<std::int32_t>(0) == 2);  // by index, widened read
-  CHECK(r.get<std::string>("name") == "bob");
-  CHECK(r.is_null("age"));
-  CHECK(r.get<std::string>("note").size() == long_note.size());
+  CHECK(r.get<std::string>(label("name")) == "bob");
+  CHECK(r.is_null(label("age")));
+  CHECK(r.get<std::string>(label("note")).size() == long_note.size());
   CHECK(!rs.next());
 }
 
@@ -205,24 +269,53 @@ void test_decimal_dynamic(orm& db) {
 
   CHECK(rs.next());
   row r1 = rs.current();
-  CHECK(r1.get<std::string>("amount") == "12345678901234.5678");
-  double amount = r1.get<double>("amount");
+  CHECK(r1.get<std::string>(label("amount")) == "12345678901234.5678");
+  double amount = r1.get<double>(label("amount"));
   CHECK(amount > 12345678901234.56 && amount < 12345678901234.57);
-  CHECK_THROWS(r1.get<std::int64_t>("amount"), type_mismatch);  // fractional
-  CHECK(r1.get<std::string>("whole") == "42");
-  CHECK(r1.get<std::int64_t>("whole") == 42);
-  CHECK(r1.get<std::string>("big") == "123456789012345678901234567890");
-  CHECK_THROWS(r1.get<std::int64_t>("big"), type_mismatch);  // out of range
+  CHECK_THROWS(r1.get<std::int64_t>(label("amount")), type_mismatch);
+  CHECK(r1.get<std::string>(label("whole")) == "42");
+  CHECK(r1.get<std::int64_t>(label("whole")) == 42);
+  CHECK(r1.get<std::string>(label("big")) == "123456789012345678901234567890");
+  CHECK_THROWS(r1.get<std::int64_t>(label("big")), type_mismatch);
 
   CHECK(rs.next());
   row r2 = rs.current();
-  CHECK(r2.get<std::string>("amount") == "0.1000");  // scale preserved
+  CHECK(r2.get<std::string>(label("amount")) ==
+        decimal_text("0.1000", ".1"));  // the column's scale, or not
 
   CHECK(rs.next());
   row r3 = rs.current();
-  CHECK(r3.is_null("amount"));
-  CHECK_THROWS(r3.get<std::string>("amount"), type_mismatch);
+  CHECK(r3.is_null(label("amount")));
+  CHECK_THROWS(r3.get<std::string>(label("amount")), type_mismatch);
   CHECK(!rs.next());
+}
+
+// A bare NUMBER carries no declared width to size a text buffer from, and its
+// shortest spelling runs past the 64 characters a fixed one would stop at. Only
+// Oracle spells a column this way, so the ODBC legs give the stage up.
+void test_number_text_ceiling(orm& db) {
+  if (the_target.scheme != "oracle") {
+    skip_reason = "a bare NUMBER column is Oracle's own spelling";
+    return;
+  }
+  try {
+    db.execute_update(std::string("DROP TABLE ") + k_num_table);
+  } catch (...) {
+  }
+  db.execute_update(std::string("CREATE TABLE ") + k_num_table +
+                    " (id NUMBER, spell NUMBER)");
+  db.execute_update(std::string("INSERT INTO ") + k_num_table +
+                    " (id, spell) VALUES (1, 1.0E-80)");
+  result_set rs = db.execute(
+    std::string("SELECT id, spell FROM ") + k_num_table + " ORDER BY id");
+  CHECK(rs.next());
+  row r = rs.current();
+  std::string const text = r.get<std::string>(label("spell"));
+  CHECK(text.size() > 64);
+  CHECK(text.front() == '.');
+  CHECK(text.back() == '1');
+  CHECK(r.get<double>(label("spell")) > 0.0);
+  db.execute_update(std::string("DROP TABLE ") + k_num_table);
 }
 
 void test_decimal_mapped(orm& db) {
@@ -246,11 +339,11 @@ void test_decimal_mapped(orm& db) {
   CHECK(back.size() == 2);
   CHECK(back[0].amount.to_literal() == "12345678901234.5678");
   CHECK(back[0].whole.to_int64() == 42);
-  // DECIMAL(65,30): no integer type holds this, and no double survives it.
+  // The wide column: no integer type holds this, and no double survives it.
   CHECK(back[0].wide.has_value() &&
         back[0].wide->to_literal() == "0.000000000000000000000000000001");
   CHECK_THROWS(back[0].wide->to_int64(), type_mismatch);
-  CHECK(back[1].amount.to_literal() == "-0.0500");  // the column's scale
+  CHECK(back[1].amount.to_literal() == decimal_text("-0.0500", "-0.05"));
   CHECK(back[1].amount == decimal_t::from_literal("-0.05"));
   CHECK(!back[1].wide.has_value());
 
@@ -265,8 +358,8 @@ void test_decimal_mapped(orm& db) {
     params{ std::int64_t{ 2 } });
   CHECK(rs.next());
   row r = rs.current();
-  CHECK(r.get<decimal_t>("amount") == decimal_t::from_literal("-0.05"));
-  CHECK(r.get<std::string>("amount") == "-0.0500");
+  CHECK(r.get<decimal_t>(label("amount")) == decimal_t::from_literal("-0.05"));
+  CHECK(r.get<std::string>(label("amount")) == decimal_text("-0.0500", "-.05"));
 
   // A decimal_t query value reaches the driver as that same literal.
   CHECK(db.query<Money>()
@@ -283,9 +376,9 @@ void test_zero_block_fetch_size(orm& db) {
   std::size_t note_chars = 0;
   while (rs.next()) {
     row r = rs.current();
-    CHECK(!r.is_null("name"));
-    if (!r.is_null("note")) {
-      note_chars += r.get<std::string>("note").size();
+    CHECK(!r.is_null(label("name")));
+    if (!r.is_null(label("note"))) {
+      note_chars += r.get<std::string>(label("note")).size();
     }
     ++rows;
   }
@@ -365,9 +458,9 @@ void test_converter_round_trip(orm& db) {
       params{ std::int64_t{ 1 } });
     CHECK(rs.next());
     row r = rs.current();
-    CHECK(r.get<std::string>("state") == "gold");
-    CHECK(r.get<grade>("state") == grade::gold);
-    CHECK(r.is_null("note"));
+    CHECK(r.get<std::string>(label("state")) == "gold");
+    CHECK(r.get<grade>(label("state")) == grade::gold);
+    CHECK(r.is_null(label("note")));
   }
 
   auto second = db.query<Order>()
@@ -468,6 +561,9 @@ orm build_registry(std::string_view conn_string) {
 }
 
 void test_validate(std::string_view conn_string) {
+  if (!catalog_available()) {
+    return;
+  }
   orm db = build_registry(conn_string);
   db.validate();  // strict: must pass
   db.validate(validation_mode::lenient);
@@ -524,6 +620,9 @@ void test_validate(std::string_view conn_string) {
 }
 
 void test_identifier_spelling(std::string_view conn_string) {
+  if (!catalog_available()) {
+    return;
+  }
   orm probe(conn_string);
   auto& metadata = probe.schema();
   std::string catalog_name = metadata.database_name();
@@ -670,6 +769,9 @@ void test_identifier_spelling(std::string_view conn_string) {
 }
 
 void test_identifier_case_twins(std::string_view conn_string) {
+  if (!catalog_available()) {
+    return;
+  }
   orm db(conn_string);
   auto const& dialect = db.native_connection().sql_dialect();
   if (dialect.table_qualification != dialect::qualification::schema) {
@@ -792,8 +894,14 @@ void test_query_builder(orm& db) {
                          .where(eq(&User::id, std::int64_t{ 1 }))
                          .build_select();
   CHECK(raised.find(d.quote_identifier("UNIORM_IT_USER")) != std::string::npos);
-  CHECK(raised.find(d.quote_identifier("id") + " = ?") == std::string::npos);
-  db.identifier_case(dialect::identifier_case::keep);
+  // What a fold removes is the declared spelling, not the folded one: on a
+  // server whose dialect already folds, the two are the same text.
+  std::string const declared_spelling =
+    d.quote_exact_identifier("id") + " = ?";
+  CHECK(raised.find(declared_spelling) == std::string::npos);
+  // Undeclare rather than declare keep: keep is a policy of its own, and the
+  // stages after this one run on this same object.
+  db.identifier_case(std::nullopt);
 }
 
 void test_transaction(orm& db) {
@@ -1128,7 +1236,7 @@ void test_composite_key_and_where_fields(orm& db) {
     if (!rs.next()) {
       return std::string("<missing>");
     }
-    return rs.current().get<std::string>("label");
+    return rs.current().get<std::string>(label("label"));
   };
 
   // Keying on the leading column alone would have rewritten every row of
@@ -1191,7 +1299,7 @@ void test_statement_cache(orm& db) {
     CHECK(db.statement_cache_hits() == hits + 1);
     std::vector<std::string> names;
     while (rs.next()) {
-      names.push_back(rs.current().get<std::string>("name"));
+      names.push_back(rs.current().get<std::string>(label("name")));
     }
     CHECK(names.size() == 3);
     CHECK(names[0] == "alice" && names[1] == "bob" && names[2] == "carol");
@@ -1216,19 +1324,19 @@ void test_statement_cache(orm& db) {
 }
 
 void test_error_reporting(orm& db) {
-  // A driver failure surfaces as a backend_error: the ODBC layer throws
-  // odbc_error, which derives from it, so callers never need the private
-  // header to classify SQL errors or read their SQLSTATE.
+  // A driver failure surfaces as a backend_error: the layer below throws its
+  // own type, which derives from it, so callers never need the private header
+  // to classify SQL errors or read the code the driver reported.
   bool reported = false;
   try {
     db.execute("SELECT * FROM uniorm_it_no_such_table");
   } catch (backend::backend_error const& e) {
     reported = true;
-    CHECK(e.backend_name() == "odbc");
+    CHECK(e.backend_name() == the_target.scheme);
     CHECK(!e.diagnostics().empty());
     if (!e.diagnostics().empty()) {
       auto const& first = e.diagnostics()[0];
-      CHECK(first.state.size() == 5);
+      CHECK(state_is_well_formed(first.state));
       CHECK(!first.message.empty());
       CHECK(std::string(e.what()).find("[" + first.state + "]") !=
             std::string::npos);
@@ -1374,9 +1482,9 @@ void test_pool_maintenance(std::string const& conn_string) {
 // with the backend doing the spelling.
 void test_connection_pieces(
   std::string const& dsn, std::string const& user, std::string const& pwd) {
-  std::string const spelled = "DSN=" + dsn + ";UID=" + user + ";PWD=" + pwd;
+  std::string const spelled = the_target.connect_string;
   connection by_string(spelled);
-  connection_spec spec{ "odbc", dsn, user, pwd };
+  connection_spec spec{ the_target.scheme, dsn, user, pwd };
   connection by_pieces(spec);
   CHECK(by_pieces.dbms_name() == by_string.dbms_name());
   result_set opened = by_pieces.execute("SELECT 1");
@@ -1385,12 +1493,14 @@ void test_connection_pieces(
 
   // The catalog is read over that same open, so the pieces carry an
   // introspection too: the fixture table this run created has to show up.
-  auto& metadata = by_pieces.schema();
-  bool fixture_seen = false;
-  for (auto const& table : metadata.tables("", "")) {
-    fixture_seen = fixture_seen || table.name == k_table;
+  if (the_target.answers_catalog) {
+    auto& metadata = by_pieces.schema();
+    bool fixture_seen = false;
+    for (auto const& table : metadata.tables("", "")) {
+      fixture_seen = fixture_seen || table.name == label(k_table);
+    }
+    CHECK(fixture_seen);
   }
-  CHECK(fixture_seen);
 
   // orm's spec form leases from a spec-keyed pool, which is a pool of its
   // own next to the string route's.
@@ -1431,9 +1541,10 @@ void test_connection_pieces(
   }
 
   // A target that is not there is refused by the driver rather than asked
-  // about: SQLDriverConnect runs without a prompt, so this throws on every
-  // platform instead of waiting for input.
-  connection_spec absent{ "odbc", "uniorm_no_such_dsn", user, pwd };
+  // about: neither route may prompt, so this throws instead of waiting for
+  // input -- SQLDriverConnect runs without a prompt, and a logon to a service
+  // the name server does not know comes back with ORA-12154.
+  connection_spec absent{ the_target.scheme, "uniorm_no_such_dsn", user, pwd };
   CHECK_THROWS(connection{ absent }, backend::backend_error);
 }
 
@@ -1633,7 +1744,7 @@ void test_async_failure_reaches_every_exit(
     db.query<User>(k_missing_sql);
   } catch (backend::backend_error const& error) {
     sync_reported = true;
-    CHECK(error.backend_name() == std::string("odbc"));
+    CHECK(error.backend_name() == the_target.scheme);
     baseline = report_of(error);
   }
   CHECK(sync_reported);
@@ -2059,6 +2170,26 @@ void test_async_two_sessions_write_side_by_side(
   clear_band(db);
 }
 
+// One stage per call, so a statement this server refuses hides nothing that
+// comes after it. A throw still counts against the run: an aborted stage is a
+// failed stage unless the stage itself said why it gave up.
+void guarded(char const* name, std::function<void()> body) {
+  int const before = uniorm::test::failure_count();
+  skip_reason = nullptr;
+  try {
+    body();
+  } catch (std::exception const& e) {
+    std::printf("ABORT %-50s %s\n", name,
+      std::string(e.what()).substr(0, 90).c_str());
+    ++uniorm::test::failure_count();
+    return;
+  }
+  std::string verdict = skip_reason != nullptr
+    ? std::string("skipped: ") + skip_reason
+    : (uniorm::test::failure_count() == before ? "pass" : "FAIL");
+  std::printf("%-50s %s\n", name, verdict.c_str());
+}
+
 }  // namespace
 
 int main() {
@@ -2072,56 +2203,105 @@ int main() {
       "integration tests\n");
     return 77;
   }
-  std::string dsn = dsn_env;
-  std::string user = user_env;
-  std::string pwd = pwd_env;
-  std::string conn_string = "DSN=" + dsn + ";UID=" + user + ";PWD=" + pwd;
-
-  try {
-    connection probe(conn_string);
-    std::printf("connected: dbms = %s\n", probe.dbms_name().c_str());
-  } catch (std::exception const& e) {
-    std::printf(
-      "skip: cannot connect to DSN '%s': %s\n", dsn.c_str(), e.what());
+  char const* scheme_env = std::getenv("UNIORM_IT_BACKEND");
+  std::string const scheme = (scheme_env && *scheme_env) ? scheme_env : "odbc";
+  the_target.scheme = scheme;
+  the_target.dsn = dsn_env;
+  the_target.user = user_env;
+  the_target.password = pwd_env;
+  if (scheme == "odbc") {
+    the_target.connect_string =
+      "DSN=" + the_target.dsn + ";UID=" + the_target.user +
+      ";PWD=" + the_target.password;
+    the_target.integer_type = "BIGINT";
+    the_target.wide_decimal = "DECIMAL(65,30)";
+  } else if (scheme == "oracle") {
+    the_target.connect_string = "oracle://" + the_target.user + "/" +
+      the_target.password + "@" + the_target.dsn;
+    // Two names this server does not answer with: it has no BIGINT, and its
+    // DECIMAL stops at 38 digits of precision. Its own conversion also formats
+    // a number by its digits rather than by the column's declared scale.
+    the_target.integer_type = "NUMBER(19)";
+    the_target.wide_decimal = "DECIMAL(38,30)";
+    the_target.pads_decimal_text = false;
+  } else {
+    std::printf("skip: unknown UNIORM_IT_BACKEND '%s'\n", scheme.c_str());
     return 77;
   }
 
+  try {
+    connection probe(the_target.connect_string);
+    std::printf("connected over '%s': dbms = %s\n", scheme.c_str(),
+      probe.dbms_name().c_str());
+    the_target.server_dialect = dialect::detect(probe.dbms_name());
+    try {
+      probe.schema();
+      the_target.answers_catalog = true;
+    } catch (backend::capability_not_supported const&) {
+    }
+  } catch (std::exception const& e) {
+    std::printf("skip: cannot connect to '%s': %s\n", the_target.dsn.c_str(),
+      e.what());
+    return 77;
+  }
+
+  std::string const conn_string = the_target.connect_string;
   try {
     orm db = build_registry(conn_string);
     prepare_schema(db);
     seed_rows(db);
 
-    test_dynamic_rows(db);
-    test_decimal_dynamic(db);
-    test_decimal_mapped(db);
-    test_zero_block_fetch_size(db);
-    test_projection(db);
-    test_registered_read_by_label(db);
-    test_converter_round_trip(db);
-    test_validate(conn_string);
-    test_identifier_spelling(conn_string);
-    test_identifier_case_twins(conn_string);
+    guarded("test_dynamic_rows", [&] { test_dynamic_rows(db); });
+    guarded("test_decimal_dynamic", [&] { test_decimal_dynamic(db); });
+    guarded("test_number_text_ceiling",
+      [&] { test_number_text_ceiling(db); });
+    guarded("test_decimal_mapped", [&] { test_decimal_mapped(db); });
+    guarded("test_zero_block_fetch_size",
+      [&] { test_zero_block_fetch_size(db); });
+    guarded("test_projection", [&] { test_projection(db); });
+    guarded("test_registered_read_by_label",
+      [&] { test_registered_read_by_label(db); });
+    guarded("test_converter_round_trip",
+      [&] { test_converter_round_trip(db); });
+    guarded("test_validate", [&] { test_validate(conn_string); });
+    guarded("test_identifier_spelling",
+      [&] { test_identifier_spelling(conn_string); });
+    guarded("test_identifier_case_twins",
+      [&] { test_identifier_case_twins(conn_string); });
 
-    test_query_builder(db);
-    test_transaction(db);
-    test_auto_commit_scope(db, conn_string);
-    test_insert(db);
-    test_update(db);
-    test_remove(db);
-    test_entity_update(db);
-    test_composite_key_and_where_fields(db);
-    test_statement_cache(db);
-    test_error_reporting(db);
-    test_pool(conn_string);
-    test_pool_maintenance(conn_string);
-    test_connection_pieces(dsn, user, pwd);
-    test_async_reads(conn_string, db);
-    test_async_failure_reaches_every_exit(conn_string, db);
-    test_async_transaction_closes_its_round_trip(conn_string, db);
-    test_async_callback_crud(conn_string, db);
-    test_async_session_connects_as_an_operation(conn_string, db);
-    test_a_session_builds_on_its_own_connection_string(conn_string, db);
-    test_async_two_sessions_write_side_by_side(conn_string, db);
+    guarded("test_query_builder", [&] { test_query_builder(db); });
+    guarded("test_transaction", [&] { test_transaction(db); });
+    guarded("test_auto_commit_scope",
+      [&] { test_auto_commit_scope(db, conn_string); });
+    guarded("test_insert", [&] { test_insert(db); });
+    guarded("test_update", [&] { test_update(db); });
+    guarded("test_remove", [&] { test_remove(db); });
+    guarded("test_entity_update", [&] { test_entity_update(db); });
+    guarded("test_composite_key_and_where_fields",
+      [&] { test_composite_key_and_where_fields(db); });
+    guarded("test_statement_cache", [&] { test_statement_cache(db); });
+    guarded("test_error_reporting", [&] { test_error_reporting(db); });
+    guarded("test_pool", [&] { test_pool(conn_string); });
+    guarded("test_pool_maintenance",
+      [&] { test_pool_maintenance(conn_string); });
+    guarded("test_connection_pieces",
+      [&] { test_connection_pieces(the_target.dsn, the_target.user,
+              the_target.password); });
+    guarded("test_async_reads",
+      [&] { test_async_reads(conn_string, db); });
+    guarded("test_async_failure_reaches_every_exit",
+      [&] { test_async_failure_reaches_every_exit(conn_string, db); });
+    guarded("test_async_transaction_closes_its_round_trip",
+      [&] { test_async_transaction_closes_its_round_trip(conn_string, db); });
+    guarded("test_async_callback_crud",
+      [&] { test_async_callback_crud(conn_string, db); });
+    guarded("test_async_session_connects_as_an_operation",
+      [&] { test_async_session_connects_as_an_operation(conn_string, db); });
+    guarded("test_a_session_builds_on_its_own_connection_string",
+      [&] { test_a_session_builds_on_its_own_connection_string(conn_string,
+              db); });
+    guarded("test_async_two_sessions_write_side_by_side",
+      [&] { test_async_two_sessions_write_side_by_side(conn_string, db); });
 
     db.execute_update(std::string("DROP TABLE ") + k_table);
     db.execute_update(std::string("DROP TABLE ") + k_pair_table);

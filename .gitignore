@@ -35,3 +35,7 @@ Testing/
 # OS noise
 .DS_Store
 Thumbs.db
+
+# The Oracle client writes a refused logon's connect diagnostics here, in the
+# directory the test ran from
+sqlnet.log

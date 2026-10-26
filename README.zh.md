@@ -2,9 +2,10 @@
 
 [English](README.md)
 
-现代 C++20 数据库访问层。核心是驱动中立的：连接串里的 scheme 选择 backend，
-而目前落地实现的 backend 只有 ODBC 一个——也正因如此，uniorm 能访问任意提供
-ODBC 驱动的数据库，而不依赖特定厂商的 C 客户端。实体映射、成员指针查询构建、
+现代 C++20 数据库访问层。核心是驱动中立的：连接串里的 scheme 选择 backend。
+默认构建的那一家是 ODBC——也正因如此，uniorm 能访问任意提供 ODBC 驱动的数据库，
+而不依赖特定厂商的 C 客户端；Oracle OCI backend 由构建开关显式打开。
+实体映射、成员指针查询构建、
 事务与连接池都建在这层核心之上。
 
 详细设计见 [docs/design.md](docs/design.md)。
@@ -55,8 +56,9 @@ ODBC 驱动的数据库，而不依赖特定厂商的 C 客户端。实体映射
 - **代码生成**：`uniorm-gen` 连活库，经 backend 自省读取 schema，生成实体
   struct + 注册函数（TOML 覆写类型/类名/跳过表）
 - **可插拔 backend**：核心 API 构建在驱动中立的 backend 接口之上，连接串
-  scheme 选择后端（`odbc://...`；裸 ODBC 连接串保持向后兼容），而目前落地实现
-  的后端只有 ODBC 一个。另一种写法是 `connection_spec`：scheme、target、
+  scheme 选择后端（`odbc://...`、`oracle://...`；裸 ODBC 连接串保持向后兼容）。
+  ODBC 默认就编，够到任何有驱动的服务；Oracle OCI backend 要显式打开。另一种
+  写法是 `connection_spec`：scheme、target、
   user、password 四件，交出去时不拼词，怎么拼由那一家 backend 说了算。
   目录读取也是这份接口的一部分（`schema()`），没有目录
   的 backend 于是答 `capability_not_supported`，而不是在某次读取内部失败；这里的每
@@ -71,6 +73,8 @@ ODBC 驱动的数据库，而不依赖特定厂商的 C 客户端。实体映射
 - CMake ≥ 3.20
 - unixODBC（`find_package(ODBC)`）及目标数据库的 ODBC 驱动——仅在
   `UNIORM_BACKEND_ODBC=ON` 时需要
+- Oracle Call Interface（Instant Client，或完整客户端的 SDK）——仅在
+  `UNIORM_BACKEND_ORACLE_OCI=ON` 时需要；用 `OCI_ROOT` 或 `ORACLE_HOME` 指到那棵树
 
 ## 构建
 
@@ -87,6 +91,7 @@ cmake --build build -j
 | `UNIORM_BUILD_TESTS` | `ON` | 构建单元/集成/性能测试 |
 | `UNIORM_BUILD_TOOLS` | `ON` | 构建工具（`uniorm-gen`） |
 | `UNIORM_BACKEND_ODBC` | `ON` | 将 ODBC backend 编入 `libuniorm`；关闭后只剩一个没有任何 backend 的核心库，此时 `UNIORM_BUILD_TOOLS=ON` 是配置错误 |
+| `UNIORM_BACKEND_ORACLE_OCI` | `OFF` | 构建 Oracle OCI backend（目标 `uniorm_oracle_oci`，装出去仍叫 `libuniorm_oracle`——核心按 `libuniorm_<scheme>.so` 加载，scheme 是 `"oracle"`）；配置它的那台机器上要有 Oracle Call Interface |
 
 产物为动态库 `libuniorm.so`（头文件在 `include/uniorm/`）：目标一律是
 `SHARED`，`BUILD_SHARED_LIBS` 改变不了它。`VERSION` 为 0.3.0，
@@ -501,9 +506,14 @@ ctest --test-dir build --output-on-failure
   任何驱动，于是住进那个不链驱动的测试目标
 - **odbc_unit_tests**：私有 ODBC 句柄层、它的错误转换，以及目录行按名字再筛的那条
   判据（仅驱动管理器，无需 DSN）；只在 `UNIORM_BACKEND_ODBC=ON` 时构建
+- **oracle_oci_unit_tests**：Oracle backend 自己那一层——占位符改写、它的类型表，以及
+  连接串怎么切分（仅客户端库，无需服务器）；只在 `UNIORM_BACKEND_ORACLE_OCI=ON` 时构建
 - **integration_tests**：需要可达的 ODBC DSN，读取环境变量
   `UNIORM_IT_DSN`、`UNIORM_IT_USER`、`UNIORM_IT_PWD`（三者均须设置），
   凭据以 `UID`/`PWD` 拼入连接串；任一未设置或连不上时以 ctest SKIP 处理
+- **integration_tests_oracle**：同一份套件走 Oracle plugin，`UNIORM_IT_BACKEND=oracle`，
+  target 按 `host[:port]/service` 读而不是按 DSN；只在 `UNIORM_BACKEND_ORACLE_OCI=ON`
+  时构建，连不上时 SKIP。读目录的那几个阶段自己报 skip——这个 backend 还没答这一项
 - **perf_tests**（ctest 标签 `perf`）：批量插入吞吐与三条查询物化路径
   （实体直绑 / 聚合投影 / 动态行）的对比，并附调用形式与 uniorm
   一一对应的纯 ODBC 基线作为抽象开销参照；行数由 `UNIORM_PERF_ROWS` 指定，
@@ -539,11 +549,14 @@ src/                  实现（构建为 libuniorm.so）；私有头贴着对应
   async/              默认 worker 池、会话那条 FIFO，以及除模板之外的全部
                         异步函数体
   backend/            scheme 解析与 backend 注册表
-  odbc/               ODBC backend（适配器、句柄 RAII 封装、错误，以及应答
-                        schema() 的目录读取）
-                        全仓库唯一出现 <sql.h> 之处
   statement_cache.hpp 预编译语句 LRU 缓存
   orm_mapping.hpp     实体写入按什么匹配、赋哪些列——只从映射推导，不碰连接
+backends/odbc/        ODBC backend（适配器、句柄 RAII 封装、错误，以及应答
+                        schema() 的目录读取）
+                        全仓库唯一出现 <sql.h> 之处
+backends/oracle_oci/  Oracle OCI backend（会话句柄、`?` 到 `:n` 的改写、它自己的
+                        类型表）
+                        全仓库唯一出现 <oci.h> 之处，默认不构建
 cmake/                装出去的 find_package 所读的包配置模板
 tools/uniorm-gen      代码生成 CLI（schema 提取 + TOML 配置 + 生成器）
 tests/unit            单元测试

@@ -1699,7 +1699,9 @@ backend，要在自己的 `reset()` 重写里清干净。
 **构建门禁**：`option(UNIORM_BACKEND_ODBC ON)`；启用时 `backends/odbc/` 出一个独立
 shared 目标 `uniorm::odbc`，PRIVATE 链 `ODBC::ODBC`（§5.1）；`uniorm-gen` 向
 `orm::schema()` 要活库元数据，而目前只有 ODBC backend 提供它，故
-`UNIORM_BUILD_TOOLS` 依赖该选项。
+`UNIORM_BUILD_TOOLS` 依赖该选项。`option(UNIORM_BACKEND_ORACLE_OCI OFF)` 按同一形状出
+`uniorm::oracle_oci`（scheme `"oracle"`，PRIVATE 链 Oracle Call Interface）；配置它要有
+一份 Oracle 客户端库，流水线为那一支现装，多数构建机上仍没有，故默认关闭。
 
 **异步不进这份契约**（§4.11）：`connection_iface` 一个虚槽也没为它加。两条理由：
 这一层没向任何一家要新东西——它跑的就是那些同步调用，塞进接口等于要每家再实现

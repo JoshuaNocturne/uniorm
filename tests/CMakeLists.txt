@@ -138,6 +138,25 @@ if(UNIORM_BACKEND_ODBC)
     endif()
 endif()
 
+if(UNIORM_BACKEND_ORACLE_OCI)
+    # The same white-box shape as the ODBC targets above: the symbols under
+    # test are the plugin's own, and Oracle::OCI is named here as well because
+    # the backend links it privately -- the tests read the OCI headers through
+    # the backend's private ones.
+    add_executable(uniorm_oracle_oci_unit_tests
+        unit/test_oracle_oci_main.cpp
+        unit/test_oracle_oci_sql_text.cpp
+        unit/test_oracle_oci_types.cpp
+        unit/test_oracle_oci_connection.cpp
+    )
+    target_link_libraries(uniorm_oracle_oci_unit_tests
+        PRIVATE uniorm::oracle_oci Oracle::OCI)
+    target_include_directories(uniorm_oracle_oci_unit_tests PRIVATE
+        ${PROJECT_SOURCE_DIR}/backends)
+    add_test(NAME oracle_oci_unit_tests COMMAND uniorm_oracle_oci_unit_tests)
+    uniorm_copy_runtime_dlls(uniorm_oracle_oci_unit_tests)
+endif()
+
 # Install rules exist only for a top-level build, and this check configures and
 # compiles an outside project, so a cross-compiled build cannot run it.
 # GNUInstallDirs is included here because the root file includes it later, in

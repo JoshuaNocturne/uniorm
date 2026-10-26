@@ -3,9 +3,10 @@
 [中文文档](README.zh.md)
 
 A modern C++20 database access layer. Its core is driver-neutral: the scheme in
-a connection string selects a backend, and the only backend built so far is
-ODBC — which is what lets uniorm reach any database that ships an ODBC driver
-without depending on vendor-specific C clients. Entity mapping, a
+a connection string selects a backend. ODBC is the one built by default — it is
+what lets uniorm reach any database that ships an ODBC driver without depending
+on vendor-specific C clients — with an Oracle OCI backend behind a build
+option. Entity mapping, a
 member-pointer query builder, transactions, and connection pooling sit on top
 of that core.
 
@@ -73,8 +74,9 @@ See [docs/design.md](docs/design.md) for the full design.
   names/skipped tables)
 - **Pluggable backends** — the core API sits on a driver-neutral backend
   interface; the connection-string scheme selects the backend
-  (`odbc://...`, or a bare ODBC connection string for backward
-  compatibility), and ODBC is the only backend built so far. A
+  (`odbc://...`, `oracle://...`, or a bare ODBC connection string for backward
+  compatibility). ODBC is built by default and reaches any server a driver
+  exists for; the Oracle OCI backend is opt-in. A
   `connection_spec` — scheme, target, user, password — is the alternative
   spelling, handed to that backend unfilled so it writes its own dialect's
   words. Catalog reads are
@@ -92,6 +94,8 @@ See [docs/design.md](docs/design.md) for the full design.
 - CMake ≥ 3.20
 - unixODBC (`find_package(ODBC)`) and an ODBC driver for the target database,
   both only while `UNIORM_BACKEND_ODBC=ON`
+- Oracle Call Interface (an Instant Client, or a full client's SDK), only while
+  `UNIORM_BACKEND_ORACLE_OCI=ON`; `OCI_ROOT` or `ORACLE_HOME` points at the tree
 
 ## Building
 
@@ -108,6 +112,7 @@ Options:
 | `UNIORM_BUILD_TESTS` | `ON` | Build unit/integration/perf tests |
 | `UNIORM_BUILD_TOOLS` | `ON` | Build tools (`uniorm-gen`) |
 | `UNIORM_BACKEND_ODBC` | `ON` | Build the ODBC backend into `libuniorm`; off leaves a core-only library with no backend, and `UNIORM_BUILD_TOOLS=ON` is then a configure error |
+| `UNIORM_BACKEND_ORACLE_OCI` | `OFF` | Build the Oracle OCI backend (target `uniorm_oracle_oci`, loaded as `libuniorm_oracle` because the core opens `libuniorm_<scheme>.so` for scheme `"oracle"`); needs Oracle Call Interface on the machine configuring it |
 
 The product is a shared library, `libuniorm.so` (headers in
 `include/uniorm/`): the target is `SHARED` unconditionally, so `BUILD_SHARED_LIBS`
@@ -588,10 +593,18 @@ ctest --test-dir build --output-on-failure
 - **odbc_unit_tests**: the private ODBC handle layer, its error translation and
   the catalog's name re-filter (driver manager only, no DSN required); built only
   with `UNIORM_BACKEND_ODBC=ON`
+- **oracle_oci_unit_tests**: the Oracle backend's own layer — the placeholder
+  rewrite, its type table, and how a connect string splits (client library
+  only, no server required); built only with `UNIORM_BACKEND_ORACLE_OCI=ON`
 - **integration_tests**: needs a reachable ODBC DSN; reads `UNIORM_IT_DSN`,
   `UNIORM_IT_USER`, `UNIORM_IT_PWD` (all required); credentials
   are folded into the connection string as `UID`/`PWD`; ctest SKIPs when
   any of them is unset or the database is unreachable
+- **integration_tests_oracle**: the same suite over the Oracle plugin, with
+  `UNIORM_IT_BACKEND=oracle` and the target read as `host[:port]/service`
+  instead of a DSN; built only with `UNIORM_BACKEND_ORACLE_OCI=ON` and SKIPs on
+  an unreachable server. The stages that read the catalog report themselves
+  skipped, because this backend does not answer that yet
 - **perf_tests** (ctest label `perf`): batch-insert throughput and a
   comparison of the three query materialization paths (direct entity
   binding / aggregate projection / dynamic rows), with a raw-ODBC baseline
@@ -633,12 +646,15 @@ src/                  implementation (built into libuniorm.so); private headers
   async/              the default worker pool, the session FIFO, and every
                         async body that is not a template
   backend/            scheme parsing and the backend registry
-  odbc/               ODBC backend: adapter, handle wrappers, errors, and the
-                        catalog reads that answer schema()
-                        (the only <sql.h> in the tree)
   statement_cache.hpp prepared-statement LRU cache
   orm_mapping.hpp     what an entity write matches on and assigns, resolved
                         from the mapping alone — no connection involved
+backends/odbc/        ODBC backend: adapter, handle wrappers, errors, and the
+                        catalog reads that answer schema()
+                        (the only <sql.h> in the tree)
+backends/oracle_oci/  Oracle OCI backend: session handles, the `?` to `:n`
+                        rewrite, and its own type table
+                        (the only <oci.h> in the tree; built only on request)
 cmake/                the package config template the installed find_package reads
 tools/uniorm-gen      code-generation CLI (schema extraction + TOML config + generator)
 tests/unit            unit tests

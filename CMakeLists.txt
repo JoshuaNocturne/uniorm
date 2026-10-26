@@ -25,6 +25,11 @@ message(STATUS "uniorm build type: ${CMAKE_BUILD_TYPE}")
 option(UNIORM_BUILD_TESTS "Build uniorm tests" ON)
 option(UNIORM_BUILD_TOOLS "Build uniorm tools (uniorm-gen)" ON)
 option(UNIORM_BACKEND_ODBC "Build the ODBC backend" ON)
+option(UNIORM_BACKEND_ORACLE_OCI "Build the Oracle OCI backend" OFF)
+
+# FindOracleOCI.cmake lives beside the package config template, and CMake ships
+# no finder for Oracle's client library.
+list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
 
 find_package(Threads REQUIRED)
 
@@ -90,6 +95,9 @@ endfunction()
 
 if(UNIORM_BACKEND_ODBC)
     add_subdirectory(backends/odbc)
+endif()
+if(UNIORM_BACKEND_ORACLE_OCI)
+    add_subdirectory(backends/oracle_oci)
 endif()
 target_compile_definitions(uniorm
     PRIVATE UNIORM_BUILDING_DLL

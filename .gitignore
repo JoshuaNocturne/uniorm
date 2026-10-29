@@ -27,6 +27,8 @@ Testing/
 .qoder/
 .vscode/
 .idea/
+.vs/
+out/
 *.swp
 *~
 .cache/

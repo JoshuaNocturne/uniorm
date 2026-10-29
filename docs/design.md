@@ -1,14 +1,14 @@
 # uniorm v1 设计文档
 
 状态：v1 实现完成；v2 进行中——backend 抽象、plugin 化、逐名解析、
-`connection_spec`、异步表面与 Oracle OCI 那一家都已落地（§5、§9）
-日期：2026-10-26（本版按当前代码逐节核对，偏差集中记于"已知缺口"——该节现已为空）
+`connection_spec`、异步表面、Oracle OCI 与 libpq 那两家都已落地（§5、§9）
+日期：2026-10-29（本版按当前代码逐节核对，偏差集中记于"已知缺口"——该节现已为空）
 
 ## 1. 目标与范围
 
 uniorm 是一个现代化的 C++ 数据库访问层：核心构建在驱动中立的 backend 接口之上
 （§5.2）。v1 落地的 backend 只有 ODBC 一个，而不是各数据库的专有 C 客户端；v2
-之上按同一形状长出第二家 Oracle OCI，两家都是独立 plugin（§5.4）。
+之上按同一形状长出第二家 Oracle OCI 与第三家 libpq，三家都是独立 plugin（§5.4）。
 
 ### v1 范围（In Scope）
 
@@ -1540,9 +1540,10 @@ env 可覆盖成单一目录，用于测试和非常规部署。
 
 ### 5.2 backend 接口（v2 里程碑 1，已实现）
 
-接口位于 `include/uniorm/backend/backend.hpp`，两家实现都不在核心库里：ODBC 是自己
+接口位于 `include/uniorm/backend/backend.hpp`，三家实现都不在核心库里：ODBC 是自己
 一份 `libuniorm_odbc.so`（`backends/odbc/backend.cpp`，见 §5.1），Oracle OCI 是自己
-一份 `libuniorm_oracle.so`（§5.4）。核心 API（查询
+一份 `libuniorm_oracle.so`，libpq 是自己一份 `libuniorm_postgresql.so`（同见 §5.4）。
+核心 API（查询
 构建器、映射、池、事务）只依赖接口；能力缺失时应当抛清晰错误而非静默降级。
 `capabilities` 上只有两条真分岔——
 `columnar_batch` 与 `array_rowcount_totals`——各有一条更慢的退路可走，其余缺什么
@@ -1568,6 +1569,11 @@ struct column_buffer { buffer_type type; void* data; std::size_t capacity;
 `bind_column` 即一次 `SQLBindCol`，indicator 直接复用调用方 `int64` 存储
 （`sizeof(std::int64_t) == sizeof(SQLLEN)` static_assert），直绑零拷贝的
 性能特性不损失，每行仅一次虚调用（`fetch()`）。
+
+缓冲说的是目标结构，不是列的形状：实体字段是 `timestamp`，绑出来的就是
+`timestamp_parts`，哪怕这一列只存一半（PostgreSQL 的 `TIME` 只存时钟）。缺的
+那半按 ODBC 驱动的读法补齐——时钟无日记为 1970-01-01，日无钟记零时；拿列的
+文本硬套完整的日期格式，会把时钟的位数读成年月日，折出一个非法日期。
 
 **语句与连接接口**：
 
@@ -1748,13 +1754,32 @@ PQputCopyData(pg, ...);                     // 用户自行驱动原生操作
    `open(std::string_view)` 那条原语；两件 OCI 专有特性还没接——原生数组绑定
    （§9 第 3 条剩下的那一半）与目录读取，后者让它对 `orm::schema()` 报
    `capability_not_supported`
-2. **libpq**（PostgreSQL）——COPY、LISTEN/NOTIFY、异步 I/O，**未落地**
+2. **libpq**（PostgreSQL）——**已落地**：`backends/libpq/`，scheme `"postgresql"`，
+   装成 `libuniorm_postgresql.so`，CI 为它单开一支作业（§8）。两条 `open` 原语都接：
+   整串按 libpq 自己的 conninfo 语法交给 `PQconnectdb`，四件套拼成它命名各值的关键词。
+   它交出的两个能力标志也都是 `false`——一批就是逐行 execute 再相加，走的正是核心
+   那条更慢的退路。
+
+   值在两个方向上都是文本：绑出去时按列的形状写（`DATE` 不带时钟、`TIME` 不带日），
+   读回来时按 `PQftype` 报的形状拆。所以一连上就先钉住两件会话默认——
+   `DateStyle = 'ISO, MDY'` 与 `bytea_output = 'hex'`：读的形状是照这两件假设的，
+   钉不住就宁可拒绝这条会话。语句按 `uniorm_stmt_<n>` 这条各自唯一的名字
+   `PQprepare`，参数类型从 `PQdescribePrepared` 读回；会话把名字弄丢了（SQLSTATE
+   26000）就把名字重做一次、再执行一次。`?` 翻成 `$n` 的那趟改写跳过字面量、定界名、
+   dollar-quoted 体、嵌套块注释与 `E''`，成对的 `??` 则是留给服务端自己那批 `?` 算符
+   （jsonb、几何）的写法。
+
+   它暂未接的是目录读取：`orm::schema()` 对它报 `capability_not_supported`，
+   `validate()` 与 `resolve_identifiers()` 在这条腿上便没有可读的目录。大小写因此只剩
+   `dialect::detect` 从 banner 答的那个默认（PostgreSQL 答 `lower`），要别的拼法得自己
+   `identifier_case(...)` 声明——这条腿与 ODBC 那家的差别就在这里。COPY /
+   LISTEN-NOTIFY / 原生异步仍旧走原生句柄，暂无门面。
 
 两者均来自既有项目中必须绕开 ODBC 的实际经验。四件套（§5.2）正是为它们留的路：
 libpq 把它拼成空格分隔的 conninfo，OCI 连串都没有——用户名与口令是
 `OCISessionBegin` 各自的实参。落地的那家仍只需实现 `open(std::string_view)`
 那条原语，四件套按需接。能力清单不为特性集预留标志位：
-一家 backend 落地后，只有核心真需要分岔的地方才进清单（§5.2）——OCI 那家交出的
+一家 backend 落地后，只有核心真需要分岔的地方才进清单（§5.2）——OCI 与 libpq 两家交出的
 两个标志如今都是 `false`，走的正是各自那条更慢的退路。
 
 ## 6. uniorm-gen 代码生成工具
@@ -1868,6 +1893,11 @@ backend（§5.2）；句柄层里那条 DSN 专用的 `SQLConnect` 通路失去�
 而"该发哪一种"要到连接建立之后才知道，所以它交给连接上的 `identifier_case`：方言
 认得的家自己答、部署可覆写，都在标识符出口应用（§4.8）。一份产物因此可以服务
 存储拼法不同的两家。
+
+折叠发出的是折出来的那个名字，不是声明的那一个：库里同时存着 `"Users"` 与
+`"users"` 两张时，声明 `Users` 在 `lower` 之下读到的是小写那张，`validate()` 也只
+说命中。这一家唯一的出路是 §4.8 的逐名解析——它按目录里的实际拼法装映射，不受
+策略影响。
 
 生成物只输出到指定目录，视为不可手改。头文件仅依赖
 `<uniorm/orm.hpp>`、`<uniorm/mapping/registry.hpp>`、`<uniorm/decimal.hpp>`
@@ -2190,14 +2220,23 @@ commit/rollback/析构回滚、批量插入（含空 optional 写 NULL、1500 �
   scheme 名载 plugin、对一只 Oracle Free 容器跑同一套集成测试，注册四条 ctest 而非
   五条：它有自己的白盒单测与同一套集成测试顶上，少掉的那一条正是 `gen_e2e`——生成器
   读的是活库目录，而只有 ODBC 那一家答得上，所以这一支把 `UNIORM_BUILD_TOOLS` 关着。
-  今天 runner 上的形状是四支作业定义、六个
+  第五支 `libpq` 也不进驱动的矩阵，理由与这一支同一条：环里没有驱动管理器。它链
+  `libpq`、按 scheme 名载 `libuniorm_postgresql.so`，服务端用的是 psqlODBC 那一条腿
+  同一只 `postgres:17`——两条腿读同一个服务端，一个走连接器、一个走原生客户端，
+  连接器从前替服务端答的那些东西，差别就在这一支上显出来。它同样关着
+  `UNIORM_BUILD_TOOLS`：这一家也还没答目录读取。
+  今天 runner 上的形状是五支作业定义、七个
   实例，服务端多答一家 `Oracle AI Database 26ai Free Release 23.26.3.0.0`）：
   一支 `UNIORM_BACKEND_ODBC=OFF`
   的构建只跑 `unit_tests`，它替 §3 那条"驱动类型不漏进 statement 层之上的公开头"把关。
-  `install_smoke` 不在这支上，runner 上真跑它的是三条驱动腿与 Oracle 那一支：前者是
+  `install_smoke` 不在这支上，runner 上真跑它的是三条驱动腿、Oracle 与 libpq 那两支：
+  前者是
   `UNIORM_BACKEND_ODBC=ON` 的一侧，plugin 装进 prefix，消费者把 loader 指过去便跨过
   `registry::create`；后者正好是 OFF 的一侧，`UNIORM_PLUGIN_PATH` 指到空目录，裸 DSN
-  依旧 `unknown_scheme`、`odbc` 从头到尾没进注册表。ON 与 OFF 于是各有作业在守——这条
+  依旧 `unknown_scheme`、`odbc` 从头到尾没进注册表。libpq 那一支则按 `LIBPQ=ON`、
+  `ODBC=OFF` 装出 `libuniorm_postgresql.so`，同一趟里三家各按自己的选项该有则有、该无
+  则无，`DT_NEEDED` 那道门也多两条断言：核心既不许链 `libpq`，也不许链这一家的 plugin
+  ——它只由 dlopen 载入。ON 与 OFF 于是各有作业在守——这条
   负向承诺此前只在注释里，没有任何东西在守它。另一支是三条腿，每条拿自家的连接器连自家的
   服务端，各对自己的服务容器跑除 `perf` 外的全部五条：MySQL Connector/ODBC 取自 MySQL
   自己的 apt 组件（Ubuntu 归档里没有它），MariaDB Connector/ODBC 只能从 tag 拉源码构建
@@ -2382,7 +2421,8 @@ commit/rollback/析构回滚、批量插入（含空 optional 写 NULL、1500 �
   （MariaDB 连接器对 MySQL 服务端、Connector/ODBC 对 MariaDB 服务端）从此
   没有 CI 覆盖：那不是要还的账，跨着连不在支持轴上（§8）。此后又长出
   `oracle-oci` 与 `core-windows` 两支，各自也在 runner 上绿着，今天的形状
-  是四支作业定义、六个实例（§8）。
+  是五支作业定义、七个实例（§8）。第五支 `libpq` 与这两支的差别在于它还没在 runner
+  上跑过：形状按作业原样在同族容器里重放过，集成的三条腿与安装冒烟都在那里跑绿。
   `uniorm-gen` 的元数据读取已挪到 `orm::schema()` 之后（§6.2）；挪动前后对
   同一份夹具逐字节相同：那格要不要补一道门，看它那时暴露出什么，届时再定。
 
@@ -2390,8 +2430,8 @@ commit/rollback/析构回滚、批量插入（含空 optional 写 NULL、1500 �
 
 1. ~~backend 接口提取~~ **已完成（里程碑 1）**：中立接口 + scheme 注册表，
    ODBC 迁移至接口之后，核心单测不链接 ODBC（见 §5）；它那时还只是核心
-   PRIVATE 链的一家，此后整家拆成 plugin（§5.1、条目 8）。两家都已落地，剩下的
-   **待做**是 libpq 那一家，和 OCI 那家还没接上的目录读取（§5.4）。
+   PRIVATE 链的一家，此后整家拆成 plugin（§5.1、条目 8）。三家都已落地，剩下的
+   **待做**是 OCI 与 libpq 两家都还没接上的目录读取（§5.4）。
 2. Unit of Work / 脏检查 / 级联
 3. ~~批量操作~~ **已完成**：`SQL_ATTR_PARAMSET_SIZE` 数组绑定 + 块取行，
    列式（`batch_writer_iface`）与行式（`bind_batch_params`）双通道（见 §4.5.2）。
@@ -2422,8 +2462,9 @@ commit/rollback/析构回滚、批量插入（含空 optional 写 NULL、1500 �
    odbc)` 那条路已废；`uniormOdbcTargets.cmake` 仍安装，只为仓内白盒测试直链
    `uniorm::odbc` 保留，OCI 那一家照同一形状也有一份 plugin 与一份白盒 export
    （§5.4）。Windows 的 `LoadLibraryExA` 路径也已在 loader 里实现（§5.1），只是
-   没有一支 Windows 作业装 backend，它不在 CI 覆盖面里（§8）。**待做**只剩 libpq
-   那一家按同一形状再加一份。
+   没有一支 Windows 作业装 backend，它不在 CI 覆盖面里（§8）。libpq 那一家也已按同一
+   形状长出：一份 plugin、一份白盒 export（`uniormLibpqTargets.cmake`），CI 也为它单开
+   一支作业（§8）。
 9. ~~能力清单落地：`capabilities` 的四个未读标志各自找到真实消费点~~ **已完成**：
    四个占位已删，清单只剩 `columnar_batch` 与 `array_rowcount_totals`，两条各有
    读者（§5.2）；后者随 §8 那条 PostgreSQL 腿落地。

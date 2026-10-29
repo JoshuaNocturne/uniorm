@@ -73,6 +73,15 @@ name: ci
 # Unconfirmed is the runner's own half -- the image pull, how long its first
 # start takes behind the health gate, and which libaio package name its Ubuntu
 # carries.
+#
+# The fifth job is the libpq backend, the second one that links a client
+# library rather than reaching a server through a driver manager. It points at
+# the same postgres:17 image the psqlODBC leg does, so the two read one server
+# by two routes: whatever a connector used to answer for the server, this leg
+# is where it shows up as a difference. Its own half was replayed against a
+# live container of that image before being written down -- the suite green
+# over libpq, with the three catalog stages reporting themselves skipped
+# because this backend answers no schema() yet, the same three OCI skips for.
 
 on:
   push:
@@ -583,6 +592,95 @@ jobs:
           # never reached a statement.
           cat sqlnet.log 2>/dev/null || true
           container="$(docker ps -q --filter publish=1521 | head -1)"
+          if [ -n "$container" ]; then
+            docker logs --tail 60 "$container" 2>&1 || true
+          fi
+
+  libpq:
+    name: libpq on postgresql-17
+    runs-on: ubuntu-latest
+    needs: core
+    timeout-minutes: 30
+
+    # Out of the matrix above for the same reason the OCI job is: none of it
+    # goes through a driver manager. The core dlopens libuniorm_postgresql.so
+    # on the scheme name, the backend links libpq, and the target the suite
+    # builds a connect string from is host:port/service rather than a DSN.
+    env:
+      UNIORM_IT_BACKEND: postgresql
+      UNIORM_IT_DSN: 127.0.0.1:5432/uniorm_ci
+      UNIORM_IT_USER: uniorm
+      UNIORM_IT_PWD: uniorm-ci-pwd
+
+    services:
+      server:
+        # The image the psqlODBC leg is pointed at, so the two legs read the
+        # same server by two routes rather than two servers.
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: uniorm-ci-pwd
+          POSTGRES_DB: uniorm_ci
+          POSTGRES_USER: uniorm
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U uniorm -d uniorm_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install libpq
+        run: >
+          sudo apt-get update &&
+          sudo apt-get install -y --no-install-recommends libpq-dev
+
+      - name: Configure
+        run: >
+          cmake -S . -B build
+          -DUNIORM_BACKEND_ODBC=OFF
+          -DUNIORM_BUILD_TOOLS=OFF
+          -DUNIORM_BACKEND_LIBPQ=ON
+          -DCMAKE_CXX_FLAGS="$CXXWARN"
+
+      - name: Build
+        run: cmake --build build -j "$(nproc)"
+
+      - name: Test
+        run: |
+          set -o pipefail
+          ctest --test-dir build --output-on-failure -V | tee ctest.log
+          # The same rule the other database legs keep: 77 is a skip and ctest
+          # calls that a pass, so a leg that never reached its server is a
+          # failure here rather than a green check.
+          if grep -q 'Skipped' ctest.log; then
+            echo '::error::a database test skipped instead of running.'
+            grep -A5 'did not run' ctest.log || true
+            exit 1
+          fi
+          banner="$(sed -n 's/^.*dbms = //p' ctest.log | head -1)"
+          case "$banner" in
+            PostgreSQL*)
+              echo "server behind the libpq leg: $banner"
+              ;;
+            *)
+              echo "::error::the libpq leg did not answer as PostgreSQL"
+              echo "  it answered '${banner:-nothing}'"
+              exit 1
+              ;;
+          esac
+
+      - name: Show what the client and the server said
+        if: failure()
+        run: |
+          # A client library the loader cannot place looks like this and nothing
+          # else; the version apt delivered is the one the leg linked against.
+          dpkg -s libpq-dev | grep '^Version' || true
+          ldd build/backends/libpq/libuniorm_postgresql.so 2>/dev/null |
+            grep 'not found' || true
+          container="$(docker ps -q --filter publish=5432 | head -1)"
           if [ -n "$container" ]; then
             docker logs --tail 60 "$container" 2>&1 || true
           fi

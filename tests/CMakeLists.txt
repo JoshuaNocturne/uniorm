@@ -180,6 +180,24 @@ if(UNIORM_BACKEND_LIBPQ)
         SKIP_RETURN_CODE 77
         ENVIRONMENT "${libpq_integration_env}")
     uniorm_copy_runtime_dlls(uniorm_integration_postgresql_tests)
+
+    # The same comparison the ODBC perf target makes, on this leg's server:
+    # uniorm's paths, and libpq called by hand beside them. The raw half names
+    # libpq-fe.h, which the plugin links privately, so this target links it
+    # too -- and nothing of the plugin, since the core dlopens it by scheme.
+    add_executable(uniorm_perf_libpq_tests
+        perf/test_perf_libpq.cpp
+        perf/perf_libpq_raw.cpp
+        perf/perf_common.cpp
+    )
+    target_link_libraries(uniorm_perf_libpq_tests
+        PRIVATE uniorm::uniorm PostgreSQL::libpq)
+    add_dependencies(uniorm_perf_libpq_tests uniorm_libpq)
+    add_test(NAME perf_tests_libpq COMMAND uniorm_perf_libpq_tests)
+    set_tests_properties(perf_tests_libpq PROPERTIES
+        SKIP_RETURN_CODE 77 LABELS perf
+        ENVIRONMENT "UNIORM_PLUGIN_PATH=$<TARGET_FILE_DIR:uniorm_libpq>")
+    uniorm_copy_runtime_dlls(uniorm_perf_libpq_tests)
 endif()
 
 if(UNIORM_BACKEND_ORACLE_OCI)

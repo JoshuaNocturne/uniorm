@@ -138,6 +138,48 @@ if(UNIORM_BACKEND_ODBC)
     endif()
 endif()
 
+if(UNIORM_BACKEND_LIBPQ)
+    # The same white-box shape as the ODBC targets above: the symbols under
+    # test are the plugin's own, and PostgreSQL::libpq is named here as well
+    # because the backend links it privately -- the tests read libpq-fe.h
+    # through the backend's private headers.
+    add_executable(uniorm_libpq_unit_tests
+        unit/test_libpq_main.cpp
+        unit/test_libpq_sql_text.cpp
+        unit/test_libpq_types.cpp
+        unit/test_libpq_connection.cpp
+        unit/test_libpq_statement.cpp
+    )
+    target_link_libraries(uniorm_libpq_unit_tests
+        PRIVATE uniorm::libpq PostgreSQL::libpq)
+    target_include_directories(uniorm_libpq_unit_tests PRIVATE
+        ${PROJECT_SOURCE_DIR}/backends)
+    add_test(NAME libpq_unit_tests COMMAND uniorm_libpq_unit_tests)
+    uniorm_copy_runtime_dlls(uniorm_libpq_unit_tests)
+
+    # The same suite over the libpq plugin: one source, and the leg picks its
+    # server from UNIORM_IT_BACKEND. It links only the core because the plugin
+    # is dlopened by scheme.
+    add_executable(uniorm_integration_postgresql_tests
+        integration/test_integration.cpp
+    )
+    target_link_libraries(uniorm_integration_postgresql_tests
+        PRIVATE uniorm::uniorm)
+    target_include_directories(uniorm_integration_postgresql_tests PRIVATE
+        ${PROJECT_SOURCE_DIR}/src)
+    add_dependencies(uniorm_integration_postgresql_tests uniorm_libpq)
+    add_test(NAME integration_tests_postgresql
+        COMMAND uniorm_integration_postgresql_tests)
+    # ENVIRONMENT takes one ;-separated list of settings.
+    set(libpq_plugin_dir "$<TARGET_FILE_DIR:uniorm_libpq>")
+    string(JOIN ";" libpq_integration_env
+        "UNIORM_IT_BACKEND=postgresql" "UNIORM_PLUGIN_PATH=${libpq_plugin_dir}")
+    set_tests_properties(integration_tests_postgresql PROPERTIES
+        SKIP_RETURN_CODE 77
+        ENVIRONMENT "${libpq_integration_env}")
+    uniorm_copy_runtime_dlls(uniorm_integration_postgresql_tests)
+endif()
+
 if(UNIORM_BACKEND_ORACLE_OCI)
     # The same white-box shape as the ODBC targets above: the symbols under
     # test are the plugin's own, and Oracle::OCI is named here as well because

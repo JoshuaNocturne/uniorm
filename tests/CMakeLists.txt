@@ -240,6 +240,28 @@ if(UNIORM_BACKEND_ORACLE_OCI)
         SKIP_RETURN_CODE 77
         ENVIRONMENT "${oracle_integration_env}")
     uniorm_copy_runtime_dlls(uniorm_integration_oracle_tests)
+
+    # The same comparison again, with OCI called by hand beside uniorm's own
+    # paths. The raw half names oci.h, which the plugin links privately, so
+    # this target links the client too -- and nothing of the plugin, since the
+    # core dlopens it by scheme.
+    add_executable(uniorm_perf_oracle_tests
+        perf/test_perf_oracle.cpp
+        perf/perf_oracle_raw.cpp
+        perf/perf_common.cpp
+    )
+    if(WIN32)
+        target_compile_options(uniorm_perf_oracle_tests PRIVATE
+            /utf-8)
+    endif()
+    target_link_libraries(uniorm_perf_oracle_tests
+        PRIVATE uniorm::uniorm Oracle::OCI)
+    add_dependencies(uniorm_perf_oracle_tests uniorm_oracle_oci)
+    add_test(NAME perf_tests_oracle COMMAND uniorm_perf_oracle_tests)
+    set_tests_properties(perf_tests_oracle PROPERTIES
+        SKIP_RETURN_CODE 77 LABELS perf
+        ENVIRONMENT "UNIORM_PLUGIN_PATH=$<TARGET_FILE_DIR:uniorm_oracle_oci>")
+    uniorm_copy_runtime_dlls(uniorm_perf_oracle_tests)
 endif()
 
 # Install rules exist only for a top-level build, and this check configures and

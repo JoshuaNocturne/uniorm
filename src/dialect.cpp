@@ -75,7 +75,11 @@ dialect dialect::detect(std::string_view dbms_name) {
     detected.ansi_pagination = false;
     detected.table_qualification = qualification::catalog;
   } else if (lower.find("postgresql") != std::string::npos) {
+    // The same habit one server over, in the other direction: an unquoted
+    // name is stored lower-cased, so a quoted read of the declared spelling
+    // would miss the table the same statement created.
     detected.table_qualification = qualification::schema;
+    detected.identifiers = identifier_case::lower;
   } else if (lower.find("oracle") != std::string::npos) {
     // What a table belongs to is called a schema here and nowhere else. An
     // unquoted name is also stored upper-cased, so the fold comes with the

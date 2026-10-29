@@ -158,9 +158,15 @@ void test_expression() {
     CHECK(dialect::detect(
       "Oracle Database 21c Express Edition Release 21.3.0.0.0 - Production")
       .identifiers == dialect::identifier_case::upper);
+    // PostgreSQL folds the other way, and the banner answers that too. A name
+    // written with a capital is the one that says the fold ran before the quote.
+    dialect postgres = dialect::detect("PostgreSQL");
+    CHECK(postgres.identifiers == dialect::identifier_case::lower);
+    CHECK(postgres.quote_identifier("Col") == "\"col\"");
+    CHECK(postgres.quote_exact_identifier("Col") == "\"Col\"");
     // No other vendor's fold is answered here: a name stays as declared until
     // someone says otherwise.
-    for (auto dbms_name : { "MySQL", "MariaDB", "PostgreSQL", "SQL Server",
+    for (auto dbms_name : { "MySQL", "MariaDB", "SQL Server",
       "" }) {
       auto detected = dialect::detect(dbms_name);
       CHECK(detected.identifiers == dialect::identifier_case::keep);

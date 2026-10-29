@@ -656,8 +656,8 @@ void test_new_registration_and_retained_builders() {
   auto const* address = &database.meta<account>();
   auto retained = database.query<account>();
   CHECK(retained.build_select() ==
-    "SELECT \"TENANT_ID\", \"DISPLAY_NAME\", \"USER_ID\", \"BALANCE\" "
-    "FROM \"ACCOUNTS\"");
+    "SELECT \"tenant_id\", \"display_name\", \"user_id\", \"balance\" "
+    "FROM \"accounts\"");
   database.resolve_identifiers("Tenant", "App");
   CHECK_THROWS(mapping.column("EXTRA", &account::extra), mapping_error);
   CHECK_THROWS(mapping.primary_key("REVISION", &account::revision),
@@ -686,8 +686,8 @@ void test_new_registration_and_retained_builders() {
   CHECK(!database.meta<event>().resolved);
   CHECK(&database.meta<account>() == address);
   CHECK(retained.build_select() ==
-    "SELECT \"TENANT_ID\", \"DISPLAY_NAME\", \"USER_ID\", \"BALANCE\" "
-    "FROM \"ACCOUNTS\"");
+    "SELECT \"tenant_id\", \"display_name\", \"user_id\", \"balance\" "
+    "FROM \"accounts\"");
   mapping.column("EXTRA", &account::extra)
     .primary_key("REVISION", &account::revision)
     .ignore(&account::scratch);
@@ -837,8 +837,8 @@ void test_lifecycle_and_pool_reuse() {
     CHECK(!reused.meta<account>().resolved);
     auto query = reused.query<account>();
     CHECK(query.build_select() ==
-      "SELECT \"TENANT_ID\", \"DISPLAY_NAME\", \"USER_ID\", \"BALANCE\" "
-      "FROM \"ACCOUNTS\"");
+      "SELECT \"tenant_id\", \"display_name\", \"user_id\", \"balance\" "
+      "FROM \"accounts\"");
     reused.resolve_identifiers("Tenant", "App");
   }
   CHECK(fixture.pool.idle_count() == 1);
@@ -1119,30 +1119,30 @@ void test_mysql_and_literal_namespace_quoting() {
 void test_the_servers_own_fold_answers_before_any_policy() {
   recording_fixture fixture;
   auto& state = *fixture.state;
-  state.product = "Oracle";
+  state.product = "PostgreSQL";
 
   std::size_t opens = 0;
   {
     orm database(fixture.pool);
     database.map<event>("User_Account").primary_key("UserId", &event::id);
     // Nobody declared a policy, so the habit the banner names is what goes
-    // out.
+    // out -- PostgreSQL folds down where Oracle folds up.
     CHECK(!database.identifier_case());
     CHECK(database.query<event>().build_select() ==
-          "SELECT \"USERID\" FROM \"USER_ACCOUNT\"");
+          "SELECT \"userid\" FROM \"user_account\"");
     // Declaring keep is a decision of its own, not the absence of one.
     database.identifier_case(dialect::identifier_case::keep);
     CHECK(database.query<event>().build_select() ==
           "SELECT \"UserId\" FROM \"User_Account\"");
-    database.identifier_case(dialect::identifier_case::lower);
+    database.identifier_case(dialect::identifier_case::upper);
     CHECK(database.query<event>().build_select() ==
-          "SELECT \"userid\" FROM \"user_account\"");
+          "SELECT \"USERID\" FROM \"USER_ACCOUNT\"");
     // Undeclaring returns to the answer this connection already read, without
     // asking the server again.
     opens = state.opens;
     database.identifier_case(std::nullopt);
     CHECK(database.query<event>().build_select() ==
-          "SELECT \"USERID\" FROM \"USER_ACCOUNT\"");
+          "SELECT \"userid\" FROM \"user_account\"");
   }
 
   // A lease that declares nothing does not inherit the policy the lease before
@@ -1160,6 +1160,19 @@ void test_the_servers_own_fold_answers_before_any_policy() {
     following.map<event>("User_Account").primary_key("UserId", &event::id);
     CHECK(!following.identifier_case());
     CHECK(following.query<event>().build_select() ==
+          "SELECT \"userid\" FROM \"user_account\"");
+  }
+  CHECK(state.opens == opens);
+  {
+    // The other direction is the same shape of answer on a connection of its
+    // own: an unquoted name lands upper-cased, so that is what a mapping that
+    // says nothing is emitted in.
+    recording_fixture upper_fixture;
+    upper_fixture.state->product = "Oracle";
+    orm oracle(upper_fixture.pool);
+    oracle.map<event>("User_Account").primary_key("UserId", &event::id);
+    CHECK(!oracle.identifier_case());
+    CHECK(oracle.query<event>().build_select() ==
           "SELECT \"USERID\" FROM \"USER_ACCOUNT\"");
   }
   CHECK(state.opens == opens);

@@ -3,9 +3,9 @@
 [English](README.md)
 
 现代 C++20 数据库访问层，核心是驱动中立的：连接串里的 scheme 选择 backend，
-API 本身不点任何一家的客户端名。自带两家：默认构建的 ODBC，以及由构建开关
-打开的 Oracle OCI。实体映射、成员指针查询构建、事务、连接池与异步都建在
-这层核心之上。
+API 本身不点任何一家的客户端名。自带三家：默认构建的 ODBC，以及由构建
+开关打开的 Oracle OCI 与 libpq。实体映射、成员指针查询构建、事务、连接池
+与异步都建在这层核心之上。
 
 权威 API 参考见 [docs/design.md](docs/design.md)。
 
@@ -49,10 +49,11 @@ API 本身不点任何一家的客户端名。自带两家：默认构建的 ODB
   标识符拼法另有一把部署级开关，`keep`（默认）/ `lower` / `upper`
 - **代码生成**：`uniorm-gen` 连活库读取 schema，或读一份建表脚本，生成实体
   struct + 注册函数（TOML 覆写类型/类名/跳过表）
-- **可插拔 backend**：连接串 scheme 选择后端（`odbc://...`、`oracle://...`；裸
-  ODBC 连接串保持向后兼容）。另一种写法是 `connection_spec`：scheme、target、
-  user、password 四件，交出去时不拼词，怎么拼由那一家 backend 说了算。目录读取
-  也是这份接口的一部分。
+- **可插拔 backend**：连接串 scheme 选择后端（`odbc://...`、`oracle://...`、
+  `postgresql://...`；裸 ODBC 连接串保持向后兼容）。另一种写法是
+  `connection_spec`：scheme、target、user、password 四件，交出去时不拼词，怎么
+  拼由那一家 backend 说了算。目录读取也是
+  这份接口的一部分。
 
 ## 要求
 
@@ -63,6 +64,7 @@ API 本身不点任何一家的客户端名。自带两家：默认构建的 ODB
 - Oracle Call Interface（Instant Client，或完整客户端的 SDK）——仅在
   `UNIORM_BACKEND_ORACLE_OCI=ON` 时需要；用 `OCI_ROOT` 或 `ORACLE_HOME`
   指到那棵树
+- libpq（`find_package(PostgreSQL)`）——仅在 `UNIORM_BACKEND_LIBPQ=ON` 时需要
 
 ## 构建
 
@@ -80,6 +82,7 @@ cmake --build build -j
 | `UNIORM_BUILD_TOOLS` | `ON` | 构建工具（`uniorm-gen`） |
 | `UNIORM_BACKEND_ODBC` | `ON` | 构建 ODBC backend 那一份 plugin（`libuniorm_odbc.so`）；关闭后只剩一个没有任何 backend 的核心库，此时 `UNIORM_BUILD_TOOLS=ON` 是配置错误 |
 | `UNIORM_BACKEND_ORACLE_OCI` | `OFF` | 构建 Oracle OCI backend（目标 `uniorm_oracle_oci`，装出去仍叫 `libuniorm_oracle`）；配置它的那台机器上要有 Oracle Call Interface |
+| `UNIORM_BACKEND_LIBPQ` | `OFF` | 构建 PostgreSQL backend（目标 `uniorm_libpq`，装出去仍叫 `libuniorm_postgresql`）；配置它的那台机器上要有 libpq |
 
 产物为动态库 `libuniorm.so`（头文件在 `include/uniorm/`），`VERSION` 为
 0.4.0，`SOVERSION` 取 major.minor（0.4）；每家启用的 backend 是自己的一份
@@ -225,12 +228,19 @@ if (auto const* id = uniorm::find_column(shape, "id")) {
 db.identifier_case(uniorm::dialect::identifier_case::upper);  // 默认不声明
 ```
 
-不声明时跟着服务器自己那家方言走：Oracle 把不加引号的名字折成大写，那里什么都不
-用声明；其余家原样发出声明的名字——把 `keep` 声明出来是一个决定，不是没有决定。
-`lower` 与 `upper` 只折 ASCII 字母。连接之后声明一次即可，`orm` 每次租到连接都会
-重贴上去。`validate()` 按同一个策略去问目录，落空的消息点名目录里那一侧的拼法：
+不声明时跟着服务器自己那家方言走：Oracle 把不加引号的名字折成大写，PostgreSQL
+折成小写，这两家什么都不用声明；其余家原样发出声明的名字——把 `keep` 声明出来
+是一个决定，不是没有决定。`lower` 与 `upper` 只折 ASCII 字母。连接之后声明一次
+即可，`orm` 每次租到连接都会重贴上去。折叠在哪条腿上够着这家服务器就在哪里发生，
+ODBC 与 libpq 一样：名字当年是带引号、大小写混着建出来的那套库，靠 `keep` 或逐名
+解析点名，默认折叠不会替它对上。`validate()` 按同一个策略去问目录，落空的
+消息点名目录里那一侧的拼法：
 
     table not found: USER_ACCOUNTS (only case differs from 'user_accounts')
+
+折叠发出的是折出来的拼法，不是声明的那一个：库里同时存在 `"Users"` 与 `"users"`
+两张表时，声明 `Users` 在 `lower` 之下读到的是小写那张，`validate()` 也说命中。
+要点名实际写下的那张，得用下面的逐名解析。
 
 一个大小写策略不能适配所有映射——MariaDB 可能将表名存成小写、列名保留大写。
 这时可在注册映射后显式逐名解析：
@@ -245,7 +255,8 @@ db.validate();
 `mapping_error`，所有映射一起安装结果，任意一个失败则全部保留原状。已解析映射
 使用实际名称，不再受 `identifier_case` 影响。PostgreSQL 要求当前数据库和显式
 schema；MySQL/MariaDB 要求 database 和空 schema。首版只支持普通表，后端不能保证
-精确元数据读取时明确报不支持。`clear_identifier_resolution()` 恢复原来的大小写
+精确元数据读取时明确报不支持——libpq 这一家还没接目录读取，这条腿上 `schema()`
+与 `validate()` 都是直接抛出。`clear_identifier_resolution()` 恢复原来的大小写
 策略，重连、断开也会清除结果。手写 SQL 不改写；动态表构建器不参与解析，继续
 使用连接的大小写策略。
 
@@ -451,12 +462,18 @@ ctest --test-dir build --output-on-failure
   那条判据（仅驱动管理器，无需 DSN）
 - **oracle_oci_unit_tests**：Oracle backend 自己那一层——占位符改写、它的类型表，
   以及连接串怎么切分（仅客户端库，无需服务器）
+- **libpq_unit_tests**：libpq backend 自己那一层——占位符改写、它的类型表，以及
+  连接串怎么切分（仅客户端库，无需服务器）
 - **integration_tests**：需要可达的 ODBC DSN，读取环境变量 `UNIORM_IT_DSN`、
   `UNIORM_IT_USER`、`UNIORM_IT_PWD`（三者均须设置）；任一未设置或连不上时以
   ctest SKIP 处理
 - **integration_tests_oracle**：同一份套件走 Oracle plugin，
   `UNIORM_IT_BACKEND=oracle`，target 按 `host[:port]/service` 读而不是按 DSN；
   读目录的那几个阶段自己报 skip
+- **integration_tests_postgresql**：同一份套件走 libpq plugin，
+  `UNIORM_IT_BACKEND=postgresql`，target 按 `host[:port]/dbname` 读而不是按
+  DSN；读目录的那几个阶段自己报 skip。丢掉已准备语句的那一段只在按名字持有它的
+  backend 上跑，其余腿报 skip
 - **perf_tests**（ctest 标签 `perf`）：批量插入吞吐与三条查询物化路径的对比，
   并附调用形式与 uniorm 一一对应的纯 ODBC 基线作为抽象开销参照；行数由
   `UNIORM_PERF_ROWS` 指定（默认 10000）；可用 `ctest -LE perf` 跳过
@@ -487,6 +504,7 @@ src/                  实现（构建为 libuniorm.so）
   orm_mapping.hpp     实体写入按什么匹配、赋哪些列
 backends/odbc/        ODBC backend（全仓库唯一出现 <sql.h> 之处）
 backends/oracle_oci/  Oracle OCI backend（唯一出现 <oci.h>，默认不构建）
+backends/libpq/       libpq backend（唯一出现 <libpq-fe.h>，默认不构建）
 cmake/                装出去的 find_package 所读的包配置模板
 tools/uniorm-gen      代码生成 CLI
 tests/unit            单元测试
@@ -506,16 +524,18 @@ psqlODBC 在 PostgreSQL 上全绿。
 v2 进行中，v1 之上另外落地的有：驱动中立的 backend 抽象——每家 backend 如今是
 一份独立 plugin，核心在运行时按 scheme 载它——自省成为公开契约（`schema()`）、
 标识符拼法成为部署策略、`connection_spec`、同一个契约之上的异步层，以及按同一
-个契约长出来的第二家 backend（Oracle OCI）。
+个契约长出来的另外两家 backend（Oracle OCI、libpq）。
 
-CI 是四支作业定义、六个实例：`core`、`core-windows` 与 `oracle-oci` 各自一支，
-`driver` 带三条腿，每条拿自家的连接器连自家会用的服务端。六个实例还各自把每个
-安装头单独编成一个翻译单元，公共头若要靠邻居先 include 才过得去，红的是这里而
-不是消费者的工程；任何一条测试被跳过都会让一支腿红，所以"五条全过"意味着确实连
-上了服务端。六个实例在 runner 上已全绿。
+CI 是五支作业定义、七个实例：`core`、`core-windows`、`oracle-oci` 与 `libpq`
+各自一支，`driver` 带三条腿，每条拿自家的连接器连自家会用的服务端。每个实例还
+各自把每个安装头单独编成一个翻译单元，公共头若要靠邻居先 include 才过得去，红
+的是这里而不是消费者的工程；任何一条测试被跳过都会让一支腿红，所以一支腿绿就
+意味着确实连上了服务端。libpq 之外的那六个实例在 runner 上已全绿；libpq 这一支
+是在手边复放过一遍活容器，runner 自己那一半——apt 的 libpq、镜像拉取、健康门——
+还没验过。
 
-未结：libpq backend，以及 OCI 那家还没接上的原生数组绑定与目录读取，见设计文档
-§5.4 与 §9。
+未结：OCI 那家还没接上的原生数组绑定，以及两家原生 backend 都欠着的目录读取，
+见设计文档 §5.4 与 §9。
 
 ## 许可证
 

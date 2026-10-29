@@ -4,9 +4,9 @@
 
 A C++20 database access layer with a driver-neutral core: the scheme in a
 connection string selects the backend, and the API itself names no vendor's
-client. Two backends ship: ODBC, built by default, and Oracle OCI, behind a
-build option. Entity mapping, a member-pointer query builder, transactions,
-pooling, and async sit on top of that core.
+client. Three backends ship: ODBC, built by default, with Oracle OCI and
+libpq behind build options. Entity mapping, a member-pointer query builder,
+transactions, pooling, and async sit on top of that core.
 
 The full API reference is [docs/design.md](docs/design.md).
 
@@ -61,10 +61,10 @@ The full API reference is [docs/design.md](docs/design.md).
   generates entity structs plus registration functions (TOML overrides for
   types, class names, skipped tables)
 - **Pluggable backends** — the connection-string scheme selects the backend
-  (`odbc://...`, `oracle://...`, or a bare ODBC string for compatibility). A
-  `connection_spec` — scheme, target, user, password — is the alternative
-  spelling, handed to that backend unfilled so it writes its own dialect's
-  words. Catalog reads are part of the same interface.
+  (`odbc://...`, `oracle://...`, `postgresql://...`, or a bare ODBC string for
+  compatibility). A `connection_spec` — scheme, target, user, password — is the
+  alternative spelling, handed to that backend unfilled so it writes its own
+  dialect's words. Catalog reads are part of the same interface.
 
 ## Requirements
 
@@ -74,6 +74,7 @@ The full API reference is [docs/design.md](docs/design.md).
   only while `UNIORM_BACKEND_ODBC=ON`
 - Oracle Call Interface (an Instant Client, or a full client's SDK), only while
   `UNIORM_BACKEND_ORACLE_OCI=ON`; `OCI_ROOT` or `ORACLE_HOME` points at the tree
+- libpq (`find_package(PostgreSQL)`), only while `UNIORM_BACKEND_LIBPQ=ON`
 
 ## Building
 
@@ -89,6 +90,7 @@ cmake --build build -j
 | `UNIORM_BUILD_TOOLS` | `ON` | Build tools (`uniorm-gen`) |
 | `UNIORM_BACKEND_ODBC` | `ON` | Build the ODBC backend plugin (`libuniorm_odbc.so`); off leaves a core-only library with no backend, and `UNIORM_BUILD_TOOLS=ON` is then a configure error |
 | `UNIORM_BACKEND_ORACLE_OCI` | `OFF` | Build the Oracle OCI backend (target `uniorm_oracle_oci`, loaded as `libuniorm_oracle`); needs Oracle Call Interface on the machine configuring it |
+| `UNIORM_BACKEND_LIBPQ` | `OFF` | Build the PostgreSQL backend (target `uniorm_libpq`, loaded as `libuniorm_postgresql`); needs libpq on the machine configuring it |
 
 The product is a shared library, `libuniorm.so` (headers in
 `include/uniorm/`), `VERSION` 0.4.0 and `SOVERSION` 0.4. Each enabled backend
@@ -242,14 +244,22 @@ db.identifier_case(uniorm::dialect::identifier_case::upper);  // default: unset
 ```
 
 Left unset, the SQL follows the server's own dialect: Oracle folds unquoted
-names to upper case and needs nothing declared, every other server keeps
-declared names verbatim — declaring `keep` is a decision of its own, not the
-absence of one. `lower` and `upper` fold ASCII letters and nothing else. Set it
-once after connecting; the `orm` re-applies it to every connection it leases.
-`validate()` asks the catalog under the same policy, and a miss names the
-spelling the catalog has:
+names to upper case and PostgreSQL folds them to lower, so neither needs a
+declaration; every other server keeps declared names verbatim — declaring
+`keep` is a decision of its own, not the absence of one. `lower` and `upper`
+fold ASCII letters and nothing else. Set it once after connecting; the `orm`
+re-applies it to every connection it leases. The fold runs wherever a backend
+reaches that server, over ODBC as well as over libpq: a schema whose names were
+created quoted and mixed-case is answered by `keep` or by resolution, not by the
+default. `validate()` asks the catalog
+under the same policy, and a miss names the spelling the catalog has:
 
     table not found: USER_ACCOUNTS (only case differs from 'user_accounts')
+
+A fold emits the spelling it produces, not the one declared: where a schema
+holds both `"Users"` and `"users"`, a declared `Users` reads the lower-cased
+table under `lower`, and `validate()` calls that a hit. Naming the table that
+was actually written takes resolution, below.
 
 A single fold cannot reconcile every mapping — MariaDB may store tables
 lowercase but preserve uppercase column spellings. Resolve each name explicitly
@@ -266,7 +276,9 @@ missing or ambiguous name throws `mapping_error`, and all mappings install
 together or none change. Resolved mappings use the actual quoted names and
 ignore `identifier_case`. PostgreSQL requires its current database and an
 explicit schema; MySQL/MariaDB require a database and an empty schema. Only
-ordinary tables are supported, and unsupported backends fail explicitly.
+ordinary tables are supported, and unsupported backends fail explicitly — the
+libpq backend answers no catalog reads, so on that leg both `schema()` and
+`validate()` raise.
 `clear_identifier_resolution()` restores normal folding; connect and disconnect
 clear results too. Hand-written SQL is never rewritten, and dynamic table
 builders stay on the connection's spelling policy.
@@ -489,12 +501,19 @@ ctest --test-dir build --output-on-failure
   the catalog's name re-filter (driver manager only, no DSN required)
 - **oracle_oci_unit_tests** — the placeholder rewrite, Oracle's type table,
   connect-string splitting (client library only, no server required)
+- **libpq_unit_tests** — the placeholder rewrite, PostgreSQL's type table,
+  connect-string splitting (client library only, no server required)
 - **integration_tests** — needs a reachable ODBC DSN; reads `UNIORM_IT_DSN`,
   `UNIORM_IT_USER`, `UNIORM_IT_PWD` (all required), and ctest SKIPs when any is
   unset or the database is unreachable
 - **integration_tests_oracle** — the same suite over the Oracle plugin, with
   `UNIORM_IT_BACKEND=oracle` and the target read as `host[:port]/service`
   instead of a DSN; its catalog stages report themselves skipped
+- **integration_tests_postgresql** — the same suite over the libpq plugin, with
+  `UNIORM_IT_BACKEND=postgresql` and the target read as `host[:port]/dbname`
+  instead of a DSN; its catalog stages report themselves skipped, and the stage
+  that drops a prepared statement reports itself skipped on the legs that do
+  not hold one by name
 - **perf_tests** (label `perf`) — batch-insert throughput and the three
   materialization paths against a raw-ODBC baseline; row count via
   `UNIORM_PERF_ROWS` (default 10000); skip with `ctest -LE perf`
@@ -525,6 +544,7 @@ src/                  implementation (built into libuniorm.so)
   orm_mapping.hpp     what an entity write matches on and assigns
 backends/odbc/        ODBC backend (the only <sql.h> in the tree)
 backends/oracle_oci/  Oracle OCI backend (the only <oci.h>; built on request)
+backends/libpq/       libpq backend (the only <libpq-fe.h>; built on request)
 cmake/                the package config template find_package reads
 tools/uniorm-gen      code-generation CLI
 tests/unit            unit tests
@@ -545,19 +565,22 @@ psqlODBC.
 v2 is underway, with the pieces landed on top of v1: the driver-neutral backend
 abstraction — each backend now a separate plugin the core loads by scheme at
 run time — introspection as a public contract, identifier spelling as a
-deployment policy, `connection_spec`, the async layer, and a second backend
-(Oracle OCI) built on that same contract.
+deployment policy, `connection_spec`, the async layer, and two more backends
+(Oracle OCI, libpq) built on that same contract.
 
-CI runs four job definitions, six instances: `core`, `core-windows` and
-`oracle-oci` stand alone, while `driver` carries three legs, each pairing a
-connector with the server it is used against. Every instance also compiles one
-translation unit per installed header, so a public header that only parses
-behind a neighbour's include fails here instead of in a consumer's project, and
-a leg whose tests skip fails, so a green leg means the server was really
-reached. All six are green on the runner.
+CI runs five job definitions, seven instances: `core`, `core-windows`,
+`oracle-oci` and `libpq` stand alone, while `driver` carries three legs, each
+pairing a connector with the server it is used against. Every instance also
+compiles one translation unit per installed header, so a public header that
+only parses behind a neighbour's include fails here instead of in a consumer's
+project, and a leg whose tests skip fails, so a green leg means the server was
+really reached. The six written down before the libpq leg are green on the
+runner; that leg is green against a live container replayed by hand, and the
+runner's own half of it — apt's libpq, the image pull, the health gate — is
+unconfirmed.
 
-Open: a libpq backend, and in the OCI one the native array binding and the
-catalog reads it has yet to answer — see design doc §5.4 and §9.
+Open: the native array binding in the OCI backend, and in both native backends
+the catalog reads they have yet to answer — see design doc §5.4 and §9.
 
 ## License
 

@@ -555,7 +555,11 @@ jobs:
       - name: Test
         run: |
           set -o pipefail
-          ctest --test-dir build --output-on-failure -V | tee ctest.log
+          # The perf legs carry the same label they do on the driver-manager
+          # jobs: a benchmark nobody asserts on has no business holding a
+          # database job open.
+          ctest --test-dir build -LE perf --output-on-failure -V |
+            tee ctest.log
           # The same rule the matrix legs keep: 77 is a skip and ctest calls
           # that a pass, so a leg that never reached its server fails here.
           if grep -q 'Skipped' ctest.log; then
@@ -651,7 +655,11 @@ jobs:
       - name: Test
         run: |
           set -o pipefail
-          ctest --test-dir build --output-on-failure -V | tee ctest.log
+          # The perf legs carry the same label they do on the driver-manager
+          # jobs: a benchmark nobody asserts on has no business holding a
+          # database job open.
+          ctest --test-dir build -LE perf --output-on-failure -V |
+            tee ctest.log
           # The same rule the other database legs keep: 77 is a skip and ctest
           # calls that a pass, so a leg that never reached its server is a
           # failure here rather than a green check.

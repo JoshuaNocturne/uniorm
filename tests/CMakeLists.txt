@@ -104,6 +104,8 @@ if(UNIORM_BACKEND_ODBC)
 
     add_executable(uniorm_perf_tests
         perf/test_perf.cpp
+        perf/perf_odbc_raw.cpp
+        perf/perf_common.cpp
     )
     if(WIN32)
         target_compile_options(uniorm_perf_tests PRIVATE

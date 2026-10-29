@@ -514,9 +514,18 @@ ctest --test-dir build --output-on-failure
   instead of a DSN; its catalog stages report themselves skipped, and the stage
   that drops a prepared statement reports itself skipped on the legs that do
   not hold one by name
-- **perf_tests** (label `perf`) — batch-insert throughput and the three
-  materialization paths against a raw-ODBC baseline; row count via
-  `UNIORM_PERF_ROWS` (default 10000); skip with `ctest -LE perf`
+- **perf_tests** (label `perf`) — the ODBC leg: batch writes and the three
+  materialization paths beside a hand-called ODBC baseline paired with them
+  case by case; row count via `UNIORM_PERF_ROWS` (default 10000); skip with
+  `ctest -LE perf`
+- **perf_tests_oracle** — the same uniorm cases over the Oracle plugin beside
+  OCI called by hand; the shapes that plugin does not ask a client for (array
+  DML, row prefetch) are reported on their own, and the target is read as
+  `host[:port]/service`
+- **perf_tests_libpq** — the same uniorm cases over the libpq plugin beside
+  libpq called by hand, where a batch is one prepared statement per row; the
+  one statement carrying a thousand rows' VALUES lists stands on its own, and
+  the target is read as `host[:port]/dbname`
 - **gen_e2e_tests** — generated code compared with a checked-in golden header,
   which is itself compiled, registered and `validate(strict)`ed; needs a DSN
 - **install_smoke** — `cmake --install` into a throwaway prefix, then an outside

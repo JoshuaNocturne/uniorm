@@ -474,9 +474,15 @@ ctest --test-dir build --output-on-failure
   `UNIORM_IT_BACKEND=postgresql`，target 按 `host[:port]/dbname` 读而不是按
   DSN；读目录的那几个阶段自己报 skip。丢掉已准备语句的那一段只在按名字持有它的
   backend 上跑，其余腿报 skip
-- **perf_tests**（ctest 标签 `perf`）：批量插入吞吐与三条查询物化路径的对比，
-  并附调用形式与 uniorm 一一对应的纯 ODBC 基线作为抽象开销参照；行数由
+- **perf_tests**（ctest 标签 `perf`）：ODBC 这条腿，批量写与三条查询物化
+  路径，旁边是调用形式逐项配对的纯 ODBC 基线，用作抽象开销参照；行数由
   `UNIORM_PERF_ROWS` 指定（默认 10000）；可用 `ctest -LE perf` 跳过
+- **perf_tests_oracle**：同一份 uniorm 用例走 Oracle plugin，旁边是手工
+  调用 OCI 的基线；plugin 不向 client 要的那几种形状（数组 DML、按行
+  prefetch）单独成行；target 按 `host[:port]/service` 读
+- **perf_tests_libpq**：同一份 uniorm 用例走 libpq plugin，旁边是手工调用
+  libpq 的基线——那里的批量就是一行一条 prepared statement；一条语句带
+  一千行 VALUES 列表那种写法单独成行；target 按 `host[:port]/dbname` 读
 - **gen_e2e_tests**：生成物与检入的 golden 头文件比对（注释不比），golden 本身
   经编译、注册并 `validate(strict)`；需可达 DSN
 - **install_smoke**：`cmake --install` 装进构建树下的临时 prefix，再用一个外部

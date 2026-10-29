@@ -2118,7 +2118,9 @@ commit/rollback/析构回滚、批量插入（含空 optional 写 NULL、1500 �
   id，所以钉的是库最后装着四行，而不是两者怎样交错。集成用例是一份二进制跑三条
   腿，这七条因此每条腿都跑；后续按库加条件
   标签覆盖方言与类型怪癖；
-- **性能基准**（已实现，ctest 标签 `perf`，`tests/perf/test_perf.cpp`）：
+- **性能基准**（已实现，ctest 标签 `perf`，`tests/perf/`：共享的 harness
+  `perf_common.{hpp,cpp}` 装 uniorm 那一半，每条腿另有一个 main 与一个
+  原生基线文件）：
   连不上库时 SKIP；行数由 `UNIORM_PERF_ROWS` 指定（默认 10000）。
   覆盖批量 insert/update/delete 吞吐，以及三条查询物化路径的对比：实体直绑
   （`query<T>::all()`）、聚合投影（`db.query<Row>(sql)`，含带字符串与纯 POD
@@ -2129,12 +2131,17 @@ commit/rollback/析构回滚、批量插入（含空 optional 写 NULL、1500 �
   为 `db_type` 表示的域类型，故两者之差即扩展点的开销；该 converter 读侧直接搬走暂存的
   缓冲区，写侧仍拷一次（实体归调用方，不能被消费），故差值是扩展点剩下的净开销。
   实体读回逐行核对 `from_db` 的结果，避免"只测了行数、解码默默失败"的用例。
-  另含**纯 ODBC 基线**（不经 uniorm，直接操作句柄，只保留与 uniorm
-  同名同形的用例）：单行 `VALUES (?, ?, ?, ?)` + `SQL_ATTR_PARAMSET_SIZE` +
-  列方向量数组 + 逐值 `SQLBindParameter` 的批量插入/更新/删除（与 uniorm 的
-  数组绑定同构，不存在多行 VALUES 或占位符上限分批）、`SQLBindCol` + `SQLFetch`
-  全表扫描（对应实体直绑与动态行路径）、单行 `LIMIT 1`（对应 `one()`），
-  用于衡量 uniorm 抽象层的额外开销
+  每条腿另含**它自己的原生基线**（不经 uniorm，直接调 client）：同名用例
+  即配对，比值是原生耗时除以 uniorm 耗时；只有原生一侧办得到的形状，在表里
+  uniorm 那栏留空。ODBC 那半是单行 `VALUES (?, ?, ?, ?)` +
+  `SQL_ATTR_PARAMSET_SIZE` + 列方向量数组 + 逐值 `SQLBindParameter` 的批量写
+  （与 uniorm 在该 backend 上的数组绑定同构，不存在多行 VALUES 或占位符上限
+  分批），加 `SQLBindCol` + `SQLFetch` 的全表扫描（对应实体直绑路径）与单行
+  `LIMIT 1`（对应 `one()`）；OCI 那半是逐行 `OCIBindByPos` +
+  `OCIStmtExecute`（plugin 的批量就是这个形状），plugin 没用上的原生形状
+  ——数组 DML、`OCI_ATTR_PREFETCH_ROWS`——单独成行；libpq 那半是一行一条
+  `PQexecPrepared`（libpq 不绑数组，批量只能是这个形状），一条语句带一千行
+  VALUES 列表那种写法单独成行。用来衡量 uniorm 抽象层的额外开销
 - **`uniorm-gen` 端到端**（已实现，`gen_e2e_tests`，连不上库时 SKIP，两条不开
   连接的腿在它前头各自跑完；连着库的那条按两种形状各跑一遍——调用方写好的串，
   与交出去不拼词的四件套，同一份 golden 判两次）：

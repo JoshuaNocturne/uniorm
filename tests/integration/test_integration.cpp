@@ -129,6 +129,9 @@ struct target_face {
   // Whether this backend answers catalog reads at all; probed, not declared,
   // so a backend that gains introspection picks these stages up by itself.
   bool answers_catalog = false;
+  // Whether this backend holds its parses on the session under a name of its
+  // own, which is the one thing a server can be asked to give back.
+  bool holds_its_parses_by_name = false;
   dialect server_dialect;      // detected from the banner this run read
 };
 
@@ -699,7 +702,20 @@ void test_identifier_spelling(std::string_view conn_string) {
     .primary_key(id_column, &CaseUser::id)
     .column(name_column, &CaseUser::name);
 
-  // `keep` has to miss on every server, and miss on the table name.
+  // A server that folds the names it is given answers the undeclared mapping
+  // as well: the policy comes off the banner, so nothing has to be declared
+  // for the spelling this server stores to be the one the mapping writes.
+  if (the_target.server_dialect.identifiers !=
+      dialect::identifier_case::keep) {
+    db.validate();
+    CHECK(db.query<CaseUser>().count() == 1);
+  }
+
+  // `keep` has to miss on every server, and miss on the table name. Asked of
+  // the policy that folds nothing rather than of the dialect's default, which
+  // on a server that folds its own names would carry this one onto the stored
+  // spelling and hit.
+  db.identifier_case(dialect::identifier_case::keep);
   std::string miss;
   try {
     db.validate();
@@ -814,6 +830,19 @@ void test_identifier_case_twins(std::string_view conn_string) {
   auto exact = db.query<CaseUser>().one();
   CHECK(exact && exact->id == 11 && exact->name == "exact");
 
+  // The other reading of the same two names, without a catalog in the way: a
+  // fold asks for the twin it lands on, columns and all, so where a schema
+  // holds both spellings a policy is the wrong tool and resolution above is
+  // the right one.
+  db.clear_identifier_resolution();
+  db.identifier_case(dialect::identifier_case::lower);
+  auto folded = db.query<CaseUser>().one();
+  CHECK(folded && folded->id == 22 && folded->name == "lower");
+  db.identifier_case(dialect::identifier_case::keep);
+  CHECK(db.query<CaseUser>().build_select().find(
+    dialect.quote_exact_identifier(mixed_name)) != std::string::npos);
+  db.identifier_case(std::nullopt);
+
   db.execute_update("CREATE TEMP TABLE " +
     dialect.quote_exact_identifier(mixed_name) +
     " (\"ID\" BIGINT, \"NAME\" VARCHAR(64))");
@@ -888,12 +917,17 @@ void test_query_builder(orm& db) {
   CHECK(sql.find(d.quote_identifier("id") + " = ?") != std::string::npos);
 
   // The spelling policy rides the same emission point, so one mapping can
-  // serve a server that stores its names the other way.
+  // serve a server that stores its names the other way. The expectation is
+  // folded by that policy rather than by the banner's own answer, which on a
+  // server that folds is a different one.
   db.identifier_case(dialect::identifier_case::upper);
+  dialect raised_dialect = d;
+  raised_dialect.identifiers = dialect::identifier_case::upper;
   std::string raised = db.query<User>()
                          .where(eq(&User::id, std::int64_t{ 1 }))
                          .build_select();
-  CHECK(raised.find(d.quote_identifier("UNIORM_IT_USER")) != std::string::npos);
+  CHECK(raised.find(
+    raised_dialect.quote_identifier("UNIORM_IT_USER")) != std::string::npos);
   // What a fold removes is the declared spelling, not the folded one: on a
   // server whose dialect already folds, the two are the same text.
   std::string const declared_spelling =
@@ -1321,6 +1355,30 @@ void test_statement_cache(orm& db) {
   CHECK(db.query<User>().all().size() == 3);
   CHECK(db.statement_cache_hits() == hits + 1);
   CHECK(db.statement_cache_size() > 0);
+}
+
+// A parse the session made can be gone while the statement still counts on it:
+// the name is this plugin's own, and the answer that says the server holds no
+// such name can only be read by making the parse again. DEALLOCATE is how a
+// run takes one away on purpose.
+void test_a_dropped_parse_is_made_again(orm& db) {
+  if (!the_target.holds_its_parses_by_name) {
+    skip_reason = "this backend holds no parse for the server to give back";
+    return;
+  }
+  char const* sql = "SELECT id, name FROM uniorm_it_user ORDER BY id";
+  {
+    result_set rs = db.execute(sql);
+    CHECK(rs.next());
+  }  // the cache keeps the parse the server is about to lose
+  db.execute_update("DEALLOCATE ALL");
+  std::size_t read = 0;
+  result_set again = db.execute(sql);
+  while (again.next()) {
+    ++read;
+  }
+  CHECK(read == 3);
+  CHECK(db.statement_cache_hits() > 0);
 }
 
 void test_error_reporting(orm& db) {
@@ -2224,6 +2282,17 @@ int main() {
     the_target.integer_type = "NUMBER(19)";
     the_target.wide_decimal = "DECIMAL(38,30)";
     the_target.pads_decimal_text = false;
+  } else if (scheme == "postgresql") {
+    the_target.connect_string = "postgresql://" + the_target.user + ":" +
+      the_target.password + "@" + the_target.dsn;
+    // This server takes BIGINT for a 64-bit integral column, and an exact
+    // number holds 38 digits of precision. Its own conversion of a numeric
+    // pads the value to the column's declared scale.
+    the_target.integer_type = "BIGINT";
+    the_target.wide_decimal = "DECIMAL(38,30)";
+    // This plugin prepares by a name of its own on the session it opened; a
+    // driver that hides that work has no parse for this run to drop.
+    the_target.holds_its_parses_by_name = true;
   } else {
     std::printf("skip: unknown UNIORM_IT_BACKEND '%s'\n", scheme.c_str());
     return 77;
@@ -2280,6 +2349,8 @@ int main() {
     guarded("test_composite_key_and_where_fields",
       [&] { test_composite_key_and_where_fields(db); });
     guarded("test_statement_cache", [&] { test_statement_cache(db); });
+    guarded("test_a_dropped_parse_is_made_again",
+      [&] { test_a_dropped_parse_is_made_again(db); });
     guarded("test_error_reporting", [&] { test_error_reporting(db); });
     guarded("test_pool", [&] { test_pool(conn_string); });
     guarded("test_pool_maintenance",

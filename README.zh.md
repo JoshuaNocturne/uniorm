@@ -479,7 +479,8 @@ ctest --test-dir build --output-on-failure
   `UNIORM_PERF_ROWS` 指定（默认 10000）；可用 `ctest -LE perf` 跳过
 - **perf_tests_oracle**：同一份 uniorm 用例走 Oracle plugin，旁边是手工
   调用 OCI 的基线；plugin 不向 client 要的那几种形状（数组 DML、按行
-  prefetch）单独成行；target 按 `host[:port]/service` 读
+  prefetch）单独成行，前提是这一家 client 收数组绑定——不收时那三行自己
+  问一次就退场；target 按 `host[:port]/service` 读
 - **perf_tests_libpq**：同一份 uniorm 用例走 libpq plugin，旁边是手工调用
   libpq 的基线——那里的批量就是一行一条 prepared statement；一条语句带
   一千行 VALUES 列表那种写法单独成行；target 按 `host[:port]/dbname` 读

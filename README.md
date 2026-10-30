@@ -520,8 +520,8 @@ ctest --test-dir build --output-on-failure
   `ctest -LE perf`
 - **perf_tests_oracle** — the same uniorm cases over the Oracle plugin beside
   OCI called by hand; the shapes that plugin does not ask a client for (array
-  DML, row prefetch) are reported on their own, and the target is read as
-  `host[:port]/service`
+  DML, row prefetch) are reported on their own, where the client accepts an
+  array bind at all, and the target is read as `host[:port]/service`
 - **perf_tests_libpq** — the same uniorm cases over the libpq plugin beside
   libpq called by hand, where a batch is one prepared statement per row; the
   one statement carrying a thousand rows' VALUES lists stands on its own, and

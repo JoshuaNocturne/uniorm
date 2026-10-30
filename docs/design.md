@@ -2139,7 +2139,8 @@ commit/rollback/析构回滚、批量插入（含空 optional 写 NULL、1500 �
   分批），加 `SQLBindCol` + `SQLFetch` 的全表扫描（对应实体直绑路径）与单行
   `LIMIT 1`（对应 `one()`）；OCI 那半是逐行 `OCIBindByPos` +
   `OCIStmtExecute`（plugin 的批量就是这个形状），plugin 没用上的原生形状
-  ——数组 DML、`OCI_ATTR_PREFETCH_ROWS`——单独成行；libpq 那半是一行一条
+  ——数组 DML、`OCI_ATTR_PREFETCH_ROWS`——单独成行，其中数组 DML 只在
+  client 收数组绑定的地方出现；libpq 那半是一行一条
   `PQexecPrepared`（libpq 不绑数组，批量只能是这个形状），一条语句带一千行
   VALUES 列表那种写法单独成行。用来衡量 uniorm 抽象层的额外开销
 - **`uniorm-gen` 端到端**（已实现，`gen_e2e_tests`，连不上库时 SKIP，两条不开

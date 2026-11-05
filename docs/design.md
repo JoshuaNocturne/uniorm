@@ -720,8 +720,9 @@ std::size_t r = db.remove(people);   // 同上；无键列可推断且未给 whe
   由外层决定提交还是回滚
 - 空容器直接返回 0，不取语句；`std::optional` 空值写 indicator =
   `backend::null_indicator`（行式通道把整段 indicator 预置为 NULL，只覆写非空行）
-- 行数语义两条通道不同：列式 insert 统计**提交**的行数，行式路径累加
-  `affected_rows()`
+- 行数语义按写的人分，不按通道分：`insert()` 两条通道都统计**提交**的行数——数组
+  插入没有"没命中"这一说，驱动报回来的行数在这里没有信息量，因此它的分批粒度不归
+  `array_rowcount_totals` 管；`update()` / `remove()` 累加 `affected_rows()`
 - `update()` / `remove()` 返回的正是那个累加值，而数组绑定时它是**驱动**给的：
   psqlODBC `16.00` 把每组参数都执行了，`SQLRowCount` 却停在其中一组的行数，两支
   MySQL 线连接器报的是整组的总数（5 组全命中：`1` 对 `5`；一组不命中：`1` 对 `4`），
@@ -730,7 +731,11 @@ std::size_t r = db.remove(people);   // 同上；无键列可推断且未给 whe
   核心随即把这两处累加受累行数的批量写——`update()` 与 `remove()`——的分批粒度
   收成 1，两条写通道都受这个粒度管。多付的只是客户端的 execute 次数——服务端那边
   MariaDB 的连接器本来就把 5 组压成一条命令、Connector/ODBC 本来就发 5 条，逐组与
-  整组在两者上收到的命令数一样。列式 insert 数的是绑定的行数，不受此影响
+  整组在两者上收到的命令数一样。insert 两条通道数的都是绑定的行数，不受此影响
+- "数提交的行数"依赖一个前提：**某一行失败必须抛**。ODBC 的 `execute()` 只把
+  `SQL_ERROR` 当失败（`SQL_SUCCESS_WITH_INFO` 算成功），所以若某家驱动只把行级
+  失败报成 info，`insert()` 的总数会偏大。这一家在此测不到（此机无可达的
+  MySQL 系服务端），也仍未读它的逐组状态
 - 因此 `column_meta` 除 `write`（populate）/`read`（行式值提取）/`make_binding`
   （查询直绑）外，还带列式通道要用的 `write_to_param_buffer` 与 `get_string_size`
 
@@ -1751,14 +1756,18 @@ PQputCopyData(pg, ...);                     // 用户自行驱动原生操作
 
 1. **Oracle OCI**——**已落地**：`backends/oracle_oci/`，scheme `"oracle"`，装成
    `libuniorm_oracle.so`，CI 为它单开一支作业（§8）。它接四件套，也只实现
-   `open(std::string_view)` 那条原语；两件 OCI 专有特性还没接——原生数组绑定
-   （§9 第 3 条剩下的那一半）与目录读取，后者让它对 `orm::schema()` 报
-   `capability_not_supported`
+   `open(std::string_view)` 那条原语。OCI 那件专有的特性已经落在批量这条路上：
+   `run_batch()` 把各行同列的值铺成一条列方向的缓冲，步长取元素大小，行数交给
+   `OCIStmtExecute` 的迭代次数。把行数写在绑定上的那一种形状（`maxarr_len` 非零
+   再加 `OCIBindArrayOfStruct`）在 21.13 client 与 26ai Free 服务端这一对上答
+   ORA-03101，插、改、删同拒，故插件不走它。剩下没接的是目录读取，它让
+   `orm::schema()` 报 `capability_not_supported`
 2. **libpq**（PostgreSQL）——**已落地**：`backends/libpq/`，scheme `"postgresql"`，
    装成 `libuniorm_postgresql.so`，CI 为它单开一支作业（§8）。两条 `open` 原语都接：
    整串按 libpq 自己的 conninfo 语法交给 `PQconnectdb`，四件套拼成它命名各值的关键词。
-   它交出的两个能力标志也都是 `false`——一批就是逐行 execute 再相加，走的正是核心
-   那条更慢的退路。
+   列式通道它不交——一批行从行式通道进来，`run_batch()` 仍旧一行一条 execute；
+   `array_rowcount_totals` 交 `true`，因为它把每行的行数加总成一次答复，
+   与 OCI 那家同是一件事。
 
    值在两个方向上都是文本：绑出去时按列的形状写（`DATE` 不带时钟、`TIME` 不带日），
    读回来时按 `PQftype` 报的形状拆。所以一连上就先钉住两件会话默认——
@@ -1779,8 +1788,11 @@ PQputCopyData(pg, ...);                     // 用户自行驱动原生操作
 libpq 把它拼成空格分隔的 conninfo，OCI 连串都没有——用户名与口令是
 `OCISessionBegin` 各自的实参。落地的那家仍只需实现 `open(std::string_view)`
 那条原语，四件套按需接。能力清单不为特性集预留标志位：
-一家 backend 落地后，只有核心真需要分岔的地方才进清单（§5.2）——OCI 与 libpq 两家交出的
-两个标志如今都是 `false`，走的正是各自那条更慢的退路。
+一家 backend 落地后，只有核心真需要分岔的地方才进清单（§5.2）——两家都还不交列式通道，
+一批行都从行式通道进来；进来之后两家各自安排：libpq 仍旧一行一条 execute，OCI 把
+一批重铺成列方向的一条缓冲、一次 execute 发出去。两家的 `array_rowcount_totals`
+也都是 `true`——一次批量交回的行数，要么是服务端给整批的那一个总数，要么是它们
+自己逐行加总出来的，两个问题同一个答案。
 
 ## 6. uniorm-gen 代码生成工具
 
@@ -2137,10 +2149,12 @@ commit/rollback/析构回滚、批量插入（含空 optional 写 NULL、1500 �
   `SQL_ATTR_PARAMSET_SIZE` + 列方向量数组 + 逐值 `SQLBindParameter` 的批量写
   （与 uniorm 在该 backend 上的数组绑定同构，不存在多行 VALUES 或占位符上限
   分批），加 `SQLBindCol` + `SQLFetch` 的全表扫描（对应实体直绑路径）与单行
-  `LIMIT 1`（对应 `one()`）；OCI 那半是逐行 `OCIBindByPos` +
-  `OCIStmtExecute`（plugin 的批量就是这个形状），plugin 没用上的原生形状
-  ——数组 DML、`OCI_ATTR_PREFETCH_ROWS`——单独成行，其中数组 DML 只在
-  client 收数组绑定的地方出现；libpq 那半是一行一条
+  `LIMIT 1`（对应 `one()`）；OCI 那半逐行的 `OCIBindByPos` + `OCIStmtExecute`
+  与数组行（列方向的一条缓冲 + 一次 `OCIStmtExecute(iters=N)`）各成一行——后者
+  正是 plugin 批量现在的形状，前者正是它铺不回去时的退路；plugin 没用上的原生形状
+  只剩 `OCI_ATTR_PREFETCH_ROWS` 单独成行。把行数写在绑定上的那一种数组 DML
+  （`maxarr_len` 非零加 `OCIBindArrayOfStruct`）在 21.13 client 对 26ai Free
+  服务端这一对上答 ORA-03101，插、改、删同拒，故不入表；libpq 那半是一行一条
   `PQexecPrepared`（libpq 不绑数组，批量只能是这个形状），一条语句带一千行
   VALUES 列表那种写法单独成行。用来衡量 uniorm 抽象层的额外开销
 - **`uniorm-gen` 端到端**（已实现，`gen_e2e_tests`，连不上库时 SKIP，两条不开
@@ -2443,7 +2457,8 @@ commit/rollback/析构回滚、批量插入（含空 optional 写 NULL、1500 �
 2. Unit of Work / 脏检查 / 级联
 3. ~~批量操作~~ **已完成**：`SQL_ATTR_PARAMSET_SIZE` 数组绑定 + 块取行，
    列式（`batch_writer_iface`）与行式（`bind_batch_params`）双通道（见 §4.5.2）。
-   **待做**：OCI backend 的原生数组绑定
+   OCI 那家的批量也已在一次 execute 里（§5.4 第 1 条），只是它认的形状是迭次
+   而非 `maxarr_len`
 4. ~~异步包装层（libpq backend 可用原生异步）~~ **第一版已完成**：`async.hpp`
    那一层（§4.11）就是这一条，只是它站在同步契约之上做仿真，一家 backend 也不点
    ——ODBC 侧实测没有可用的原生异步（§4.1），先建在接口上等于给每家加一份它兑现

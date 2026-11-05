@@ -41,7 +41,8 @@ The full API reference is [docs/design.md](docs/design.md).
   `cpp_type` override swaps in `decimal_t`
 - **Batch writes** — `db.insert(rows)` and batch `update` / `remove`: one row
   of placeholders sent as an array of parameter sets
-  (`SQL_ATTR_PARAMSET_SIZE` on ODBC), chunked by `paramset_size`, wrapped in a
+  (`SQL_ATTR_PARAMSET_SIZE` on ODBC, the iteration count of one
+  `OCIStmtExecute` on OCI), chunked by `paramset_size`, wrapped in a
   transaction when the connection autocommits
 - **RAII transactions** — automatic rollback on destruction
 - **Async** (`async.hpp`) — the same synchronous calls as
@@ -519,9 +520,10 @@ ctest --test-dir build --output-on-failure
   case by case; row count via `UNIORM_PERF_ROWS` (default 10000); skip with
   `ctest -LE perf`
 - **perf_tests_oracle** — the same uniorm cases over the Oracle plugin beside
-  OCI called by hand; the shapes that plugin does not ask a client for (array
-  DML, row prefetch) are reported on their own, where the client accepts an
-  array bind at all, and the target is read as `host[:port]/service`
+  OCI called by hand, where its array rows stand beside the row prefetch the
+  plugin never asks for; the array shape that writes its row count on the bind
+  is refused by this client and server pair, so it goes unmeasured, and the
+  target is read as `host[:port]/service`
 - **perf_tests_libpq** — the same uniorm cases over the libpq plugin beside
   libpq called by hand, where a batch is one prepared statement per row; the
   one statement carrying a thousand rows' VALUES lists stands on its own, and
@@ -588,8 +590,8 @@ runner; that leg is green against a live container replayed by hand, and the
 runner's own half of it — apt's libpq, the image pull, the health gate — is
 unconfirmed.
 
-Open: the native array binding in the OCI backend, and in both native backends
-the catalog reads they have yet to answer — see design doc §5.4 and §9.
+Open: in both native backends, the catalog reads they have yet to answer — see
+design doc §5.4 and §9.
 
 ## License
 

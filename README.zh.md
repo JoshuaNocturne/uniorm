@@ -34,8 +34,8 @@ API 本身不点任何一家的客户端名。自带三家：默认构建的 ODB
   换成 `decimal_t`
 - **批量写入**：`db.insert(rows)` 与批量 `db.update(rows)` /
   `db.remove(rows)`：一条占位符语句按参数组数组发出（ODBC 那家是
-  `SQL_ATTR_PARAMSET_SIZE`），按 `paramset_size` 分批；连接处于 autocommit
-  时整批扫描包进事务
+  `SQL_ATTR_PARAMSET_SIZE`，OCI 那家是一次 `OCIStmtExecute` 的迭代次数），
+  按 `paramset_size` 分批；连接处于 autocommit 时整批扫描包进事务
 - **RAII 事务**：析构自动回滚
 - **可选的异步**（`async.hpp`）：同一个同步契约套上
   `uniorm::async::task<T>`：一把会话同时只跑一个操作，三种 drive 动作
@@ -478,9 +478,10 @@ ctest --test-dir build --output-on-failure
   路径，旁边是调用形式逐项配对的纯 ODBC 基线，用作抽象开销参照；行数由
   `UNIORM_PERF_ROWS` 指定（默认 10000）；可用 `ctest -LE perf` 跳过
 - **perf_tests_oracle**：同一份 uniorm 用例走 Oracle plugin，旁边是手工
-  调用 OCI 的基线；plugin 不向 client 要的那几种形状（数组 DML、按行
-  prefetch）单独成行，前提是这一家 client 收数组绑定——不收时那三行自己
-  问一次就退场；target 按 `host[:port]/service` 读
+  调用 OCI 的基线；plugin 批量现在用的那种数组行（一次 execute 迭代 N 次）
+  单独成行，它仍旧不要的按行 prefetch 也单独成行；把行数写在绑定上的那一种
+  数组 DML 在这一对 client 与服务端上被拒，故不入表；target 按
+  `host[:port]/service` 读
 - **perf_tests_libpq**：同一份 uniorm 用例走 libpq plugin，旁边是手工调用
   libpq 的基线——那里的批量就是一行一条 prepared statement；一条语句带
   一千行 VALUES 列表那种写法单独成行；target 按 `host[:port]/dbname` 读
@@ -541,8 +542,7 @@ CI 是五支作业定义、七个实例：`core`、`core-windows`、`oracle-oci`
 是在手边复放过一遍活容器，runner 自己那一半——apt 的 libpq、镜像拉取、健康门——
 还没验过。
 
-未结：OCI 那家还没接上的原生数组绑定，以及两家原生 backend 都欠着的目录读取，
-见设计文档 §5.4 与 §9。
+未结：两家原生 backend 都欠着的目录读取，见设计文档 §5.4 与 §9。
 
 ## 许可证
 

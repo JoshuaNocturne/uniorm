@@ -97,6 +97,15 @@ struct CaseUser {
   std::string name;
 };
 
+// Bytes, and a column a whole batch may leave NULL: the two shapes no other
+// stage of this run writes a batch of.
+struct Chunk {
+  std::int64_t id = 0;
+  std::optional<std::vector<std::byte>> data;
+  std::string tag;
+  std::optional<std::string> spare;
+};
+
 }  // namespace uniorm
 
 namespace {
@@ -110,6 +119,7 @@ char const* k_num_table = "UNIORM_IT_NUMBER";
 // Unquoted DDL, so each server folds it the way it folds any name: MySQL and
 // MariaDB keep this spelling, PostgreSQL answers with all lower.
 char const* k_case_table = "UNIORM_IT_CASE_USER";
+char const* k_chunk_table = "uniorm_it_chunk";
 std::string const long_note(1000, 'x');
 
 // The face this run drives. One suite serves both backends, so everything the
@@ -124,6 +134,7 @@ struct target_face {
   // A 64-bit integral column, as this server's DDL spells it.
   std::string integer_type;
   std::string wide_decimal;    // the widest scale this server's DECIMAL takes
+  std::string binary_type;     // a column of raw bytes, as this DDL spells it
   // Whether a decimal's text arrives carrying the column's declared scale.
   bool pads_decimal_text = true;
   // Whether this backend answers catalog reads at all; probed, not declared,
@@ -1139,6 +1150,224 @@ void test_insert(orm& db) {
   db.execute_update(
     "DELETE FROM uniorm_it_user WHERE id >= ?", params{ std::int64_t{ 200 } });
   CHECK(db.query<User>().count() == 3);
+}
+
+// A batch whose every row of a column shares one slab: the write that stages a
+// column rather than a row has to give each row its own value, its own length
+// and its own NULL, and not the first row's of each. Read back whole, because
+// a count says nothing about which row landed as what.
+void test_batch_round_trip(orm& db) {
+  std::int64_t const first = 5000;
+  std::int64_t const count = 1200;
+  std::vector<User> rows;
+  for (std::int64_t offset = 0; offset < count; ++offset) {
+    User row;
+    row.id = first + offset;
+    // Three spellings of the name, one of them as wide as the column, so the
+    // width a column stages at is wider than most of the rows through it. An
+    // empty one is left out: this column forbids it, and a server may or may
+    // not hold the difference between empty and absent.
+    if (offset % 3 == 0) {
+      row.name = std::string(static_cast<std::size_t>(offset % 31) + 1, 'x');
+    } else if (offset % 3 == 1) {
+      row.name = "n" + std::to_string(offset);
+    } else {
+      row.name = std::string(64, 'm');
+    }
+    row.age = offset % 4 == 0
+      ? std::nullopt
+      : std::optional<std::int32_t>(static_cast<std::int32_t>(offset % 97));
+    row.balance = -0.5 * static_cast<double>(offset);
+    if (offset % 5 == 0) {
+      row.note = std::nullopt;
+    } else if (offset % 5 == 1) {
+      row.note = std::optional<std::string>("short");
+    } else {
+      row.note = std::optional<std::string>(
+        std::string(static_cast<std::size_t>(offset % 401) + 1, 'q'));
+    }
+    // Seconds apart, one row to the next, and one row in seven left NULL: a
+    // batch whose timestamps all read the same would prove nothing.
+    row.created = offset % 7 == 0
+      ? std::nullopt
+      : std::optional<timestamp>(detail::make_timestamp(2024,
+          static_cast<int>(1 + offset % 12), static_cast<int>(1 + offset % 28),
+          static_cast<int>(offset % 24), static_cast<int>(offset % 60),
+          static_cast<int>(offset % 60), 0));
+    rows.push_back(std::move(row));
+  }
+
+  auto matches = [&](std::vector<User> const& read) {
+    CHECK(read.size() == static_cast<std::size_t>(count));
+    for (std::size_t index = 0; index < read.size(); ++index) {
+      User const& got = read[index];
+      User const& sent = rows[index];
+      CHECK(got.id == sent.id);
+      CHECK(got.name == sent.name);
+      CHECK(got.age == sent.age);
+      CHECK(got.balance == sent.balance);
+      CHECK(got.note == sent.note);
+      CHECK(got.created == sent.created);
+    }
+  };
+
+  CHECK(db.insert(rows) == static_cast<std::size_t>(count));
+  matches(db.query<User>()
+            .where(ge(&User::id, first))
+            .order_by(&User::id)
+            .all());
+
+  // The same keys written again with every column moved, including the ones
+  // that were NULL and the ones that become NULL.
+  std::vector<User> moved = rows;
+  for (std::size_t index = 0; index < moved.size(); ++index) {
+    moved[index].name = index % 3 == 0
+      ? std::string(30, 'w')
+      : std::string(64, 'v');
+    moved[index].age = index % 3 == 0
+      ? std::nullopt
+      : std::optional<std::int32_t>(static_cast<std::int32_t>(index % 61));
+    moved[index].balance = 0.25 * static_cast<double>(index);
+    moved[index].note = index % 4 == 0
+      ? std::nullopt
+      : std::optional<std::string>(long_note);
+    moved[index].created = index % 6 == 0
+      ? std::nullopt
+      : std::optional<timestamp>(detail::make_timestamp(2023,
+          static_cast<int>(1 + index % 12), static_cast<int>(1 + index % 28),
+          static_cast<int>(index % 24), static_cast<int>(index % 60),
+          static_cast<int>(index % 60), 0));
+  }
+  CHECK(db.update(moved) == static_cast<std::size_t>(count));
+  rows = moved;
+  matches(db.query<User>()
+            .where(ge(&User::id, first))
+            .order_by(&User::id)
+            .all());
+
+  std::vector<User> every_third;
+  for (std::size_t index = 0; index < rows.size(); index += 3) {
+    every_third.push_back(rows[index]);
+  }
+  CHECK(db.remove(every_third) == every_third.size());
+  CHECK(db.query<User>()
+          .where(ge(&User::id, first))
+          .count() == static_cast<std::size_t>(count) - every_third.size());
+
+  db.execute_update(
+    "DELETE FROM uniorm_it_user WHERE id >= ?", params{ first });
+}
+
+// Two shapes the round trip above never writes a batch of: a column of bytes,
+// and a column every row of the batch leaves out. Neither can take its shape
+// from a row beside it, and the second has no value to read one off at all.
+void test_batch_shapes(orm& db) {
+  db.execute_update(std::string("DROP TABLE IF EXISTS ") + k_chunk_table);
+  std::string const id_type = the_target.integer_type;
+  db.execute_update(std::string("CREATE TABLE ") + k_chunk_table +
+                      " (id " + id_type + " NOT NULL PRIMARY KEY,"
+                      " data " + the_target.binary_type + " NULL,"
+                      " tag VARCHAR(64) NOT NULL,"
+                      " spare VARCHAR(64) NULL)");
+  db.map<Chunk>(k_chunk_table)
+    .primary_key("id", &Chunk::id)
+    .column("data", &Chunk::data)
+    .column("tag", &Chunk::tag)
+    .column("spare", &Chunk::spare);
+
+  std::int64_t const first = 6000;
+  std::int64_t const count = 300;
+  std::vector<Chunk> rows;
+  for (std::int64_t offset = 0; offset < count; ++offset) {
+    Chunk row;
+    row.id = first + offset;
+    // Three shapes of the binary column: a few bytes, a row as wide as the
+    // column gets, and a row that leaves it out. The width a column stages at
+    // is the widest of these, not the first.
+    if (offset % 3 == 0) {
+      row.data = std::vector<std::byte>(
+        static_cast<std::size_t>(offset % 17) + 1, std::byte{ 0x5a });
+    } else if (offset % 3 == 1) {
+      row.data = std::nullopt;
+    } else {
+      row.data = std::vector<std::byte>(512, std::byte{ 0x3c });
+    }
+    row.tag = std::string(static_cast<std::size_t>(offset % 31) + 1, 'k');
+    rows.push_back(std::move(row));
+  }
+
+  CHECK(db.insert(rows) == static_cast<std::size_t>(count));
+  auto read = db.query<Chunk>()
+                .where(ge(&Chunk::id, first))
+                .order_by(&Chunk::id)
+                .all();
+  CHECK(read.size() == static_cast<std::size_t>(count));
+  for (std::size_t index = 0; index < read.size() && index < rows.size();
+       ++index) {
+    CHECK(read[index].id == rows[index].id);
+    CHECK(read[index].data == rows[index].data);
+    CHECK(read[index].tag == rows[index].tag);
+    // No row of the batch gave this column a value, and none should hold one.
+    CHECK(!read[index].spare.has_value());
+  }
+
+  // A second sweep whose two shapes are the other way round: the bytes now NULL
+  // in every row, the column that held nothing now holding a value. A shape is
+  // read off one batch's rows, not off the table's history.
+  std::vector<Chunk> flipped;
+  for (std::int64_t offset = 0; offset < 100; ++offset) {
+    Chunk row;
+    row.id = first + count + offset;
+    row.tag = std::string(static_cast<std::size_t>(offset % 31) + 1, 'f');
+    row.spare = std::optional<std::string>("s" + std::to_string(row.id));
+    flipped.push_back(std::move(row));
+  }
+  CHECK(db.insert(flipped) == flipped.size());
+  read = db.query<Chunk>()
+           .where(ge(&Chunk::id, first))
+           .order_by(&Chunk::id)
+           .all();
+  CHECK(read.size() == static_cast<std::size_t>(count) + flipped.size());
+  for (std::size_t index = 0; index < read.size(); ++index) {
+    // The whole sweep read back in order: the flipped rows follow the first
+    // ones, so each row's shapes are its own.
+    Chunk const& sent = index < rows.size() ?
+      rows[index] : flipped[index - rows.size()];
+    Chunk const& got = read[index];
+    CHECK(got.id == sent.id);
+    CHECK(got.data == sent.data);
+    CHECK(got.tag == sent.tag);
+    CHECK(got.spare == sent.spare);
+  }
+
+  // The update route takes the same columns in one statement: one row's bytes
+  // recut, its tag moved, the column that held a value emptied.
+  Chunk recut;
+  recut.id = first;
+  recut.data = std::vector<std::byte>(64, std::byte{ 0x11 });
+  recut.tag = std::string("recut");
+  CHECK(db.update(recut) == 1);
+  auto one = db.query<Chunk>()
+               .where(eq(&Chunk::id, std::int64_t{ first }))
+               .one();
+  CHECK(one.has_value());
+  CHECK(one->data == recut.data);
+  CHECK(one->tag == recut.tag);
+  CHECK(!one->spare.has_value());
+
+  // And the same shapes through the dynamic route, which names its columns.
+  CHECK(db.update(k_chunk_table)
+          .set("spare", std::string("later"))
+          .where("id = ?", params{ std::int64_t{ first } })
+          .execute() == 1);
+  one = db.query<Chunk>()
+          .where(eq(&Chunk::id, std::int64_t{ first }))
+          .one();
+  CHECK(one.has_value());
+  CHECK(one->spare == std::optional<std::string>("later"));
+
+  db.execute_update(std::string("DELETE FROM ") + k_chunk_table);
+  db.execute_update(std::string("DROP TABLE ") + k_chunk_table);
 }
 
 void test_update(orm& db) {
@@ -2273,6 +2502,7 @@ int main() {
       ";PWD=" + the_target.password;
     the_target.integer_type = "BIGINT";
     the_target.wide_decimal = "DECIMAL(65,30)";
+    the_target.binary_type = "VARBINARY(512)";
   } else if (scheme == "oracle") {
     the_target.connect_string = "oracle://" + the_target.user + "/" +
       the_target.password + "@" + the_target.dsn;
@@ -2282,6 +2512,10 @@ int main() {
     the_target.integer_type = "NUMBER(19)";
     the_target.wide_decimal = "DECIMAL(38,30)";
     the_target.pads_decimal_text = false;
+    // A locator is a thing of its own here: an assignment of raw bytes into one
+    // is something this server refuses in an UPDATE. A fixed-width binary
+    // column is the one this backend's reads and writes both hold to.
+    the_target.binary_type = "RAW(512)";
   } else if (scheme == "postgresql") {
     the_target.connect_string = "postgresql://" + the_target.user + ":" +
       the_target.password + "@" + the_target.dsn;
@@ -2290,6 +2524,7 @@ int main() {
     // pads the value to the column's declared scale.
     the_target.integer_type = "BIGINT";
     the_target.wide_decimal = "DECIMAL(38,30)";
+    the_target.binary_type = "BYTEA";
     // This plugin prepares by a name of its own on the session it opened; a
     // driver that hides that work has no parse for this run to drop.
     the_target.holds_its_parses_by_name = true;
@@ -2343,6 +2578,8 @@ int main() {
     guarded("test_auto_commit_scope",
       [&] { test_auto_commit_scope(db, conn_string); });
     guarded("test_insert", [&] { test_insert(db); });
+    guarded("test_batch_round_trip", [&] { test_batch_round_trip(db); });
+    guarded("test_batch_shapes", [&] { test_batch_shapes(db); });
     guarded("test_update", [&] { test_update(db); });
     guarded("test_remove", [&] { test_remove(db); });
     guarded("test_entity_update", [&] { test_entity_update(db); });

@@ -1,9 +1,11 @@
 #include "statement.hpp"
 
+#include <algorithm>
 #include <cctype>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <utility>
 
@@ -208,6 +210,49 @@ void integer_from_value(sql_value const& value, OCIError* error,
 void real_from_value(double held, OCIError* error, OCINumber& number) {
   throw_if_error(OCINumberFromReal(error, &held, sizeof(held), &number), error,
     "bind a floating point parameter");
+}
+
+// The shape a batch column would stage this value as. A NULL says nothing, so
+// the column's shape comes from the first value that is not one.
+batch_kind batch_kind_of(sql_value const& value) noexcept {
+  if (std::holds_alternative<std::string>(value)) {
+    return batch_kind::text;
+  }
+  if (std::holds_alternative<std::vector<std::byte>>(value)) {
+    return batch_kind::binary;
+  }
+  if (std::holds_alternative<timestamp>(value)) {
+    return batch_kind::timestamp;
+  }
+  return batch_kind::number;
+}
+
+// The slab bytes one batch may stage, over all its columns together. A slab
+// costs its stride per row, so a column holding one long value would otherwise
+// pay for it once per row, and several such columns pay several times.
+constexpr std::size_t max_batch_slab_bytes = 32u << 20;
+
+// Whether a column stages as bytes: the kinds whose slab is a stride per row,
+// as against an OCINumber or a descriptor pointer, whose width OCI knows.
+bool stages_as_slab(batch_kind kind) noexcept {
+  return kind == batch_kind::text || kind == batch_kind::binary ||
+    kind == batch_kind::empty;
+}
+
+// The type a staged column is bound as.
+ub2 batch_dty(batch_kind kind) noexcept {
+  switch (kind) {
+  case batch_kind::number:
+    return SQLT_VNU;
+  case batch_kind::text:
+    return SQLT_CHR;
+  case batch_kind::binary:
+    return SQLT_BIN;
+  case batch_kind::timestamp:
+    return SQLT_TIMESTAMP;
+  default:
+    return SQLT_AFC;
+  }
 }
 
 // The descriptor kind a datetime column's rows must be allocated as, from the
@@ -496,11 +541,216 @@ std::size_t oci_statement::run(ub4 mode, ub4 iterations) {
   return mode == OCI_DESCRIBE_ONLY ? 0 : row_count();
 }
 
+// How a batch's rows would stage, column by column, or nothing when they will
+// not stage at all.
+std::optional<std::vector<batch_plan_column>> plan_batch(
+  std::vector<params> const& rows) {
+  if (rows.empty()) {
+    return {};
+  }
+  std::size_t const arity = rows.front().size();
+  if (arity == 0) {
+    return {};
+  }
+  for (params const& row : rows) {
+    if (row.size() != arity) {
+      return {};
+    }
+  }
+  std::size_t const count = rows.size();
+  std::size_t slab_bytes = 0;
+  std::vector<batch_plan_column> plan;
+  plan.reserve(arity);
+  for (std::size_t slot = 0; slot < arity; ++slot) {
+    batch_plan_column column;
+    bool shaped = false;
+    for (params const& row : rows) {
+      sql_value const& value = row.at(slot);
+      if (is_null(value)) {
+        continue;
+      }
+      // A column's shape comes from the first value that is not a NULL, and a
+      // column every row leaves NULL keeps the one it was made with.
+      batch_kind const kind = batch_kind_of(value);
+      if (!shaped) {
+        shaped = true;
+        column.kind = kind;
+      } else if (column.kind != kind) {
+        return {};
+      }
+      if (kind == batch_kind::text) {
+        column.stride = std::max(column.stride,
+          std::get<std::string>(value).size());
+      } else if (kind == batch_kind::binary) {
+        column.stride = std::max(column.stride,
+          std::get<std::vector<std::byte>>(value).size());
+      }
+    }
+    if (column.kind == batch_kind::number) {
+      column.stride = sizeof(OCINumber);
+    } else if (column.kind == batch_kind::timestamp) {
+      column.stride = sizeof(OCIDateTime*);
+    }
+    // OCI answers a row's length in two bytes, and a stride past that would be
+    // told back to it short.
+    if (column.stride > (std::numeric_limits<ub2>::max)()) {
+      return {};
+    }
+    if (stages_as_slab(column.kind)) {
+      slab_bytes += count * column.stride;
+      if (slab_bytes > max_batch_slab_bytes) {
+        return {};
+      }
+    }
+    plan.push_back(column);
+  }
+  return plan;
+}
+
+// The whole batch as one execute's worth of slabs, filled from the plan. The
+// slabs are handed over only when every column of them is filled, so a batch
+// that gives partway through leaves nothing staged.
+std::optional<std::vector<batch_column>> oci_statement::stage_batch(
+  std::vector<params> const& rows) {
+  auto plan = plan_batch(rows);
+  if (!plan) {
+    return {};
+  }
+  std::size_t const count = rows.size();
+  std::vector<batch_column> columns;
+  columns.reserve(plan->size());
+  for (std::size_t slot = 0; slot < plan->size(); ++slot) {
+    batch_column column;
+    column.kind = plan->at(slot).kind;
+    column.stride = plan->at(slot).stride;
+    column.dty = batch_dty(column.kind);
+    // The server reads only the indicator of a row it is told is NULL, but
+    // every row still needs a slot of its own beside the slab.
+    column.indicators.assign(count, 0);
+    if (stages_as_slab(column.kind)) {
+      column.bytes.assign(count * column.stride, '\0');
+    }
+    if (column.kind == batch_kind::number) {
+      column.numbers.resize(count);
+    }
+    if (column.kind == batch_kind::text ||
+        column.kind == batch_kind::binary) {
+      column.lengths.assign(count, 0);
+    }
+    for (std::size_t row = 0; row < count; ++row) {
+      sql_value const& value = rows[row].at(slot);
+      OCIDateTime* stamp = column.kind == batch_kind::timestamp
+        ? column.stamps.add(conn_.env(), OCI_DTYPE_TIMESTAMP,
+            "bind a batch timestamp")
+        : nullptr;
+      if (is_null(value)) {
+        column.indicators[row] = -1;
+        continue;
+      }
+      switch (column.kind) {
+      case batch_kind::number:
+        if (std::holds_alternative<double>(value)) {
+          real_from_value(std::get<double>(value), conn_.error(),
+            column.numbers[row]);
+        } else {
+          integer_from_value(value, conn_.error(), column.numbers[row]);
+        }
+        break;
+      case batch_kind::text: {
+        std::string const& text = std::get<std::string>(value);
+        std::memcpy(column.bytes.data() + row * column.stride, text.data(),
+          text.size());
+        column.lengths[row] = static_cast<ub2>(text.size());
+        break;
+      }
+      case batch_kind::binary: {
+        std::vector<std::byte> const& raw =
+          std::get<std::vector<std::byte>>(value);
+        std::memcpy(column.bytes.data() + row * column.stride, raw.data(),
+          raw.size());
+        column.lengths[row] = static_cast<ub2>(raw.size());
+        break;
+      }
+      case batch_kind::timestamp: {
+        auto const parts =
+          uniorm::detail::break_timestamp(std::get<timestamp>(value));
+        throw_if_error(OCIDateTimeConstruct(conn_.env(), conn_.error(), stamp,
+                         static_cast<sb2>(parts.year),
+                         static_cast<ub1>(parts.month),
+                         static_cast<ub1>(parts.day),
+                         static_cast<ub1>(parts.hour),
+                         static_cast<ub1>(parts.minute),
+                         static_cast<ub1>(parts.second),
+                         static_cast<ub4>(parts.fraction_ns), nullptr, 0),
+          conn_.error(), "build a batch timestamp");
+        break;
+      }
+      case batch_kind::empty:
+        break;
+      }
+    }
+    columns.push_back(std::move(column));
+  }
+  return columns;
+}
+
+// One column of the batch at the placeholder it belongs to. `maxarr_len` zero
+// is the form the server takes: the row count comes from the execute, and OCI
+// walks the slab and its two arrays by their own element sizes.
+detail::bind_handle oci_statement::bind_batch_column(std::size_t position,
+  batch_column& column) {
+  OCIBind* handle = nullptr;
+  throw_if_error(OCIBindByPos(stmt_.get(), &handle, conn_.error(),
+                   static_cast<ub4>(position), column.values(),
+                   static_cast<sb4>(column.element_size()), column.dty,
+                   column.indicators.data(), column.row_lengths(), nullptr, 0,
+                   nullptr, OCI_DEFAULT),
+    conn_.error(), "bind a batch column");
+  return detail::bind_handle::adopt(handle);
+}
+
 void oci_statement::run_batch() {
   // Swapped out before the loop: a row that throws must not leave the batch on
   // the statement, or the next execute this cached handle runs replays it.
   std::vector<params> rows;
   rows.swap(batch_);
+  affected_ = 0;
+  if (rows.empty()) {
+    return;
+  }
+
+  if (auto columns = stage_batch(rows); columns) {
+    std::vector<detail::bind_handle> handles;
+    handles.reserve(columns->size());
+    bool executed = false;
+    try {
+      for (std::size_t slot = 0; slot < columns->size(); ++slot) {
+        handles.push_back(bind_batch_column(slot + 1, columns->at(slot)));
+      }
+      executed = true;
+      affected_ = run(OCI_DEFAULT, static_cast<ub4>(rows.size()));
+    } catch (...) {
+      // The rows before the failing one are the session's to keep, as they were
+      // when each row committed on its own; how many there were is what the
+      // statement still answers once an execute has begun. A bind that failed
+      // ran nothing, and the count it leaves is the previous execute's.
+      if (conn_.autocommit() && executed) {
+        affected_ = row_count();
+        if (affected_ > 0) {
+          try {
+            conn_.commit();
+          } catch (...) {
+          }
+        }
+      }
+      throw;
+    }
+    if (conn_.autocommit()) {
+      conn_.commit();
+    }
+    return;
+  }
+
   // One commit for the batch rather than one per row. OCI_COMMIT_ON_SUCCESS
   // costs a round trip the row does not otherwise need, and a batch is a
   // thousand rows through this loop; committing the rows that ran, when one

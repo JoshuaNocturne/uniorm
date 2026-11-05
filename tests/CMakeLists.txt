@@ -210,6 +210,7 @@ if(UNIORM_BACKEND_ORACLE_OCI)
         unit/test_oracle_oci_main.cpp
         unit/test_oracle_oci_sql_text.cpp
         unit/test_oracle_oci_types.cpp
+        unit/test_oracle_oci_batch.cpp
         unit/test_oracle_oci_connection.cpp
     )
     target_link_libraries(uniorm_oracle_oci_unit_tests

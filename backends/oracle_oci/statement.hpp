@@ -15,6 +15,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -95,6 +96,69 @@ struct param_slot {
   detail::bind_handle bind;
 };
 
+// What one column of a batch holds, decided by looking at every row of it. A
+// column whose rows do not agree cannot go to the server as one slab.
+enum class batch_kind {
+  number,      // bool and the integer widths and double, each an OCINumber
+  text,        // UTF-8, one stride of bytes per row with its length beside it
+  binary,      // bytes, same shape as text
+  timestamp,   // one datetime descriptor per row, bound as a pointer
+  empty        // every row NULL, which still needs a type to be bound as
+};
+
+// One column of a batch as its rows describe it, before any slab is touched.
+struct batch_plan_column {
+  batch_kind kind = batch_kind::empty;
+  // How far one row of the slab reaches: the widest row of a text or binary
+  // column, and one element's own width everywhere else.
+  std::size_t stride = 1;
+};
+
+// How a batch's rows would stage, column by column, or nothing when they will
+// not stage at all: the rows are not all one width, one column holds two shapes
+// of value, a row reaches past what OCI answers a length in, or the slabs
+// together cost more than a batch is worth staging. Read off the values alone,
+// so the shape a batch takes is known before a session is asked for it.
+UNIORM_ORACLE_OCI_API std::optional<std::vector<batch_plan_column>> plan_batch(
+  std::vector<params> const& rows);
+
+// One column of a batch, staged the way OCI binds an array of them: a slab
+// whose rows sit `stride` apart, and OCI's own per-row length and indicator
+// arrays beside it. OCI walks all three by their element sizes, so one execute
+// over the slab carries every row.
+struct batch_column {
+  std::vector<OCINumber> numbers;
+  std::vector<char> bytes;
+  detail::datetime_staging stamps;
+  std::vector<ub2> lengths;
+  std::vector<sb2> indicators;
+  batch_kind kind = batch_kind::empty;
+  ub2 dty = SQLT_AFC;
+  std::size_t stride = 1;
+
+  // Where the bind reads from, and how far one row of it reaches.
+  void* values() {
+    switch (kind) {
+    case batch_kind::number:
+      return numbers.data();
+    case batch_kind::timestamp:
+      return stamps.data();
+    default:
+      return bytes.data();
+    }
+  }
+  std::size_t element_size() const noexcept {
+    return kind == batch_kind::number ? sizeof(OCINumber)
+      : kind == batch_kind::timestamp ? sizeof(OCIDateTime*)
+      : stride;
+  }
+  ub2* row_lengths() {
+    return kind == batch_kind::text || kind == batch_kind::binary
+      ? lengths.data()
+      : nullptr;
+  }
+};
+
 class UNIORM_ORACLE_OCI_API oci_statement : public backend::statement_iface {
 public:
   explicit oci_statement(oracle_oci::connection& conn);
@@ -128,6 +192,15 @@ private:
   // OCIStmtFetch2 could see it.
   std::size_t run(ub4 mode, ub4 iterations = 1);
   void run_batch();
+  // The whole batch as one execute's slabs, filled from plan_batch's answer.
+  // Nothing says the batch will not stage and the row by row route has to take
+  // it, and nothing that was staged is left held.
+  std::optional<std::vector<batch_column>> stage_batch(
+    std::vector<params> const& rows);
+  // One column's slab bound to the placeholder at `position`, returned so the
+  // caller owns the bind handle until the execute is over.
+  detail::bind_handle bind_batch_column(std::size_t position,
+    batch_column& column);
   // A count OCI keeps on the statement handle: the rows a write affected, or
   // the rows one fetch put into the array.
   std::size_t statement_count(ub4 attribute);
@@ -155,8 +228,8 @@ private:
   std::deque<param_slot> params_;
   std::vector<described_column> described_;
   std::vector<column_slot> slots_;
-  // A batch the row-wise channel handed over: one execute per row, since
-  // this backend reports no columnar batch and no array row count.
+  // A batch the row-wise channel handed over: staged column by column and
+  // carried by one execute, unless its columns will not stage.
   std::vector<params> batch_;
 
   std::size_t row_array_size_ = 1;

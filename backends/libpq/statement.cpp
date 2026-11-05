@@ -245,11 +245,10 @@ void pq_statement::bind_column(
 }
 
 void pq_statement::bind_batch_params(std::vector<params> const& rows) {
-  // One execute per row: this backend claims no columnar batch and no row
-  // count over an array of parameter sets, so the core's row-wise route is the
-  // only one it owes. Row by row rather than batch_ = rows: params' variadic
-  // constructor outranks its implicit copy for a non-const lvalue, and a
-  // vector assignment reaches for it.
+  // One execute per row: this backend offers no columnar channel. Row by row
+  // rather than batch_ = rows: params' variadic constructor outranks its
+  // implicit copy for a non-const lvalue, and a vector assignment reaches for
+  // it.
   batch_.clear();
   batch_.reserve(rows.size());
   for (params const& row : rows) {

@@ -539,7 +539,10 @@ std::size_t insert_rowwise(connection& conn, entity_meta const& m,
     stmt->bind_batch_params(batch);
     stmt->set_paramset_size(count);
     stmt->execute();
-    inserted += stmt->affected_rows();
+    // An array insert leaves no row unmatched, so this tally asks the driver
+    // for nothing: it is the count the columnar channel of insert takes too,
+    // and why no row-count flag reaches insert's chunk.
+    inserted += count;
   }
 
   conn.release_statement(key, std::move(stmt));

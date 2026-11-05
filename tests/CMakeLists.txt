@@ -8,6 +8,7 @@ add_executable(uniorm_unit_tests
     unit/test_expression.cpp
     unit/test_registry.cpp
     unit/test_orm_crud_helpers.cpp
+    unit/test_batch_shape.cpp
     unit/test_orm_validate.cpp
     unit/test_identifier_resolution.cpp
     unit/test_binding_order.cpp

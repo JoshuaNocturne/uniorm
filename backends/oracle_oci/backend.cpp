@@ -45,10 +45,12 @@ void oci_connection::rollback() {
   conn_.rollback();
 }
 
-// Neither fast path is claimed: a batch here is one execute per row with the
-// counts added up, so the core's row-by-row route is the only one it owes.
+// The columnar channel is the one this backend does not offer: a batch reaches
+// it as rows, which run_batch() restages column by column and sends as one
+// execute. The counts it adds up are the whole array's total, which is the
+// second flag's question.
 backend::capabilities oci_connection::caps() const noexcept {
-  return {/*columnar_batch=*/false, /*array_rowcount_totals=*/false};
+  return {/*columnar_batch=*/false, /*array_rowcount_totals=*/true};
 }
 
 std::string oci_connection::dbms_name() const {

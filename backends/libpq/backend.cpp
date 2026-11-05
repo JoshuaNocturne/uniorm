@@ -43,10 +43,11 @@ void pq_connection::rollback() {
   conn_.rollback();
 }
 
-// Neither fast path is claimed: a batch here is one execute per row with the
-// counts added up, so the core's row-by-row route is the only one it owes.
+// The columnar channel is the one this backend does not offer: a batch is
+// executed row by row here. The counts run_batch() adds up are the whole
+// array's total, which is the second flag's question.
 backend::capabilities pq_connection::caps() const noexcept {
-  return {/*columnar_batch=*/false, /*array_rowcount_totals=*/false};
+  return {/*columnar_batch=*/false, /*array_rowcount_totals=*/true};
 }
 
 // The version the server reported at connect time, under the one name this

@@ -171,8 +171,8 @@ struct text_stage {
 };
 
 // The four columns of one row, in whichever of the two stagings each belongs
-// to: one batch's worth for array DML, or a single element for the per-row
-// binds.
+// to: one batch's worth for the array rows, or a single element for the
+// per-row binds.
 struct column_stages {
   number_stage ids;
   number_stage scores;
@@ -249,37 +249,31 @@ struct native_statement {
     binds.clear();
   }
 
-  // A parameter for `count` rows of the stage at once: the element widths are
-  // the strides that turn one bind into an array of them. The count is asked
-  // for rather than read off the staging's capacity, because a bind sized to
-  // the whole buffer promises rows the execute never sends.
+  // A parameter for the whole stage at once: the element widths are the
+  // strides that turn one bind into an array of them, and the rows of the
+  // stage hold whatever the execute is told to send. No array shape is
+  // declared here: the rows go over as iterations of one execute, which is the
+  // one this client and server pair takes.
   void bind_numbers(std::size_t position, number_stage& stage,
-    std::size_t count, std::string const& what) {
+    std::string const& what) {
     OCIBind* handle = nullptr;
     check(OCIBindByPos(stmt, &handle, session.error,
              static_cast<ub4>(position), stage.values.data(),
              sizeof(OCINumber), SQLT_VNU, stage.nulls.data(), nullptr,
-             nullptr, static_cast<ub4>(count), nullptr, OCI_DEFAULT),
+             nullptr, 0, nullptr, OCI_DEFAULT),
       session.error, what);
     binds.push_back(handle);
-    check(OCIBindArrayOfStruct(handle, session.error, sizeof(OCINumber),
-             sizeof(sb2), 0, 0),
-      session.error, "array-bind " + what);
   }
 
   void bind_text(std::size_t position, text_stage& stage,
-    std::size_t count, std::string const& what) {
+    std::string const& what) {
     OCIBind* handle = nullptr;
     check(OCIBindByPos(stmt, &handle, session.error,
              static_cast<ub4>(position), stage.bytes.data(),
              static_cast<sb4>(k_column_width), SQLT_CHR, stage.nulls.data(),
-             stage.lengths.data(), nullptr,
-             static_cast<ub4>(count), nullptr, OCI_DEFAULT),
+             stage.lengths.data(), nullptr, 0, nullptr, OCI_DEFAULT),
       session.error, what);
     binds.push_back(handle);
-    check(OCIBindArrayOfStruct(handle, session.error,
-             static_cast<ub4>(k_column_width), sizeof(sb2), sizeof(ub2), 0),
-      session.error, "array-bind " + what);
   }
 
   // One row's parameter, bound again for the next: the length it carries is
@@ -390,11 +384,13 @@ std::int64_t count_rows(native_session& session, std::string const& table) {
   return number_to_integer(session.error, one.values[0]);
 }
 
-// Some client and server pairs refuse an array bind outright: the 21c client
-// this leg was measured with answers every array bind, down to one NUMBER
-// column with no indicator, with ORA-03101. The array cases therefore ask
-// first and stand aside rather than ending the leg, and they ask with a delete
-// of an id no row can have, so the asking changes nothing.
+// Some client and server pairs refuse multi-row parameters outright: the 21c
+// client this leg was measured with answers the array shape that declares a
+// row count on the bind, down to one NUMBER column with no indicator, with
+// ORA-03101. The array cases therefore ask first and stand aside rather than
+// ending the leg, and they ask by deleting two ids no row can have, so the
+// asking changes nothing. What they ask is the shape the plugin binds in: the
+// rows ride on the execute's iteration count.
 bool array_dml_supported(native_session& session, std::string const& table) {
   std::string const sql = "DELETE FROM " + table + " WHERE id = :1";
   OCIStmt* stmt = nullptr;
@@ -404,17 +400,15 @@ bool array_dml_supported(native_session& session, std::string const& table) {
   check(OCIStmtPrepare(stmt, session.error, ora_text(sql), text_length(sql),
              OCI_NTV_SYNTAX, OCI_DEFAULT),
     session.error, "prepare the array probe");
-  number_stage one(1);
-  number_from_integer(session.error, -1, one.values[0]);
+  number_stage two(2);
+  number_from_integer(session.error, -1, two.values[0]);
+  number_from_integer(session.error, -1, two.values[1]);
   OCIBind* bind = nullptr;
-  check(OCIBindByPos(stmt, &bind, session.error, 1, one.values.data(),
-           sizeof(OCINumber), SQLT_VNU, one.nulls.data(), nullptr, nullptr,
-           1, nullptr, OCI_DEFAULT),
+  check(OCIBindByPos(stmt, &bind, session.error, 1, two.values.data(),
+           sizeof(OCINumber), SQLT_VNU, two.nulls.data(), nullptr, nullptr,
+           0, nullptr, OCI_DEFAULT),
     session.error, "bind the array probe");
-  check(OCIBindArrayOfStruct(bind, session.error, sizeof(OCINumber),
-           sizeof(sb2), 0, 0),
-    session.error, "array-bind the probe");
-  sword const status = OCIStmtExecute(session.service, stmt, session.error, 1,
+  sword const status = OCIStmtExecute(session.service, stmt, session.error, 2,
     0, nullptr, nullptr, OCI_DEFAULT);
   bool const supported = status == OCI_SUCCESS ||
     status == OCI_SUCCESS_WITH_INFO;
@@ -464,13 +458,12 @@ void bind_row_params(native_statement& stmt, column_stages& params) {
   stmt.bind_one_text(4, params.notes, "bind the row note");
 }
 
-void bind_batch(native_statement& stmt, column_stages& params,
-  std::size_t count) {
+void bind_batch(native_statement& stmt, column_stages& params) {
   stmt.clear_binds();
-  stmt.bind_numbers(1, params.ids, count, "the batch id");
-  stmt.bind_text(2, params.names, count, "the batch name");
-  stmt.bind_numbers(3, params.scores, count, "the batch score");
-  stmt.bind_text(4, params.notes, count, "the batch note");
+  stmt.bind_numbers(1, params.ids, "the batch id");
+  stmt.bind_text(2, params.names, "the batch name");
+  stmt.bind_numbers(3, params.scores, "the batch score");
+  stmt.bind_text(4, params.notes, "the batch note");
 }
 
 // Every row the read brought back, in the shape the table holds it. A field
@@ -543,7 +536,7 @@ std::vector<perf::bench_result> run_raw_benchmarks(
     native_statement ins(session, insert_sql);
     column_stages params(k_batch);
     std::size_t batched = 0;
-    perf::report("insert (array DML)", rows,
+    perf::report("insert (array rows)", rows,
       perf::best_of(
         [&] {
           run_update(session, "DELETE FROM " + table,
@@ -556,7 +549,7 @@ std::vector<perf::bench_result> run_raw_benchmarks(
             for (std::size_t index = 0; index < count; ++index) {
               params.stage(index, source[first + index], 0, session);
             }
-            bind_batch(ins, params, count);
+            bind_batch(ins, params);
             batched += ins.execute(static_cast<ub4>(count),
               "execute the array insert");
           }
@@ -601,7 +594,7 @@ std::vector<perf::bench_result> run_raw_benchmarks(
       "UPDATE " + table + " SET score = :1 WHERE id = :2");
     column_stages params(k_batch);
     std::size_t batch_updated = 0;
-    perf::report("update (array DML)", rows,
+    perf::report("update (array rows)", rows,
       perf::best_of(
         [&] {
           batch_updated = 0;
@@ -611,9 +604,8 @@ std::vector<perf::bench_result> run_raw_benchmarks(
               params.stage(index, source[first + index], 1, session);
             }
             upd.clear_binds();
-            upd.bind_numbers(1, params.scores, count,
-              "the batch score to update");
-            upd.bind_numbers(2, params.ids, count, "the batch id to update");
+            upd.bind_numbers(1, params.scores, "the batch score to update");
+            upd.bind_numbers(2, params.ids, "the batch id to update");
             batch_updated += upd.execute(static_cast<ub4>(count),
               "execute the array update");
           }
@@ -666,7 +658,7 @@ std::vector<perf::bench_result> run_raw_benchmarks(
     native_statement del(session, "DELETE FROM " + table + " WHERE id = :1");
     column_stages params(k_batch);
     std::size_t batch_deleted = 0;
-    perf::report("delete (array DML)", delete_count,
+    perf::report("delete (array rows)", delete_count,
       perf::best_of(
         [&] {
           batch_deleted = 0;
@@ -677,7 +669,7 @@ std::vector<perf::bench_result> run_raw_benchmarks(
               params.stage(index, even[first + index], 0, session);
             }
             del.clear_binds();
-            del.bind_numbers(1, params.ids, count, "the batch id to delete");
+            del.bind_numbers(1, params.ids, "the batch id to delete");
             batch_deleted += del.execute(static_cast<ub4>(count),
               "execute the array delete");
           }

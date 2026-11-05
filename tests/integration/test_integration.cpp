@@ -166,6 +166,27 @@ char const* decimal_text(char const* scaled, char const* minimal) {
   return the_target.pads_decimal_text ? scaled : minimal;
 }
 
+// A column of raw bytes, as the server this leg reached answers with one. The
+// scheme names a transport, and the ODBC transport carries three servers that
+// spell the type three ways, so the banner the connect read answers instead.
+std::string binary_type_for(std::string_view dbms_name) {
+  std::string const name(dbms_name);
+  if (name.find("PostgreSQL") != std::string::npos) {
+    return "BYTEA";
+  }
+  if (name.find("Oracle") != std::string::npos) {
+    // A locator is a thing of its own here: an assignment of raw bytes into
+    // one is something this server refuses in an UPDATE. A fixed-width binary
+    // column is the one this backend's reads and writes both hold to.
+    return "RAW(512)";
+  }
+  if (name.find("MySQL") != std::string::npos ||
+      name.find("MariaDB") != std::string::npos) {
+    return "VARBINARY(512)";
+  }
+  return {};
+}
+
 // Whatever this driver calls an error's code. SQLSTATE is five characters;
 // this server's number is an ORA- code. Either way what() puts it in brackets.
 bool state_is_well_formed(std::string_view state) {
@@ -1262,6 +1283,12 @@ void test_batch_round_trip(orm& db) {
 // and a column every row of the batch leaves out. Neither can take its shape
 // from a row beside it, and the second has no value to read one off at all.
 void test_batch_shapes(orm& db) {
+  // A server this suite has no raw-byte column spelled for says so rather
+  // than having the stage fail over a name.
+  if (the_target.binary_type.empty()) {
+    skip_reason = "no raw-byte column is spelled for this server";
+    return;
+  }
   db.execute_update(std::string("DROP TABLE IF EXISTS ") + k_chunk_table);
   std::string const id_type = the_target.integer_type;
   db.execute_update(std::string("CREATE TABLE ") + k_chunk_table +
@@ -2502,7 +2529,6 @@ int main() {
       ";PWD=" + the_target.password;
     the_target.integer_type = "BIGINT";
     the_target.wide_decimal = "DECIMAL(65,30)";
-    the_target.binary_type = "VARBINARY(512)";
   } else if (scheme == "oracle") {
     the_target.connect_string = "oracle://" + the_target.user + "/" +
       the_target.password + "@" + the_target.dsn;
@@ -2512,10 +2538,6 @@ int main() {
     the_target.integer_type = "NUMBER(19)";
     the_target.wide_decimal = "DECIMAL(38,30)";
     the_target.pads_decimal_text = false;
-    // A locator is a thing of its own here: an assignment of raw bytes into one
-    // is something this server refuses in an UPDATE. A fixed-width binary
-    // column is the one this backend's reads and writes both hold to.
-    the_target.binary_type = "RAW(512)";
   } else if (scheme == "postgresql") {
     the_target.connect_string = "postgresql://" + the_target.user + ":" +
       the_target.password + "@" + the_target.dsn;
@@ -2524,7 +2546,6 @@ int main() {
     // pads the value to the column's declared scale.
     the_target.integer_type = "BIGINT";
     the_target.wide_decimal = "DECIMAL(38,30)";
-    the_target.binary_type = "BYTEA";
     // This plugin prepares by a name of its own on the session it opened; a
     // driver that hides that work has no parse for this run to drop.
     the_target.holds_its_parses_by_name = true;
@@ -2535,9 +2556,11 @@ int main() {
 
   try {
     connection probe(the_target.connect_string);
+    std::string const banner = probe.dbms_name();
     std::printf("connected over '%s': dbms = %s\n", scheme.c_str(),
-      probe.dbms_name().c_str());
-    the_target.server_dialect = dialect::detect(probe.dbms_name());
+      banner.c_str());
+    the_target.server_dialect = dialect::detect(banner);
+    the_target.binary_type = binary_type_for(banner);
     try {
       probe.schema();
       the_target.answers_catalog = true;

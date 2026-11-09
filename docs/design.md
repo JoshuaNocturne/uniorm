@@ -1765,9 +1765,10 @@ PQputCopyData(pg, ...);                     // 用户自行驱动原生操作
 2. **libpq**（PostgreSQL）——**已落地**：`backends/libpq/`，scheme `"postgresql"`，
    装成 `libuniorm_postgresql.so`，CI 为它单开一支作业（§8）。两条 `open` 原语都接：
    整串按 libpq 自己的 conninfo 语法交给 `PQconnectdb`，四件套拼成它命名各值的关键词。
-   列式通道它不交——一批行从行式通道进来，`run_batch()` 仍旧一行一条 execute；
-   `array_rowcount_totals` 交 `true`，因为它把每行的行数加总成一次答复，
-   与 OCI 那家同是一件事。
+   列式通道它不交——一批行从行式通道进来，`run_batch()` 再自己铺一次：insert 那一行
+   VALUES 组被重复成一条多组语句（细节见本节末），铺不回去的仍旧一行一条 execute。
+   `array_rowcount_totals` 交 `true`，因为整批的行数要么由服务端一次答出，要么是它
+   自己逐行加总出来的，与 OCI 那家同是一件事。
 
    值在两个方向上都是文本：绑出去时按列的形状写（`DATE` 不带时钟、`TIME` 不带日），
    读回来时按 `PQftype` 报的形状拆。所以一连上就先钉住两件会话默认——
@@ -1789,8 +1790,13 @@ libpq 把它拼成空格分隔的 conninfo，OCI 连串都没有——用户名�
 `OCISessionBegin` 各自的实参。落地的那家仍只需实现 `open(std::string_view)`
 那条原语，四件套按需接。能力清单不为特性集预留标志位：
 一家 backend 落地后，只有核心真需要分岔的地方才进清单（§5.2）——两家都还不交列式通道，
-一批行都从行式通道进来；进来之后两家各自安排：libpq 仍旧一行一条 execute，OCI 把
-一批重铺成列方向的一条缓冲、一次 execute 发出去。两家的 `array_rowcount_totals`
+一批行都从行式通道进来；进来之后两家各自安排：OCI 把一批重铺成列方向的一条缓冲、
+一次 execute 发出去；libpq 不绑数组，便认那一行 VALUES 组的形状，把它重复成一条
+`VALUES (...), (...)`——每组多少行由服务端一条语句至多 65535 个参数倒推，
+`65535/列数`，一批里的各组取同一行数，免得语句文本忽长忽短。那条语句不挂名字，
+连着参数一起交给 `PQexecParams`：批量跑在事务里，而事务里丢名字是没法补的——一次
+26000 已经把事务废了，再 `PQprepare` 只换来 25P02。认不出可重复组的（UPDATE、
+DELETE，以及一切带子查询的写法）仍旧一行一条 execute。两家的 `array_rowcount_totals`
 也都是 `true`——一次批量交回的行数，要么是服务端给整批的那一个总数，要么是它们
 自己逐行加总出来的，两个问题同一个答案。
 
@@ -2155,8 +2161,9 @@ commit/rollback/析构回滚、批量插入（含空 optional 写 NULL、1500 �
   只剩 `OCI_ATTR_PREFETCH_ROWS` 单独成行。把行数写在绑定上的那一种数组 DML
   （`maxarr_len` 非零加 `OCIBindArrayOfStruct`）在 21.13 client 对 26ai Free
   服务端这一对上答 ORA-03101，插、改、删同拒，故不入表；libpq 那半是一行一条
-  `PQexecPrepared`（libpq 不绑数组，批量只能是这个形状），一条语句带一千行
-  VALUES 列表那种写法单独成行。用来衡量 uniorm 抽象层的额外开销
+  `PQexecPrepared`，一条语句带一千行 VALUES 列表那种写法单独成行——前者正是
+  plugin 铺不回去时的退路（UPDATE、DELETE 仍走它），后者正是它现在写 insert 的
+  形状，只是行数由 `65535/列数` 封顶而不是取一千。用来衡量 uniorm 抽象层的额外开销
 - **`uniorm-gen` 端到端**（已实现，`gen_e2e_tests`，连不上库时 SKIP，两条不开
   连接的腿在它前头各自跑完；连着库的那条按两种形状各跑一遍——调用方写好的串，
   与交出去不拼词的四件套，同一份 golden 判两次）：

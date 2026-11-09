@@ -502,8 +502,9 @@ ctest --test-dir build --output-on-failure
   the catalog's name re-filter (driver manager only, no DSN required)
 - **oracle_oci_unit_tests** — the placeholder rewrite, Oracle's type table,
   connect-string splitting (client library only, no server required)
-- **libpq_unit_tests** — the placeholder rewrite, PostgreSQL's type table,
-  connect-string splitting (client library only, no server required)
+- **libpq_unit_tests** — the placeholder rewrite, which statement texts fold
+  into one multi-row VALUES list and how the fold expands, PostgreSQL's type
+  table, connect-string splitting (client library only, no server required)
 - **integration_tests** — needs a reachable ODBC DSN; reads `UNIORM_IT_DSN`,
   `UNIORM_IT_USER`, `UNIORM_IT_PWD` (all required), and ctest SKIPs when any is
   unset or the database is unreachable
@@ -526,7 +527,9 @@ ctest --test-dir build --output-on-failure
   target is read as `host[:port]/service`
 - **perf_tests_libpq** — the same uniorm cases over the libpq plugin beside
   libpq called by hand, where a batch is one prepared statement per row; the
-  one statement carrying a thousand rows' VALUES lists stands on its own, and
+  one statement carrying a thousand rows' VALUES lists stands on its own — the
+  plugin's own insert shape, save that the rows it puts on a statement come
+  from the server's parameter ceiling rather than from a fixed thousand — and
   the target is read as `host[:port]/dbname`
 - **gen_e2e_tests** — generated code compared with a checked-in golden header,
   which is itself compiled, registered and `validate(strict)`ed; needs a DSN

@@ -462,8 +462,9 @@ ctest --test-dir build --output-on-failure
   那条判据（仅驱动管理器，无需 DSN）
 - **oracle_oci_unit_tests**：Oracle backend 自己那一层——占位符改写、它的类型表，
   以及连接串怎么切分（仅客户端库，无需服务器）
-- **libpq_unit_tests**：libpq backend 自己那一层——占位符改写、它的类型表，以及
-  连接串怎么切分（仅客户端库，无需服务器）
+- **libpq_unit_tests**：libpq backend 自己那一层——占位符改写、哪种语句文本能折成
+  一条多组 VALUES 与折开长什么样、它的类型表，以及连接串怎么切分（仅客户端库，
+  无需服务器）
 - **integration_tests**：需要可达的 ODBC DSN，读取环境变量 `UNIORM_IT_DSN`、
   `UNIORM_IT_USER`、`UNIORM_IT_PWD`（三者均须设置）；任一未设置或连不上时以
   ctest SKIP 处理
@@ -484,7 +485,9 @@ ctest --test-dir build --output-on-failure
   `host[:port]/service` 读
 - **perf_tests_libpq**：同一份 uniorm 用例走 libpq plugin，旁边是手工调用
   libpq 的基线——那里的批量就是一行一条 prepared statement；一条语句带
-  一千行 VALUES 列表那种写法单独成行；target 按 `host[:port]/dbname` 读
+  一千行 VALUES 列表那种写法单独成行——它正是 plugin 现在写 insert 的形状，
+  只是每条语句带几行由服务端的参数上限倒推，不是固定一千；target 按
+  `host[:port]/dbname` 读
 - **gen_e2e_tests**：生成物与检入的 golden 头文件比对（注释不比），golden 本身
   经编译、注册并 `validate(strict)`；需可达 DSN
 - **install_smoke**：`cmake --install` 装进构建树下的临时 prefix，再用一个外部

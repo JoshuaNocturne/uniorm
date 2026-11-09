@@ -19,6 +19,7 @@
 
 #include "connection.hpp"
 #include "handles.hpp"
+#include "sql_text.hpp"
 
 namespace uniorm::libpq {
 
@@ -70,7 +71,7 @@ private:
   // server gave back on its own needs making again, not restaging.
   void make_ready();
   void read_parameter_types();
-  // The rendered form of one parameter set: every value as the text libpq
+  // The rendered form of the values about to be sent: each as the text libpq
   // carries to the server, and the pointer array that hands them over.
   void render(std::vector<sql_value> const& values);
   std::string render_one(sql_value const& value, unsigned type) const;
@@ -80,6 +81,12 @@ private:
   detail::result_holder run_ready();
   void apply(detail::result_holder&& next);
   void run_batch();
+  // The batch as a list of row groups: `rows` copies of the statement's one
+  // group, sent as one execute of the text they were folded into.
+  void run_folded(std::vector<params> const& rows);
+  // The read of an execute that has just answered: whether it asked for rows,
+  // how many it touched, and where a fetch of what it sent back starts.
+  void settle(std::size_t touched);
   void declare_shape();
   std::size_t affected_of(PGresult* answer) const;
   void materialize(std::size_t rows);
@@ -104,12 +111,26 @@ private:
   std::string rewritten_;
   std::size_t placeholder_count_ = 0;
   std::vector<unsigned> param_types_;
+  // The types the values staged for the next execute are sent as, one per
+  // parameter: the same list repeated for a folded group.
+  std::vector<unsigned> sent_types_;
   std::vector<sql_value> values_;
   std::vector<params> batch_;
   std::vector<std::string> param_text_;
   std::vector<char const*> param_pointers_;
   detail::result_holder result_;
   std::vector<column_slot> slots_;
+
+  // The group this statement's text can be folded with, or none.
+  values_fold fold_;
+  // The rows `fold_text_` carries, which is also how "no group is staged"
+  // reads. The group goes to the server as text of its own, not under a name:
+  // a name prepared inside the transaction a batch runs in would have to be
+  // made again there, and an aborted transaction makes no room for that.
+  std::string fold_text_;
+  std::size_t group_rows_ = 0;
+  // Whether the values staged for the next execute belong to a group.
+  bool folding_ = false;
 
   std::size_t row_array_size_ = 1;
   // The row the current block starts at, so a continuation read of a row in

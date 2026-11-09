@@ -43,6 +43,11 @@ char* byte_at(column_slot const& slot, std::size_t row) {
   return static_cast<char*>(slot.target.data) + row * slot.target.capacity;
 }
 
+// The most parameters one statement may declare: the extended protocol counts
+// them in two bytes, and a row group of a folded insert carries one per
+// column.
+constexpr std::size_t k_parameter_ceiling = 65535;
+
 // A value the server sent as text, read as the whole number it has to be: a
 // run with anything left over after it is not a number at all.
 std::int64_t whole_integer(char const* text) {
@@ -158,10 +163,13 @@ PGconn* pq_statement::session() const {
 }
 
 pq_statement::~pq_statement() {
-  if (prepared_ && conn_.native() != nullptr) {
-    // The name is this statement's only hold on the server, and a cache that
-    // drops an entry must not leave a parse behind in the session. A refusal
-    // here says the session is gone, which is the same outcome.
+  if (conn_.native() == nullptr) {
+    return;
+  }
+  // This name is this statement's only hold on the server, and a cache that
+  // drops an entry must not leave a parse behind in the session. A refusal
+  // here says the session is gone, which is the same outcome.
+  if (prepared_) {
     detail::result_holder dropped{
       PQexec(conn_.native(), ("DEALLOCATE " + statement_name_).c_str())
     };
@@ -170,6 +178,10 @@ pq_statement::~pq_statement() {
 
 void pq_statement::prepare(std::string_view sql) {
   rewritten_ = rewrite_placeholders(sql, placeholder_count_);
+  fold_ = find_values_fold(rewritten_, placeholder_count_);
+  // The staged group was folded out of the text this statement held before.
+  group_rows_ = 0;
+  fold_text_.clear();
   prepare_under_name();
 }
 
@@ -245,10 +257,10 @@ void pq_statement::bind_column(
 }
 
 void pq_statement::bind_batch_params(std::vector<params> const& rows) {
-  // One execute per row: this backend offers no columnar channel. Row by row
-  // rather than batch_ = rows: params' variadic constructor outranks its
-  // implicit copy for a non-const lvalue, and a vector assignment reaches for
-  // it.
+  // Staged here and sent by execute(): this backend offers no columnar
+  // channel. Row by row rather than batch_ = rows: params' variadic
+  // constructor outranks its implicit copy for a non-const lvalue, and a
+  // vector assignment reaches for it.
   batch_.clear();
   batch_.reserve(rows.size());
   for (params const& row : rows) {
@@ -265,20 +277,25 @@ backend::batch_writer_iface& pq_statement::prepare_batch() {
 void pq_statement::render(std::vector<sql_value> const& values) {
   param_text_.clear();
   param_pointers_.clear();
+  sent_types_.clear();
   // The pointers libpq reads go into the strings staged here, so neither
   // vector may move after this reserve: a short value living inside its own
   // string would otherwise change address with the next parameter.
   param_text_.reserve(values.size());
   param_pointers_.reserve(values.size());
+  sent_types_.reserve(values.size());
+  // A folded batch carries the one row's parameters several times over, and
+  // the describe of the one-row text is the only reading of their types this
+  // statement has: each group repeats what that answer said.
   for (std::size_t index = 0; index < values.size(); ++index) {
     sql_value const& value = values[index];
+    sent_types_.push_back(index < param_types_.size()
+      ? param_types_[index % param_types_.size()] : 0);
     if (is_null(value)) {
       param_pointers_.push_back(nullptr);
       continue;
     }
-    unsigned const type =
-      index < param_types_.size() ? param_types_[index] : 0;
-    param_text_.push_back(render_one(value, type));
+    param_text_.push_back(render_one(value, sent_types_.back()));
     param_pointers_.push_back(param_text_.back().c_str());
   }
 }
@@ -317,6 +334,12 @@ PGresult* pq_statement::run() {
   // Text in both directions: the parameters are the words the server's own
   // input functions take, and a result read back as text is the same words,
   // which keeps an exact number exact.
+  if (folding_) {
+    return PQexecParams(session(), fold_text_.c_str(),
+      static_cast<int>(param_pointers_.size()), sent_types_.data(),
+      param_pointers_.empty() ? nullptr : param_pointers_.data(), nullptr,
+      nullptr, 0);
+  }
   return PQexecPrepared(session(), statement_name_.c_str(),
     static_cast<int>(param_pointers_.size()),
     param_pointers_.empty() ? nullptr : param_pointers_.data(), nullptr,
@@ -329,7 +352,8 @@ detail::result_holder pq_statement::run_ready() {
     // The name is this statement's own, so an answer saying the server holds
     // no such parse can only mean the session lost it -- a session that did not
     // keep the server connection it was made on, or a DEALLOCATE from outside.
-    // Making it again is the only reading of that answer.
+    // Making it again is the only reading of that answer. A folded group takes
+    // no name, so it never hears this.
     make_ready();
     render(values_);
     next = detail::result_holder{ run() };
@@ -339,6 +363,7 @@ detail::result_holder pq_statement::run_ready() {
 
 void pq_statement::execute() {
   conn_.open_transaction();
+  folding_ = false;
   if (!batch_.empty()) {
     run_batch();
     return;
@@ -353,6 +378,12 @@ void pq_statement::run_batch() {
   // leave the whole batch here for a replay that counts every row twice.
   std::vector<params> rows;
   rows.swap(batch_);
+  if (rows.size() > 1 && fold_.columns > 0 &&
+      fold_.columns <= k_parameter_ceiling) {
+    run_folded(rows);
+    return;
+  }
+  folding_ = false;
   std::size_t touched = 0;
   for (params const& row : rows) {
     values_.assign(row.values().begin(), row.values().end());
@@ -364,6 +395,47 @@ void pq_statement::run_batch() {
     // The last answer is the one the metadata reads are made against.
     result_ = std::move(next);
   }
+  settle(touched);
+}
+
+void pq_statement::run_folded(std::vector<params> const& rows) {
+  // The most rows one execute can carry: the protocol counts a statement's
+  // parameters in two bytes, and a group of them has one per column.
+  std::size_t const columns = fold_.columns;
+  std::size_t const ceiling = k_parameter_ceiling / columns;
+  // Groups of one size rather than full ones and a short tail: the text is
+  // written out for the count it carries, so a tail of its own length would
+  // make a second text and leave a repeating sweep alternating between them.
+  std::size_t const groups = (rows.size() + ceiling - 1) / ceiling;
+  std::size_t const per_group = (rows.size() + groups - 1) / groups;
+  folding_ = true;
+  std::size_t touched = 0;
+  for (std::size_t start = 0; start < rows.size(); start += per_group) {
+    std::size_t const count = (std::min)(per_group, rows.size() - start);
+    if (group_rows_ != count) {
+      fold_text_ = expand_values_fold(fold_, count);
+      group_rows_ = count;
+    }
+    values_.clear();
+    for (std::size_t row = start; row < start + count; ++row) {
+      std::vector<sql_value> const& values = rows[row].values();
+      values_.insert(values_.end(), values.begin(), values.end());
+    }
+    render(values_);
+    detail::result_holder next{ run() };
+    throw_if_failed(next.get(), "execute a folded statement",
+      { PGRES_COMMAND_OK, PGRES_TUPLES_OK });
+    touched += affected_of(next.get());
+    result_ = std::move(next);
+  }
+  folding_ = false;
+  // The group's values are staged in the member the one-row path keeps its
+  // own bind in, which is more values than that text declares.
+  values_.assign(placeholder_count_, sql_value{});
+  settle(touched);
+}
+
+void pq_statement::settle(std::size_t touched) {
   query_ = PQresultStatus(result_.get()) == PGRES_TUPLES_OK;
   affected_ = touched;
   cursor_ = 0;
@@ -373,16 +445,10 @@ void pq_statement::run_batch() {
 }
 
 void pq_statement::apply(detail::result_holder&& next) {
-  ExecStatusType const status = PQresultStatus(next.get());
   throw_if_failed(next.get(), "execute a prepared statement",
     { PGRES_COMMAND_OK, PGRES_TUPLES_OK });
   result_ = std::move(next);
-  query_ = status == PGRES_TUPLES_OK;
-  affected_ = affected_of(result_.get());
-  cursor_ = 0;
-  block_start_ = 0;
-  rows_fetched_ = 0;
-  declare_shape();
+  settle(affected_of(result_.get()));
 }
 
 void pq_statement::declare_shape() {

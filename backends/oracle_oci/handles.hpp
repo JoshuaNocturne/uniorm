@@ -93,8 +93,8 @@ public:
 
   explicit basic_descriptor(void const* parent, char const* what) {
     void* raw = nullptr;
-    if (OCIDescriptorAlloc(
-          parent, &raw, DescriptorType, 0, nullptr) != OCI_SUCCESS ||
+    if (OCIDescriptorAlloc(parent, &raw, DescriptorType, 0, nullptr) !=
+          OCI_SUCCESS ||
         raw == nullptr) {
       throw oci_error(
         "allocate the OCI descriptor for " + std::string(what), {});

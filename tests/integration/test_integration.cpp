@@ -19,6 +19,7 @@
 
 #include <uniorm/async.hpp>
 #include <uniorm/backend/error.hpp>
+#include <uniorm/builder/builder.hpp>
 #include <uniorm/connection.hpp>
 #include <uniorm/connection_spec.hpp>
 #include <uniorm/converter.hpp>
@@ -28,7 +29,6 @@
 #include <uniorm/mapping/registry.hpp>
 #include <uniorm/orm.hpp>
 #include <uniorm/pool.hpp>
-#include <uniorm/builder/builder.hpp>
 #include <uniorm/transaction.hpp>
 #include <uniorm/value.hpp>
 
@@ -126,15 +126,15 @@ std::string const long_note(1000, 'x');
 // two do differently is either asked of the server or recorded from the scheme
 // that opened it -- never assumed from the leg that was written first.
 struct target_face {
-  std::string scheme;          // the plugin this run loads
+  std::string scheme;  // the plugin this run loads
   std::string connect_string;  // what a connection is handed
-  std::string dsn;             // the target, in this scheme's grammar
+  std::string dsn;  // the target, in this scheme's grammar
   std::string user;
   std::string password;
   // A 64-bit integral column, as this server's DDL spells it.
   std::string integer_type;
-  std::string wide_decimal;    // the widest scale this server's DECIMAL takes
-  std::string binary_type;     // a column of raw bytes, as this DDL spells it
+  std::string wide_decimal;  // the widest scale this server's DECIMAL takes
+  std::string binary_type;  // a column of raw bytes, as this DDL spells it
   // Whether a decimal's text arrives carrying the column's declared scale.
   bool pads_decimal_text = true;
   // Whether this backend answers catalog reads at all; probed, not declared,
@@ -143,7 +143,7 @@ struct target_face {
   // Whether this backend holds its parses on the session under a name of its
   // own, which is the one thing a server can be asked to give back.
   bool holds_its_parses_by_name = false;
-  dialect server_dialect;      // detected from the banner this run read
+  dialect server_dialect;  // detected from the banner this run read
 };
 
 target_face the_target;
@@ -209,42 +209,51 @@ bool catalog_available() {
 void prepare_schema(orm& db) {
   std::string const id_type = the_target.integer_type;
   db.execute_update(std::string("DROP TABLE IF EXISTS ") + k_table);
-  db.execute_update(std::string("CREATE TABLE ") + k_table +
-                      " (id " + id_type + " NOT NULL PRIMARY KEY,"
-                      " name VARCHAR(64) NOT NULL,"
-                      " age INT NULL,"
-                      " balance DOUBLE PRECISION NOT NULL,"
-                      " note VARCHAR(2000) NULL,"
-                      " created TIMESTAMP NULL)");
+  db.execute_update(std::string("CREATE TABLE ") + k_table + " (id " + id_type +
+                    " NOT NULL PRIMARY KEY,"
+                    " name VARCHAR(64) NOT NULL,"
+                    " age INT NULL,"
+                    " balance DOUBLE PRECISION NOT NULL,"
+                    " note VARCHAR(2000) NULL,"
+                    " created TIMESTAMP NULL)");
   db.execute_update(std::string("DROP TABLE IF EXISTS ") + k_pair_table);
-  db.execute_update(std::string("CREATE TABLE ") + k_pair_table +
-                      " (grp " + id_type + " NOT NULL,"
-                      " idx " + id_type + " NOT NULL,"
-                      " label VARCHAR(64) NOT NULL,"
-                      " PRIMARY KEY (grp, idx))");
+  db.execute_update(std::string("CREATE TABLE ") + k_pair_table + " (grp " +
+                    id_type +
+                    " NOT NULL,"
+                    " idx " +
+                    id_type +
+                    " NOT NULL,"
+                    " label VARCHAR(64) NOT NULL,"
+                    " PRIMARY KEY (grp, idx))");
   db.execute_update(std::string("DROP TABLE IF EXISTS ") + k_order_table);
-  db.execute_update(std::string("CREATE TABLE ") + k_order_table +
-                      " (id " + id_type + " NOT NULL PRIMARY KEY,"
-                      " state VARCHAR(16) NOT NULL,"
-                      " note VARCHAR(16) NULL)");
+  db.execute_update(std::string("CREATE TABLE ") + k_order_table + " (id " +
+                    id_type +
+                    " NOT NULL PRIMARY KEY,"
+                    " state VARCHAR(16) NOT NULL,"
+                    " note VARCHAR(16) NULL)");
   db.execute_update(std::string("DROP TABLE IF EXISTS ") + k_dec_table);
-  db.execute_update(std::string("CREATE TABLE ") + k_dec_table +
-                      " (id " + id_type + " NOT NULL PRIMARY KEY,"
-                      " amount DECIMAL(20,4) NULL,"
-                      " whole DECIMAL(20,0) NULL,"
-                      " big DECIMAL(38,0) NULL)");
+  db.execute_update(std::string("CREATE TABLE ") + k_dec_table + " (id " +
+                    id_type +
+                    " NOT NULL PRIMARY KEY,"
+                    " amount DECIMAL(20,4) NULL,"
+                    " whole DECIMAL(20,0) NULL,"
+                    " big DECIMAL(38,0) NULL)");
   db.execute_update(std::string("DROP TABLE IF EXISTS ") + k_money_table);
-  db.execute_update(std::string("CREATE TABLE ") + k_money_table +
-                      " (id " + id_type + " NOT NULL PRIMARY KEY,"
-                      " amount DECIMAL(20,4) NOT NULL,"
-                      " wide " + the_target.wide_decimal + " NULL,"
-                      " whole DECIMAL(20,0) NOT NULL)");
+  db.execute_update(std::string("CREATE TABLE ") + k_money_table + " (id " +
+                    id_type +
+                    " NOT NULL PRIMARY KEY,"
+                    " amount DECIMAL(20,4) NOT NULL,"
+                    " wide " +
+                    the_target.wide_decimal +
+                    " NULL,"
+                    " whole DECIMAL(20,0) NOT NULL)");
   db.execute_update(std::string("DROP TABLE IF EXISTS ") + k_case_table);
-  db.execute_update(std::string("CREATE TABLE ") + k_case_table +
-                      " (ID " + id_type + " NOT NULL PRIMARY KEY,"
-                      " NAME VARCHAR(64) NOT NULL)");
+  db.execute_update(std::string("CREATE TABLE ") + k_case_table + " (ID " +
+                    id_type +
+                    " NOT NULL PRIMARY KEY,"
+                    " NAME VARCHAR(64) NOT NULL)");
   db.execute_update(std::string("INSERT INTO ") + k_case_table +
-                      " (ID, NAME) VALUES (1, 'raised')");
+                    " (ID, NAME) VALUES (1, 'raised')");
 }
 
 void seed_rows(orm& db) {
@@ -295,9 +304,9 @@ void test_decimal_dynamic(orm& db) {
   db.execute_update(std::string("INSERT INTO ") + k_dec_table +
                     " (id, amount, whole, big) VALUES (3, NULL, NULL, NULL)");
 
-  result_set rs = db.execute(
-    std::string("SELECT id, amount, whole, big FROM ") + k_dec_table +
-    " ORDER BY id");
+  result_set rs =
+    db.execute(std::string("SELECT id, amount, whole, big FROM ") +
+               k_dec_table + " ORDER BY id");
   CHECK(rs.column(1).type == sql_type::decimal);
   CHECK(rs.column(1).scale == 4);
   CHECK(rs.column(1).display_size >= 20);
@@ -337,8 +346,8 @@ void test_number_text_ceiling(orm& db) {
     db.execute_update(std::string("DROP TABLE ") + k_num_table);
   } catch (...) {
   }
-  db.execute_update(std::string("CREATE TABLE ") + k_num_table +
-                    " (id NUMBER, spell NUMBER)");
+  db.execute_update(
+    std::string("CREATE TABLE ") + k_num_table + " (id NUMBER, spell NUMBER)");
   db.execute_update(std::string("INSERT INTO ") + k_num_table +
                     " (id, spell) VALUES (1, 1.0E-80)");
   result_set rs = db.execute(
@@ -388,9 +397,9 @@ void test_decimal_mapped(orm& db) {
   CHECK(rows[0].amount == back[0].amount);
   CHECK(rows[1].wide == std::nullopt);
 
-  result_set rs = db.execute(
-    "SELECT id, amount FROM uniorm_it_money WHERE id = ?",
-    params{ std::int64_t{ 2 } });
+  result_set rs =
+    db.execute("SELECT id, amount FROM uniorm_it_money WHERE id = ?",
+      params{ std::int64_t{ 2 } });
   CHECK(rs.next());
   row r = rs.current();
   CHECK(r.get<decimal_t>(label("amount")) == decimal_t::from_literal("-0.05"));
@@ -488,9 +497,9 @@ void test_converter_round_trip(orm& db) {
 
   // What the driver receives is the representation, never the ordinal.
   {
-    result_set rs = db.execute(
-      "SELECT id, state, note FROM uniorm_it_order WHERE id = ?",
-      params{ std::int64_t{ 1 } });
+    result_set rs =
+      db.execute("SELECT id, state, note FROM uniorm_it_order WHERE id = ?",
+        params{ std::int64_t{ 1 } });
     CHECK(rs.next());
     row r = rs.current();
     CHECK(r.get<std::string>(label("state")) == "gold");
@@ -498,9 +507,8 @@ void test_converter_round_trip(orm& db) {
     CHECK(r.is_null(label("note")));
   }
 
-  auto second = db.query<Order>()
-                  .where(eq(&Order::id, std::int64_t{ 2 }))
-                  .one();
+  auto second =
+    db.query<Order>().where(eq(&Order::id, std::int64_t{ 2 })).one();
   CHECK(second.has_value());
   CHECK(second->state == grade::silver);
   CHECK(second->note && *second->note == grade::bronze);
@@ -527,9 +535,8 @@ void test_converter_round_trip(orm& db) {
           .set(&Order::state, grade::silver)
           .set(&Order::note, nullptr)
           .execute() == 1);
-  auto edited = db.query<Order>()
-                  .where(eq(&Order::id, std::int64_t{ 3 }))
-                  .one();
+  auto edited =
+    db.query<Order>().where(eq(&Order::id, std::int64_t{ 3 })).one();
   CHECK(edited && edited->state == grade::silver);
   CHECK(edited && !edited->note.has_value());
 
@@ -555,9 +562,7 @@ void test_converter_round_trip(orm& db) {
           .set("state", grade::gold)
           .where("id = ?", params{ std::int64_t{ 1 } })
           .execute() == 1);
-  CHECK(db.query<Order>()
-          .where(eq(&Order::state, grade::gold))
-          .count() == 1);
+  CHECK(db.query<Order>().where(eq(&Order::state, grade::gold)).count() == 1);
 
   db.execute_update(std::string("DELETE FROM ") + k_order_table);
 }
@@ -638,7 +643,7 @@ void test_validate(std::string_view conn_string) {
     // converter type is its representation, not the domain type.
     struct Swapped {
       grade id = grade::bronze;  // text against a BIGINT column
-      std::int64_t state = 0;    // bigint against a VARCHAR column
+      std::int64_t state = 0;  // bigint against a VARCHAR column
     };
     orm bad(conn_string);
     bad.map<Swapped>(k_order_table)
@@ -692,8 +697,8 @@ void test_identifier_spelling(std::string_view conn_string) {
   std::string reported_id;
   std::string id_column;
   std::string name_column;
-  for (auto const& column : metadata.exact_table_columns(
-         { catalog_name, schema_name, stored })) {
+  for (auto const& column :
+    metadata.exact_table_columns({ catalog_name, schema_name, stored })) {
     std::string const folded = detail::fold_lower(column.shape.name);
     if (folded == "id") {
       reported_id = column.shape.name;
@@ -709,8 +714,9 @@ void test_identifier_spelling(std::string_view conn_string) {
 
   // The fold carrying one spelling onto the other; no answer where the two
   // differ by more than case.
-  auto fold_to = [](std::string const& from, std::string const& to)
-    -> std::optional<dialect::identifier_case> {
+  auto fold_to =
+    [](std::string const& from,
+      std::string const& to) -> std::optional<dialect::identifier_case> {
     if (detail::fold_upper(from) == to) {
       return dialect::identifier_case::upper;
     }
@@ -737,8 +743,7 @@ void test_identifier_spelling(std::string_view conn_string) {
   // A server that folds the names it is given answers the undeclared mapping
   // as well: the policy comes off the banner, so nothing has to be declared
   // for the spelling this server stores to be the one the mapping writes.
-  if (the_target.server_dialect.identifiers !=
-      dialect::identifier_case::keep) {
+  if (the_target.server_dialect.identifiers != dialect::identifier_case::keep) {
     db.validate();
     CHECK(db.query<CaseUser>().count() == 1);
   }
@@ -797,11 +802,14 @@ void test_identifier_spelling(std::string_view conn_string) {
   added[0].name = "second again";
   added[1].name = "third";
   CHECK(db.update(added) == 2);
-  CHECK(db.update<CaseUser>().where(eq(&CaseUser::id, std::int64_t{ 3 }))
-    .set(&CaseUser::name, "changed").execute() == 1);
+  CHECK(db.update<CaseUser>()
+          .where(eq(&CaseUser::id, std::int64_t{ 3 }))
+          .set(&CaseUser::name, "changed")
+          .execute() == 1);
   auto selected = db.query<CaseUser>()
-    .where(ge(&CaseUser::id, std::int64_t{ 2 }))
-    .order_by(&CaseUser::id).all();
+                    .where(ge(&CaseUser::id, std::int64_t{ 2 }))
+                    .order_by(&CaseUser::id)
+                    .all();
   CHECK(selected.size() == 2);
   if (selected.size() == 2) {
     CHECK(selected[0].name == "second again");
@@ -810,8 +818,9 @@ void test_identifier_spelling(std::string_view conn_string) {
   CHECK(db.remove(added[0], { id_column }) == 1);
   CHECK(db.remove(std::vector<CaseUser>{ added[1] }) == 1);
   CHECK(db.insert(std::vector<CaseUser>{ { 4, "four" } }) == 1);
-  CHECK(db.remove<CaseUser>().where(eq(&CaseUser::id, std::int64_t{ 4 }))
-    .execute() == 1);
+  CHECK(db.remove<CaseUser>()
+          .where(eq(&CaseUser::id, std::int64_t{ 4 }))
+          .execute() == 1);
   CHECK(db.query<CaseUser>().count() == 1);
   transaction.rollback();
 }
@@ -835,26 +844,29 @@ void test_identifier_case_twins(std::string_view conn_string) {
   std::string const prefix = dialect.quote_exact_identifier(schema_name) + ".";
   std::string const mixed_name = "Uniorm_IT_Resolve_Twin";
   std::string const lower_name = detail::fold_lower(mixed_name);
-  std::string const mixed_table = prefix +
-    dialect.quote_exact_identifier(mixed_name);
-  std::string const lower_table = prefix +
-    dialect.quote_exact_identifier(lower_name);
+  std::string const mixed_table =
+    prefix + dialect.quote_exact_identifier(mixed_name);
+  std::string const lower_table =
+    prefix + dialect.quote_exact_identifier(lower_name);
   auto transaction = db.begin();
-  db.execute_update("CREATE TABLE " + lower_table +
+  db.execute_update(
+    "CREATE TABLE " + lower_table +
     " (id BIGINT NOT NULL PRIMARY KEY, name VARCHAR(64) NOT NULL)");
   db.execute_update("INSERT INTO " + lower_table + " VALUES (22, 'lower')");
   db.map<CaseUser>(mixed_name)
-    .primary_key("Id", &CaseUser::id).column("Name", &CaseUser::name);
+    .primary_key("Id", &CaseUser::id)
+    .column("Name", &CaseUser::name);
   db.resolve_identifiers(catalog_name, schema_name);
   CHECK(db.meta<CaseUser>().resolved->table.name == lower_name);
   auto first = db.query<CaseUser>().one();
   CHECK(first && first->id == 22 && first->name == "lower");
 
-  db.execute_update("CREATE TABLE " + mixed_table +
+  db.execute_update(
+    "CREATE TABLE " + mixed_table +
     " (\"ID\" BIGINT NOT NULL PRIMARY KEY, \"NAME\" VARCHAR(64) NOT NULL,"
     " \"EXTRA\" INT)");
-  db.execute_update("INSERT INTO " + mixed_table +
-    " (\"ID\", \"NAME\") VALUES (11, 'exact')");
+  db.execute_update(
+    "INSERT INTO " + mixed_table + " (\"ID\", \"NAME\") VALUES (11, 'exact')");
   db.resolve_identifiers(catalog_name, schema_name);
   CHECK(db.meta<CaseUser>().resolved->table.name == mixed_name);
   CHECK(db.meta<CaseUser>().resolved->columns[0] == "ID");
@@ -872,22 +884,26 @@ void test_identifier_case_twins(std::string_view conn_string) {
   CHECK(folded && folded->id == 22 && folded->name == "lower");
   db.identifier_case(dialect::identifier_case::keep);
   CHECK(db.query<CaseUser>().build_select().find(
-    dialect.quote_exact_identifier(mixed_name)) != std::string::npos);
+          dialect.quote_exact_identifier(mixed_name)) != std::string::npos);
   db.identifier_case(std::nullopt);
 
   db.execute_update("CREATE TEMP TABLE " +
-    dialect.quote_exact_identifier(mixed_name) +
-    " (\"ID\" BIGINT, \"NAME\" VARCHAR(64))");
-  db.execute_update("INSERT INTO " + dialect.quote_exact_identifier(mixed_name) +
-    " VALUES (99, 'shadow')");
+                    dialect.quote_exact_identifier(mixed_name) +
+                    " (\"ID\" BIGINT, \"NAME\" VARCHAR(64))");
+  db.execute_update("INSERT INTO " +
+                    dialect.quote_exact_identifier(mixed_name) +
+                    " VALUES (99, 'shadow')");
   db.resolve_identifiers(catalog_name, schema_name);
   auto qualified = db.query<CaseUser>().one();
   CHECK(qualified && qualified->id == 11 && qualified->name == "exact");
 
-  struct AmbiguousUser { std::int64_t id; };
+  struct AmbiguousUser {
+    std::int64_t id;
+  };
   db.map<AmbiguousUser>(detail::fold_upper(mixed_name))
     .primary_key("ID", &AmbiguousUser::id);
-  CHECK_THROWS(db.resolve_identifiers(catalog_name, schema_name), mapping_error);
+  CHECK_THROWS(
+    db.resolve_identifiers(catalog_name, schema_name), mapping_error);
   CHECK(!db.meta<AmbiguousUser>().resolved);
   CHECK(db.meta<CaseUser>().resolved->table.name == mixed_name);
   transaction.rollback();
@@ -899,15 +915,13 @@ void test_query_builder(orm& db) {
   auto all = db.query<User>().all();
   CHECK(all.size() == 3);
 
-  auto one = db.query<User>()
-               .where(eq(&User::name, std::string("alice")))
-               .one();
+  auto one =
+    db.query<User>().where(eq(&User::name, std::string("alice"))).one();
   CHECK(one.has_value() && one->id == 1 && one->age.value_or(0) == 30);
   CHECK(one->created.has_value());
 
-  auto none = db.query<User>()
-                .where(eq(&User::name, std::string("nobody")))
-                .one();
+  auto none =
+    db.query<User>().where(eq(&User::name, std::string("nobody"))).one();
   CHECK(!none.has_value());
 
   auto adults = db.query<User>().where(gt(&User::age, 26)).all();
@@ -922,8 +936,7 @@ void test_query_builder(orm& db) {
       .all();
   CHECK(picked.size() == 2);
 
-  auto liked =
-    db.query<User>().where(like(&User::name, "a%")).all();
+  auto liked = db.query<User>().where(like(&User::name, "a%")).all();
   CHECK(liked.size() == 1 && liked[0].name == "alice");
 
   auto combined =
@@ -939,9 +952,8 @@ void test_query_builder(orm& db) {
                 .all();
   CHECK(page.size() == 2 && page[0].id == 2 && page[1].id == 1);
 
-  std::string sql = db.query<User>()
-                      .where(eq(&User::id, std::int64_t{ 1 }))
-                      .build_select();
+  std::string sql =
+    db.query<User>().where(eq(&User::id, std::int64_t{ 1 })).build_select();
   // Which quote character lands here is the server's own doing: the dialect is
   // detected from the banner this connection read, not from the driver.
   dialect const d = dialect::detect(db.native_connection().dbms_name());
@@ -955,15 +967,13 @@ void test_query_builder(orm& db) {
   db.identifier_case(dialect::identifier_case::upper);
   dialect raised_dialect = d;
   raised_dialect.identifiers = dialect::identifier_case::upper;
-  std::string raised = db.query<User>()
-                         .where(eq(&User::id, std::int64_t{ 1 }))
-                         .build_select();
-  CHECK(raised.find(
-    raised_dialect.quote_identifier("UNIORM_IT_USER")) != std::string::npos);
+  std::string raised =
+    db.query<User>().where(eq(&User::id, std::int64_t{ 1 })).build_select();
+  CHECK(raised.find(raised_dialect.quote_identifier("UNIORM_IT_USER")) !=
+        std::string::npos);
   // What a fold removes is the declared spelling, not the folded one: on a
   // server whose dialect already folds, the two are the same text.
-  std::string const declared_spelling =
-    d.quote_exact_identifier("id") + " = ?";
+  std::string const declared_spelling = d.quote_exact_identifier("id") + " = ?";
   CHECK(raised.find(declared_spelling) == std::string::npos);
   // Undeclare rather than declare keep: keep is a policy of its own, and the
   // stages after this one run on this same object.
@@ -975,7 +985,7 @@ void test_transaction(orm& db) {
     transaction tx = db.begin();
     CHECK(tx.active());
     db.execute_update("INSERT INTO uniorm_it_user (id, name, age, balance)"
-                        " VALUES (?, ?, ?, ?)",
+                      " VALUES (?, ?, ?, ?)",
       params{ std::int64_t{ 100 }, std::string("temp"), nullptr, 0.0 });
     tx.rollback();
     CHECK(!tx.active());
@@ -985,7 +995,7 @@ void test_transaction(orm& db) {
   {
     transaction tx = db.begin();
     db.execute_update("INSERT INTO uniorm_it_user (id, name, age, balance)"
-                        " VALUES (?, ?, ?, ?)",
+                      " VALUES (?, ?, ?, ?)",
       params{ std::int64_t{ 101 }, std::string("kept"), nullptr, 0.0 });
     tx.commit();
   }
@@ -994,7 +1004,7 @@ void test_transaction(orm& db) {
   {
     transaction tx = db.begin();  // destructor must roll back
     db.execute_update("INSERT INTO uniorm_it_user (id, name, age, balance)"
-                        " VALUES (?, ?, ?, ?)",
+                      " VALUES (?, ?, ?, ?)",
       params{ std::int64_t{ 102 }, std::string("dropped"), nullptr, 0.0 });
   }
   CHECK(db.query<User>().count() == 4);
@@ -1012,12 +1022,10 @@ void test_auto_commit_scope(orm& db, std::string const& conn_string) {
   db.execute_update("DELETE FROM uniorm_it_user WHERE id >= 700");
   CHECK(db.auto_commit());
   auto mine = [&db] {
-    return db.query<User>()
-      .where(ge(&User::id, std::int64_t{ 700 }))
-      .count();
+    return db.query<User>().where(ge(&User::id, std::int64_t{ 700 })).count();
   };
-  auto visible = std::string(
-    "SELECT COUNT(*) FROM uniorm_it_user WHERE id >= 700");
+  auto visible =
+    std::string("SELECT COUNT(*) FROM uniorm_it_user WHERE id >= 700");
   auto seen_elsewhere = [&](orm& other) {
     result_set rs = other.execute(visible);
     rs.next();
@@ -1028,10 +1036,9 @@ void test_auto_commit_scope(orm& db, std::string const& conn_string) {
       "INSERT INTO uniorm_it_user (id, name, age, balance) VALUES (?, ?, ?, ?)",
       params{ id, std::string("leaked"), nullptr, 0.0 });
   };
-  std::vector<User> batch{
-    User{ 700, "henry", std::nullopt, 0.0, std::nullopt, std::nullopt },
-    User{ 701, "iris", std::nullopt, 0.0, std::nullopt, std::nullopt }
-  };
+  std::vector<User> batch{ User{ 700, "henry", std::nullopt, 0.0, std::nullopt,
+                             std::nullopt },
+    User{ 701, "iris", std::nullopt, 0.0, std::nullopt, std::nullopt } };
 
   // A caller transaction covers all three write shapes: rolling it back must
   // erase the batch too, which it used not to.
@@ -1075,7 +1082,7 @@ void test_auto_commit_scope(orm& db, std::string const& conn_string) {
   User renamed = batch[0];
   renamed.name = "kate";
   CHECK(db.update(renamed) == 1);
-  CHECK(mine() == 2);        // this connection sees its own pending work
+  CHECK(mine() == 2);  // this connection sees its own pending work
   CHECK(seen_elsewhere(other) == 0);
   db.commit();
   CHECK(seen_elsewhere(other) == 2);  // durable at last
@@ -1089,9 +1096,8 @@ void test_auto_commit_scope(orm& db, std::string const& conn_string) {
   CHECK(seen_elsewhere(other) == 2);
 
   // Switching the mode back on does not discard: it commits what is pending.
-  std::vector<User> extra{
-    User{ 702, "june", std::nullopt, 0.0, std::nullopt, std::nullopt }
-  };
+  std::vector<User> extra{ User{
+    702, "june", std::nullopt, 0.0, std::nullopt, std::nullopt } };
   CHECK(db.insert(extra) == 1);
   CHECK(mine() == 3);
   CHECK(seen_elsewhere(other) == 2);
@@ -1127,7 +1133,7 @@ void test_auto_commit_scope(orm& db, std::string const& conn_string) {
     CHECK(!manual.native_connection().autocommit());
     put(manual, 706);
     CHECK(seen_elsewhere(manual) == 2);  // 704 durable, plus its own 706
-    CHECK(seen_elsewhere(other) == 1);   // just 704 so far
+    CHECK(seen_elsewhere(other) == 1);  // just 704 so far
     manual.commit();
     CHECK(seen_elsewhere(other) == 2);
   }
@@ -1148,9 +1154,7 @@ void test_insert(orm& db) {
   CHECK(db.insert(users) == 3);
   CHECK(db.query<User>().count() == 6);
 
-  auto erin = db.query<User>()
-                .where(eq(&User::id, std::int64_t{ 201 }))
-                .one();
+  auto erin = db.query<User>().where(eq(&User::id, std::int64_t{ 201 })).one();
   CHECK(erin.has_value());
   CHECK(erin->name == "erin");
   CHECK(!erin->age.has_value());  // empty optional written as NULL
@@ -1195,9 +1199,9 @@ void test_batch_round_trip(orm& db) {
     } else {
       row.name = std::string(64, 'm');
     }
-    row.age = offset % 4 == 0
-      ? std::nullopt
-      : std::optional<std::int32_t>(static_cast<std::int32_t>(offset % 97));
+    row.age = offset % 4 == 0 ? std::nullopt
+                              : std::optional<std::int32_t>(
+                                  static_cast<std::int32_t>(offset % 97));
     row.balance = -0.5 * static_cast<double>(offset);
     if (offset % 5 == 0) {
       row.note = std::nullopt;
@@ -1209,12 +1213,13 @@ void test_batch_round_trip(orm& db) {
     }
     // Seconds apart, one row to the next, and one row in seven left NULL: a
     // batch whose timestamps all read the same would prove nothing.
-    row.created = offset % 7 == 0
-      ? std::nullopt
-      : std::optional<timestamp>(detail::make_timestamp(2024,
-          static_cast<int>(1 + offset % 12), static_cast<int>(1 + offset % 28),
-          static_cast<int>(offset % 24), static_cast<int>(offset % 60),
-          static_cast<int>(offset % 60), 0));
+    row.created =
+      offset % 7 == 0
+        ? std::nullopt
+        : std::optional<timestamp>(
+            detail::make_timestamp(2024, static_cast<int>(1 + offset % 12),
+              static_cast<int>(1 + offset % 28), static_cast<int>(offset % 24),
+              static_cast<int>(offset % 60), static_cast<int>(offset % 60), 0));
     rows.push_back(std::move(row));
   }
 
@@ -1233,47 +1238,42 @@ void test_batch_round_trip(orm& db) {
   };
 
   CHECK(db.insert(rows) == static_cast<std::size_t>(count));
-  matches(db.query<User>()
-            .where(ge(&User::id, first))
-            .order_by(&User::id)
-            .all());
+  matches(
+    db.query<User>().where(ge(&User::id, first)).order_by(&User::id).all());
 
   // The same keys written again with every column moved, including the ones
   // that were NULL and the ones that become NULL.
   std::vector<User> moved = rows;
   for (std::size_t index = 0; index < moved.size(); ++index) {
-    moved[index].name = index % 3 == 0
-      ? std::string(30, 'w')
-      : std::string(64, 'v');
-    moved[index].age = index % 3 == 0
-      ? std::nullopt
-      : std::optional<std::int32_t>(static_cast<std::int32_t>(index % 61));
+    moved[index].name =
+      index % 3 == 0 ? std::string(30, 'w') : std::string(64, 'v');
+    moved[index].age =
+      index % 3 == 0
+        ? std::nullopt
+        : std::optional<std::int32_t>(static_cast<std::int32_t>(index % 61));
     moved[index].balance = 0.25 * static_cast<double>(index);
-    moved[index].note = index % 4 == 0
-      ? std::nullopt
-      : std::optional<std::string>(long_note);
-    moved[index].created = index % 6 == 0
-      ? std::nullopt
-      : std::optional<timestamp>(detail::make_timestamp(2023,
-          static_cast<int>(1 + index % 12), static_cast<int>(1 + index % 28),
-          static_cast<int>(index % 24), static_cast<int>(index % 60),
-          static_cast<int>(index % 60), 0));
+    moved[index].note =
+      index % 4 == 0 ? std::nullopt : std::optional<std::string>(long_note);
+    moved[index].created =
+      index % 6 == 0
+        ? std::nullopt
+        : std::optional<timestamp>(
+            detail::make_timestamp(2023, static_cast<int>(1 + index % 12),
+              static_cast<int>(1 + index % 28), static_cast<int>(index % 24),
+              static_cast<int>(index % 60), static_cast<int>(index % 60), 0));
   }
   CHECK(db.update(moved) == static_cast<std::size_t>(count));
   rows = moved;
-  matches(db.query<User>()
-            .where(ge(&User::id, first))
-            .order_by(&User::id)
-            .all());
+  matches(
+    db.query<User>().where(ge(&User::id, first)).order_by(&User::id).all());
 
   std::vector<User> every_third;
   for (std::size_t index = 0; index < rows.size(); index += 3) {
     every_third.push_back(rows[index]);
   }
   CHECK(db.remove(every_third) == every_third.size());
-  CHECK(db.query<User>()
-          .where(ge(&User::id, first))
-          .count() == static_cast<std::size_t>(count) - every_third.size());
+  CHECK(db.query<User>().where(ge(&User::id, first)).count() ==
+        static_cast<std::size_t>(count) - every_third.size());
 
   db.execute_update(
     "DELETE FROM uniorm_it_user WHERE id >= ?", params{ first });
@@ -1291,11 +1291,14 @@ void test_batch_shapes(orm& db) {
   }
   db.execute_update(std::string("DROP TABLE IF EXISTS ") + k_chunk_table);
   std::string const id_type = the_target.integer_type;
-  db.execute_update(std::string("CREATE TABLE ") + k_chunk_table +
-                      " (id " + id_type + " NOT NULL PRIMARY KEY,"
-                      " data " + the_target.binary_type + " NULL,"
-                      " tag VARCHAR(64) NOT NULL,"
-                      " spare VARCHAR(64) NULL)");
+  db.execute_update(std::string("CREATE TABLE ") + k_chunk_table + " (id " +
+                    id_type +
+                    " NOT NULL PRIMARY KEY,"
+                    " data " +
+                    the_target.binary_type +
+                    " NULL,"
+                    " tag VARCHAR(64) NOT NULL,"
+                    " spare VARCHAR(64) NULL)");
   db.map<Chunk>(k_chunk_table)
     .primary_key("id", &Chunk::id)
     .column("data", &Chunk::data)
@@ -1324,13 +1327,11 @@ void test_batch_shapes(orm& db) {
   }
 
   CHECK(db.insert(rows) == static_cast<std::size_t>(count));
-  auto read = db.query<Chunk>()
-                .where(ge(&Chunk::id, first))
-                .order_by(&Chunk::id)
-                .all();
+  auto read =
+    db.query<Chunk>().where(ge(&Chunk::id, first)).order_by(&Chunk::id).all();
   CHECK(read.size() == static_cast<std::size_t>(count));
   for (std::size_t index = 0; index < read.size() && index < rows.size();
-       ++index) {
+    ++index) {
     CHECK(read[index].id == rows[index].id);
     CHECK(read[index].data == rows[index].data);
     CHECK(read[index].tag == rows[index].tag);
@@ -1350,16 +1351,14 @@ void test_batch_shapes(orm& db) {
     flipped.push_back(std::move(row));
   }
   CHECK(db.insert(flipped) == flipped.size());
-  read = db.query<Chunk>()
-           .where(ge(&Chunk::id, first))
-           .order_by(&Chunk::id)
-           .all();
+  read =
+    db.query<Chunk>().where(ge(&Chunk::id, first)).order_by(&Chunk::id).all();
   CHECK(read.size() == static_cast<std::size_t>(count) + flipped.size());
   for (std::size_t index = 0; index < read.size(); ++index) {
     // The whole sweep read back in order: the flipped rows follow the first
     // ones, so each row's shapes are its own.
-    Chunk const& sent = index < rows.size() ?
-      rows[index] : flipped[index - rows.size()];
+    Chunk const& sent =
+      index < rows.size() ? rows[index] : flipped[index - rows.size()];
     Chunk const& got = read[index];
     CHECK(got.id == sent.id);
     CHECK(got.data == sent.data);
@@ -1374,9 +1373,8 @@ void test_batch_shapes(orm& db) {
   recut.data = std::vector<std::byte>(64, std::byte{ 0x11 });
   recut.tag = std::string("recut");
   CHECK(db.update(recut) == 1);
-  auto one = db.query<Chunk>()
-               .where(eq(&Chunk::id, std::int64_t{ first }))
-               .one();
+  auto one =
+    db.query<Chunk>().where(eq(&Chunk::id, std::int64_t{ first })).one();
   CHECK(one.has_value());
   CHECK(one->data == recut.data);
   CHECK(one->tag == recut.tag);
@@ -1387,9 +1385,7 @@ void test_batch_shapes(orm& db) {
           .set("spare", std::string("later"))
           .where("id = ?", params{ std::int64_t{ first } })
           .execute() == 1);
-  one = db.query<Chunk>()
-          .where(eq(&Chunk::id, std::int64_t{ first }))
-          .one();
+  one = db.query<Chunk>().where(eq(&Chunk::id, std::int64_t{ first })).one();
   CHECK(one.has_value());
   CHECK(one->spare == std::optional<std::string>("later"));
 
@@ -1398,10 +1394,9 @@ void test_batch_shapes(orm& db) {
 }
 
 void test_update(orm& db) {
-  std::vector<User> users{
-    User{ 400, "ivy", std::int32_t{ 33 }, 1.0, std::nullopt, std::nullopt },
-    User{ 401, "jack", std::nullopt, 2.0, std::string("orig"), std::nullopt }
-  };
+  std::vector<User> users{ User{ 400, "ivy", std::int32_t{ 33 }, 1.0,
+                             std::nullopt, std::nullopt },
+    User{ 401, "jack", std::nullopt, 2.0, std::string("orig"), std::nullopt } };
   db.insert(users);
   CHECK(db.query<User>().count() == 5);
 
@@ -1411,9 +1406,7 @@ void test_update(orm& db) {
           .set("note", nullptr)
           .where("id = ?", params{ std::int64_t{ 400 } })
           .execute() == 1);
-  auto ivy = db.query<User>()
-               .where(eq(&User::id, std::int64_t{ 400 }))
-               .one();
+  auto ivy = db.query<User>().where(eq(&User::id, std::int64_t{ 400 })).one();
   CHECK(ivy.has_value() && ivy->age.value_or(0) == 34);
   CHECK(!ivy->note.has_value());
 
@@ -1423,24 +1416,20 @@ void test_update(orm& db) {
           .set(&User::note, std::string("edited"))
           .set(&User::balance, 2.5)
           .execute() == 1);
-  auto jack = db.query<User>()
-                .where(eq(&User::id, std::int64_t{ 401 }))
-                .one();
+  auto jack = db.query<User>().where(eq(&User::id, std::int64_t{ 401 })).one();
   CHECK(jack.has_value() && jack->note.value_or("") == "edited");
   CHECK(jack->balance == 2.5);
 
   // Guards: empty set or blank where must throw.
-  CHECK_THROWS(db.update(k_table)
-                 .where("id = ?", params{ std::int64_t{ 400 } })
-                 .execute(),
+  CHECK_THROWS(
+    db.update(k_table).where("id = ?", params{ std::int64_t{ 400 } }).execute(),
     uniorm_error);
   CHECK_THROWS(
     db.update(k_table).set("age", std::int32_t{ 1 }).execute(), uniorm_error);
   CHECK_THROWS(
     db.update<User>().where(eq(&User::id, std::int64_t{ 400 })).execute(),
     uniorm_error);
-  CHECK_THROWS(
-    db.update<User>().set(&User::age, std::int32_t{ 1 }).execute(),
+  CHECK_THROWS(db.update<User>().set(&User::age, std::int32_t{ 1 }).execute(),
     uniorm_error);
 
   db.execute_update(
@@ -1449,17 +1438,15 @@ void test_update(orm& db) {
 }
 
 void test_remove(orm& db) {
-  std::vector<User> users{
-    User{ 400, "ivy", std::int32_t{ 33 }, 1.0, std::nullopt, std::nullopt },
-    User{ 401, "jack", std::nullopt, 2.0, std::nullopt, std::nullopt }
-  };
+  std::vector<User> users{ User{ 400, "ivy", std::int32_t{ 33 }, 1.0,
+                             std::nullopt, std::nullopt },
+    User{ 401, "jack", std::nullopt, 2.0, std::nullopt, std::nullopt } };
   db.insert(users);
   CHECK(db.query<User>().count() == 5);
 
   // Entity delete through the builder.
-  CHECK(db.remove<User>()
-          .where(eq(&User::id, std::int64_t{ 400 }))
-          .execute() == 1);
+  CHECK(
+    db.remove<User>().where(eq(&User::id, std::int64_t{ 400 })).execute() == 1);
   CHECK(db.query<User>().count() == 4);
 
   // Dynamic delete.
@@ -1481,12 +1468,10 @@ void test_entity_update(orm& db) {
   CHECK(db.query<User>().count() == 4);
 
   // Update using primary key as WHERE.
-  User u2{ 500, "eve_updated", std::int32_t{ 29 }, 11.5, std::string("modified"),
-    std::nullopt };
+  User u2{ 500, "eve_updated", std::int32_t{ 29 }, 11.5,
+    std::string("modified"), std::nullopt };
   CHECK(db.update(u2) == 1);
-  auto row = db.query<User>()
-               .where(eq(&User::id, std::int64_t{ 500 }))
-               .one();
+  auto row = db.query<User>().where(eq(&User::id, std::int64_t{ 500 })).one();
   CHECK(row.has_value());
   CHECK(row->name == "eve_updated");
   CHECK(row->age.value_or(0) == 29);
@@ -1497,9 +1482,8 @@ void test_entity_update(orm& db) {
   User u3{ 501, "eve_updated", std::int32_t{ 30 }, 12.0, std::string("again"),
     std::nullopt };
   CHECK(db.update(u3, { "name" }) == 1);
-  auto row2 = db.query<User>()
-                .where(eq(&User::name, std::string("eve_updated")))
-                .one();
+  auto row2 =
+    db.query<User>().where(eq(&User::name, std::string("eve_updated"))).one();
   CHECK(row2.has_value());
   CHECK(row2->id == 501);
   CHECK(row2->age.value_or(0) == 30);
@@ -1519,9 +1503,8 @@ void test_composite_key_and_where_fields(orm& db) {
   CHECK(db.insert(pairs) == 3);
 
   auto label_of = [&db](std::int64_t grp, std::int64_t idx) {
-    std::string sql =
-      std::string("SELECT label FROM ") + k_pair_table +
-      " WHERE grp = ? AND idx = ?";
+    std::string sql = std::string("SELECT label FROM ") + k_pair_table +
+                      " WHERE grp = ? AND idx = ?";
     result_set rs = db.execute(sql, params{ grp, idx });
     if (!rs.next()) {
       return std::string("<missing>");
@@ -1552,19 +1535,17 @@ void test_composite_key_and_where_fields(orm& db) {
 
   // Unmapped WHERE fields used to be dropped on the way to the statement,
   // leaving placeholders without parameters and a misleading driver error.
-  std::vector<User> probe{ User{ 1, "alice", std::nullopt, 0.0, std::nullopt,
-    std::nullopt } };
-  auto const partly_unknown =
-    std::vector<std::string>{ "id", "colour" };
+  std::vector<User> probe{ User{
+    1, "alice", std::nullopt, 0.0, std::nullopt, std::nullopt } };
+  auto const partly_unknown = std::vector<std::string>{ "id", "colour" };
   CHECK_THROWS(db.update(probe, partly_unknown), mapping_error);
   CHECK_THROWS(db.remove(probe, partly_unknown), mapping_error);
   auto const none = std::vector<std::string>{};
   CHECK_THROWS(db.update(probe, none), uniorm_error);
   CHECK_THROWS(db.remove(probe, none), uniorm_error);
   // A WHERE covering every mapped column leaves nothing to assign.
-  auto const everything =
-    std::vector<std::string>{ "id", "name", "age", "balance", "note",
-      "created" };
+  auto const everything = std::vector<std::string>{ "id", "name", "age",
+    "balance", "note", "created" };
   CHECK_THROWS(db.update(probe, everything), uniorm_error);
 }
 
@@ -1652,9 +1633,7 @@ void test_a_dropped_parse_is_made_again(orm& db) {
   CHECK(db.remove(group) == group.size());
   db.execute_update("DEALLOCATE ALL");
   CHECK(db.insert(group) == group.size());
-  CHECK(db.query<User>()
-          .where(ge(&User::id, 9300))
-          .count() == group.size());
+  CHECK(db.query<User>().where(ge(&User::id, 9300)).count() == group.size());
   db.execute_update(
     "DELETE FROM uniorm_it_user WHERE id BETWEEN 9300 AND 9399");
 }
@@ -1797,7 +1776,7 @@ void test_pool_maintenance(std::string const& conn_string) {
     opts.size = n;
     opts.acquire_timeout = 1000ms;
     opts.heartbeat_interval = 20ms;  // so the sample crosses many passes
-    opts.max_idle_time = 10000ms;    // only a failed heartbeat may drop one
+    opts.max_idle_time = 10000ms;  // only a failed heartbeat may drop one
     connection_pool pool(std::move(opts));
     {
       std::vector<pooled_connection> held;
@@ -1885,8 +1864,8 @@ void test_connection_pieces(
 }
 
 bool same_row_except_name(User const& lhs, User const& rhs) {
-  return lhs.id == rhs.id && lhs.age == rhs.age && lhs.balance == rhs.balance
-    && lhs.note == rhs.note && lhs.created == rhs.created;
+  return lhs.id == rhs.id && lhs.age == rhs.age && lhs.balance == rhs.balance &&
+         lhs.note == rhs.note && lhs.created == rhs.created;
 }
 
 bool same_row(User const& lhs, User const& rhs) {
@@ -1906,19 +1885,18 @@ std::vector<User> read_range(orm& db) {
 async::task<void> drive_session(async::orm& session, std::size_t& inserted,
   std::size_t& updated, std::vector<User>& all_rows, std::optional<User>& one,
   std::vector<User>& by_sql) {
-  std::vector<User> rows{
-    User{ 9003, "gina", std::int32_t{ 44 }, 3.5, std::nullopt, std::nullopt },
+  std::vector<User> rows{ User{ 9003, "gina", std::int32_t{ 44 }, 3.5,
+                            std::nullopt, std::nullopt },
     User{ 9004, "hank", std::nullopt, 4.5, std::string("async"),
-      detail::make_timestamp(2026, 1, 2, 3, 4, 5, 0) }
-  };
+      detail::make_timestamp(2026, 1, 2, 3, 4, 5, 0) } };
   inserted = co_await session.insert(rows);
   all_rows = co_await session.query<User>()
-    .where(ge(&User::id, std::int64_t{ 9000 }))
-    .order_by(&User::id)
-    .all();
+               .where(ge(&User::id, std::int64_t{ 9000 }))
+               .order_by(&User::id)
+               .all();
   one = co_await session.query<User>()
-    .where(eq(&User::id, std::int64_t{ 9004 }))
-    .one();
+          .where(eq(&User::id, std::int64_t{ 9004 }))
+          .one();
   updated = co_await session.execute_update(
     "UPDATE uniorm_it_user SET name = ? WHERE id = ?",
     params{ std::string("renamed"), std::int64_t{ 9004 } });
@@ -1933,11 +1911,10 @@ async::task<void> drive_session(async::orm& session, std::size_t& inserted,
 // every check compares one async read against the sync read of the same rows:
 // a passing run says the two faces are one database path, not two look-alikes.
 void test_async_reads(std::string const& conn_string, orm& db) {
-  std::vector<User> seeded{
-    User{ 9000, "amy", std::int32_t{ 20 }, 1.0, std::nullopt, std::nullopt },
+  std::vector<User> seeded{ User{ 9000, "amy", std::int32_t{ 20 }, 1.0,
+                              std::nullopt, std::nullopt },
     User{ 9001, "ben", std::nullopt, 2.0, std::string("sync"), std::nullopt },
-    User{ 9002, "cid", std::int32_t{ 30 }, -1.0, std::nullopt, std::nullopt }
-  };
+    User{ 9002, "cid", std::int32_t{ 30 }, -1.0, std::nullopt, std::nullopt } };
   CHECK(db.insert(seeded) == 3);
 
   std::size_t inserted = 0;
@@ -1996,14 +1973,13 @@ void test_async_reads(std::string const& conn_string, orm& db) {
   CHECK(one->note.value_or("") == "async");
   CHECK(one->created.has_value());
 
-  auto const renamed = db.query<User>()
-    .where(eq(&User::id, std::int64_t{ 9004 }))
-    .one();
+  auto const renamed =
+    db.query<User>().where(eq(&User::id, std::int64_t{ 9004 })).one();
   CHECK(renamed.has_value());
   CHECK(renamed->name == "renamed");
 
   CHECK(db.execute_update("DELETE FROM uniorm_it_user WHERE id >= ?",
-    params{ std::int64_t{ 9000 } }) == 5);
+          params{ std::int64_t{ 9000 } }) == 5);
   CHECK(read_range(db).empty());
 }
 
@@ -2034,10 +2010,7 @@ std::string report_of(std::exception_ptr bad) {
 }
 
 std::vector<User> read_band(orm& db, std::int64_t floor) {
-  return db.query<User>()
-    .where(ge(&User::id, floor))
-    .order_by(&User::id)
-    .all();
+  return db.query<User>().where(ge(&User::id, floor)).order_by(&User::id).all();
 }
 
 std::optional<User> row_at(orm& db, std::int64_t id) {
@@ -2130,19 +2103,18 @@ void test_async_failure_reaches_every_exit(
     }
     CHECK(session.pending() == 0);
 
-    session.query<User>(k_missing_sql)
-      .start([&](std::exception_ptr bad) {
-        handed_reported = true;
-        handed_report = report_of(bad);
-      });
+    session.query<User>(k_missing_sql).start([&](std::exception_ptr bad) {
+      handed_reported = true;
+      handed_report = report_of(bad);
+    });
 
     // The other half of what start() promises: a body that lands is reported
     // nowhere, and no thread here waits for this write.
-    session.execute_update(
-      "INSERT INTO uniorm_it_user (id, name, age, balance)"
-      " VALUES (?, ?, ?, ?)",
-      params{ std::int64_t{ 9100 }, std::string("handed"), std::int32_t{ 5 },
-        1.0 })
+    session
+      .execute_update("INSERT INTO uniorm_it_user (id, name, age, balance)"
+                      " VALUES (?, ?, ?, ?)",
+        params{
+          std::int64_t{ 9100 }, std::string("handed"), std::int32_t{ 5 }, 1.0 })
       .start([&](std::exception_ptr) { kept_reported = true; });
 
     session.query<User>(k_missing_sql, params{},
@@ -2175,15 +2147,15 @@ void test_async_failure_reaches_every_exit(
   clear_band(db);
 }
 
-async::task<void> commit_a_write(async::orm& session, bool& opened,
-  bool& closed) {
+async::task<void> commit_a_write(
+  async::orm& session, bool& opened, bool& closed) {
   auto tx = co_await session.begin();
   opened = tx.active();
   co_await session.execute_update(
     "INSERT INTO uniorm_it_user (id, name, age, balance)"
     " VALUES (?, ?, ?, ?)",
-    params{ std::int64_t{ 9120 }, std::string("committed"), std::int32_t{ 6 },
-      1.0 });
+    params{
+      std::int64_t{ 9120 }, std::string("committed"), std::int32_t{ 6 }, 1.0 });
   co_await tx.commit();
   closed = !tx.active();
   co_return;
@@ -2194,8 +2166,8 @@ async::task<void> roll_back_a_write(async::orm& session, bool& closed) {
   co_await session.execute_update(
     "INSERT INTO uniorm_it_user (id, name, age, balance)"
     " VALUES (?, ?, ?, ?)",
-    params{ std::int64_t{ 9121 }, std::string("rolled"), std::int32_t{ 7 },
-      1.0 });
+    params{
+      std::int64_t{ 9121 }, std::string("rolled"), std::int32_t{ 7 }, 1.0 });
   co_await tx.rollback();
   closed = !tx.active();
   co_return;
@@ -2208,8 +2180,8 @@ async::task<void> forget_to_close(async::orm& session) {
   co_await session.execute_update(
     "INSERT INTO uniorm_it_user (id, name, age, balance)"
     " VALUES (?, ?, ?, ?)",
-    params{ std::int64_t{ 9122 }, std::string("forgotten"),
-      std::int32_t{ 8 }, 1.0 });
+    params{
+      std::int64_t{ 9122 }, std::string("forgotten"), std::int32_t{ 8 }, 1.0 });
   co_return;
 }
 
@@ -2248,11 +2220,10 @@ void test_async_transaction_closes_its_round_trip(
 // back once the session has gone quiet.
 void test_async_callback_crud(std::string const& conn_string, orm& db) {
   clear_band(db);
-  std::vector<User> seeded{
-    User{ 9130, "nia", std::int32_t{ 31 }, 2.0, std::nullopt, std::nullopt },
+  std::vector<User> seeded{ User{ 9130, "nia", std::int32_t{ 31 }, 2.0,
+                              std::nullopt, std::nullopt },
     User{ 9131, "omar", std::int32_t{ 32 }, 3.0, std::string("cb"),
-      std::nullopt }
-  };
+      std::nullopt } };
 
   std::size_t inserted = 0;
   std::size_t updated = 0;
@@ -2273,8 +2244,8 @@ void test_async_callback_crud(std::string const& conn_string, orm& db) {
       inserted = added;
       insert_failure = bad;
     });
-    session.query<User>(k_range_sql, params{ std::int64_t{ 9130 },
-      std::int64_t{ 9131 } },
+    session.query<User>(k_range_sql,
+      params{ std::int64_t{ 9130 }, std::int64_t{ 9131 } },
       [&](std::vector<User> rows, std::exception_ptr bad) {
         read_back = std::move(rows);
         read_failure = bad;
@@ -2294,8 +2265,8 @@ void test_async_callback_crud(std::string const& conn_string, orm& db) {
       duplicate_count = added;
       duplicate_failure = bad;
     });
-    session.query<User>(k_range_sql, params{ std::int64_t{ 9130 },
-      std::int64_t{ 9131 } },
+    session.query<User>(k_range_sql,
+      params{ std::int64_t{ 9130 }, std::int64_t{ 9131 } },
       [&](std::vector<User> rows, std::exception_ptr bad) {
         read_after = std::move(rows);
         after_failure = bad;
@@ -2342,15 +2313,14 @@ void test_async_callback_crud(std::string const& conn_string, orm& db) {
   clear_band(db);
 }
 
-async::task<void> write_and_read_once(async::orm& session,
-  std::size_t& written, std::vector<User>& rows) {
-  std::vector<User> batch{
-    User{ 9160, "opener", std::int32_t{ 60 }, 1.0, std::nullopt, std::nullopt }
-  };
+async::task<void> write_and_read_once(
+  async::orm& session, std::size_t& written, std::vector<User>& rows) {
+  std::vector<User> batch{ User{
+    9160, "opener", std::int32_t{ 60 }, 1.0, std::nullopt, std::nullopt } };
   written = co_await session.insert(batch);
   rows = co_await session.query<User>()
-    .where(ge(&User::id, std::int64_t{ 9160 }))
-    .all();
+           .where(ge(&User::id, std::int64_t{ 9160 }))
+           .all();
   co_return;
 }
 
@@ -2404,14 +2374,14 @@ void test_a_session_builds_on_its_own_connection_string(
       .column("balance", &User::balance)
       .column("note", &User::note)
       .column("created", &User::created);
-    std::vector<User> const batch{
-      User{ 9170, "solo", std::int32_t{ 70 }, 1.0, std::nullopt, std::nullopt },
+    std::vector<User> const batch{ User{ 9170, "solo", std::int32_t{ 70 }, 1.0,
+                                     std::nullopt, std::nullopt },
       User{ 9171, "standalone", std::int32_t{ 71 }, 2.0, std::string("direct"),
-        std::nullopt }
-    };
+        std::nullopt } };
     written = session.insert(batch).block();
-    rows = session.query<User>(
-      k_range_sql, params{ std::int64_t{ 9170 }, std::int64_t{ 9171 } })
+    rows = session
+             .query<User>(k_range_sql,
+               params{ std::int64_t{ 9170 }, std::int64_t{ 9171 } })
              .block();
     CHECK(session.auto_commit());
     CHECK(session.pending() == 0);
@@ -2430,18 +2400,17 @@ void test_a_session_builds_on_its_own_connection_string(
 // parallel: one thread drives a coroutine while the calling thread takes the
 // callback answers. Each read is limited to the ids its own session wrote, so
 // nothing here depends on how the two interleaved.
-async::task<void> write_threaded_half(async::orm& session,
-  std::size_t& written, std::int64_t& counted) {
-  std::vector<User> batch{
-    User{ 9140, "side-a", std::int32_t{ 40 }, 1.0, std::nullopt, std::nullopt },
+async::task<void> write_threaded_half(
+  async::orm& session, std::size_t& written, std::int64_t& counted) {
+  std::vector<User> batch{ User{ 9140, "side-a", std::int32_t{ 40 }, 1.0,
+                             std::nullopt, std::nullopt },
     User{ 9141, "side-b", std::int32_t{ 41 }, 2.0, std::string("thread"),
-      std::nullopt }
-  };
+      std::nullopt } };
   written = co_await session.insert(batch);
   counted = co_await session.query<User>()
-    .where(ge(&User::id, std::int64_t{ 9140 }))
-    .where(le(&User::id, std::int64_t{ 9141 }))
-    .count();
+              .where(ge(&User::id, std::int64_t{ 9140 }))
+              .where(le(&User::id, std::int64_t{ 9141 }))
+              .count();
   co_return;
 }
 
@@ -2461,8 +2430,8 @@ void test_async_two_sessions_write_side_by_side(
       async::orm threaded(conn_string);
       map_entities(threaded);
       try {
-        auto work = write_threaded_half(threaded, thread_written,
-          thread_counted);
+        auto work =
+          write_threaded_half(threaded, thread_written, thread_counted);
         work.block();
       } catch (...) {
         thread_failure = std::current_exception();
@@ -2471,18 +2440,16 @@ void test_async_two_sessions_write_side_by_side(
 
     async::orm local(conn_string);
     map_entities(local);
-    std::vector<User> rows{
-      User{ 9150, "side-c", std::int32_t{ 50 }, 1.0, std::nullopt,
-        std::nullopt },
+    std::vector<User> rows{ User{ 9150, "side-c", std::int32_t{ 50 }, 1.0,
+                              std::nullopt, std::nullopt },
       User{ 9151, "side-d", std::int32_t{ 51 }, 2.0, std::string("two"),
-        std::nullopt }
-    };
+        std::nullopt } };
     local.insert(rows, [&](std::size_t added, std::exception_ptr bad) {
       callback_written = added;
       callback_failure = bad;
     });
-    local.query<User>(k_range_sql, params{ std::int64_t{ 9150 },
-      std::int64_t{ 9151 } },
+    local.query<User>(k_range_sql,
+      params{ std::int64_t{ 9150 }, std::int64_t{ 9151 } },
       [&](std::vector<User> found, std::exception_ptr bad) {
         callback_rows = found.size();
         callback_read_answered = true;
@@ -2515,14 +2482,15 @@ void guarded(char const* name, std::function<void()> body) {
   try {
     body();
   } catch (std::exception const& e) {
-    std::printf("ABORT %-50s %s\n", name,
-      std::string(e.what()).substr(0, 90).c_str());
+    std::printf(
+      "ABORT %-50s %s\n", name, std::string(e.what()).substr(0, 90).c_str());
     ++uniorm::test::failure_count();
     return;
   }
-  std::string verdict = skip_reason != nullptr
-    ? std::string("skipped: ") + skip_reason
-    : (uniorm::test::failure_count() == before ? "pass" : "FAIL");
+  std::string verdict =
+    skip_reason != nullptr
+      ? std::string("skipped: ") + skip_reason
+      : (uniorm::test::failure_count() == before ? "pass" : "FAIL");
   std::printf("%-50s %s\n", name, verdict.c_str());
 }
 
@@ -2546,14 +2514,14 @@ int main() {
   the_target.user = user_env;
   the_target.password = pwd_env;
   if (scheme == "odbc") {
-    the_target.connect_string =
-      "DSN=" + the_target.dsn + ";UID=" + the_target.user +
-      ";PWD=" + the_target.password;
+    the_target.connect_string = "DSN=" + the_target.dsn +
+                                ";UID=" + the_target.user +
+                                ";PWD=" + the_target.password;
     the_target.integer_type = "BIGINT";
     the_target.wide_decimal = "DECIMAL(65,30)";
   } else if (scheme == "oracle") {
     the_target.connect_string = "oracle://" + the_target.user + "/" +
-      the_target.password + "@" + the_target.dsn;
+                                the_target.password + "@" + the_target.dsn;
     // Two names this server does not answer with: it has no BIGINT, and its
     // DECIMAL stops at 38 digits of precision. Its own conversion also formats
     // a number by its digits rather than by the column's declared scale.
@@ -2562,7 +2530,7 @@ int main() {
     the_target.pads_decimal_text = false;
   } else if (scheme == "postgresql") {
     the_target.connect_string = "postgresql://" + the_target.user + ":" +
-      the_target.password + "@" + the_target.dsn;
+                                the_target.password + "@" + the_target.dsn;
     // This server takes BIGINT for a 64-bit integral column, and an exact
     // number holds 38 digits of precision. Its own conversion of a numeric
     // pads the value to the column's declared scale.
@@ -2579,8 +2547,8 @@ int main() {
   try {
     connection probe(the_target.connect_string);
     std::string const banner = probe.dbms_name();
-    std::printf("connected over '%s': dbms = %s\n", scheme.c_str(),
-      banner.c_str());
+    std::printf(
+      "connected over '%s': dbms = %s\n", scheme.c_str(), banner.c_str());
     the_target.server_dialect = dialect::detect(banner);
     the_target.binary_type = binary_type_for(banner);
     try {
@@ -2589,8 +2557,8 @@ int main() {
     } catch (backend::capability_not_supported const&) {
     }
   } catch (std::exception const& e) {
-    std::printf("skip: cannot connect to '%s': %s\n", the_target.dsn.c_str(),
-      e.what());
+    std::printf(
+      "skip: cannot connect to '%s': %s\n", the_target.dsn.c_str(), e.what());
     return 77;
   }
 
@@ -2602,16 +2570,15 @@ int main() {
 
     guarded("test_dynamic_rows", [&] { test_dynamic_rows(db); });
     guarded("test_decimal_dynamic", [&] { test_decimal_dynamic(db); });
-    guarded("test_number_text_ceiling",
-      [&] { test_number_text_ceiling(db); });
+    guarded("test_number_text_ceiling", [&] { test_number_text_ceiling(db); });
     guarded("test_decimal_mapped", [&] { test_decimal_mapped(db); });
-    guarded("test_zero_block_fetch_size",
-      [&] { test_zero_block_fetch_size(db); });
+    guarded(
+      "test_zero_block_fetch_size", [&] { test_zero_block_fetch_size(db); });
     guarded("test_projection", [&] { test_projection(db); });
     guarded("test_registered_read_by_label",
       [&] { test_registered_read_by_label(db); });
-    guarded("test_converter_round_trip",
-      [&] { test_converter_round_trip(db); });
+    guarded(
+      "test_converter_round_trip", [&] { test_converter_round_trip(db); });
     guarded("test_validate", [&] { test_validate(conn_string); });
     guarded("test_identifier_spelling",
       [&] { test_identifier_spelling(conn_string); });
@@ -2635,13 +2602,13 @@ int main() {
       [&] { test_a_dropped_parse_is_made_again(db); });
     guarded("test_error_reporting", [&] { test_error_reporting(db); });
     guarded("test_pool", [&] { test_pool(conn_string); });
-    guarded("test_pool_maintenance",
-      [&] { test_pool_maintenance(conn_string); });
-    guarded("test_connection_pieces",
-      [&] { test_connection_pieces(the_target.dsn, the_target.user,
-              the_target.password); });
-    guarded("test_async_reads",
-      [&] { test_async_reads(conn_string, db); });
+    guarded(
+      "test_pool_maintenance", [&] { test_pool_maintenance(conn_string); });
+    guarded("test_connection_pieces", [&] {
+      test_connection_pieces(
+        the_target.dsn, the_target.user, the_target.password);
+    });
+    guarded("test_async_reads", [&] { test_async_reads(conn_string, db); });
     guarded("test_async_failure_reaches_every_exit",
       [&] { test_async_failure_reaches_every_exit(conn_string, db); });
     guarded("test_async_transaction_closes_its_round_trip",
@@ -2650,9 +2617,9 @@ int main() {
       [&] { test_async_callback_crud(conn_string, db); });
     guarded("test_async_session_connects_as_an_operation",
       [&] { test_async_session_connects_as_an_operation(conn_string, db); });
-    guarded("test_a_session_builds_on_its_own_connection_string",
-      [&] { test_a_session_builds_on_its_own_connection_string(conn_string,
-              db); });
+    guarded("test_a_session_builds_on_its_own_connection_string", [&] {
+      test_a_session_builds_on_its_own_connection_string(conn_string, db);
+    });
     guarded("test_async_two_sessions_write_side_by_side",
       [&] { test_async_two_sessions_write_side_by_side(conn_string, db); });
 

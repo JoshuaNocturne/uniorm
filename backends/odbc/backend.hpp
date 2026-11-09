@@ -8,10 +8,10 @@
 #include <string>
 #include <vector>
 
-#include <uniorm/backend/backend.hpp>
 #include "connection.hpp"
 #include "schema_catalog.hpp"
 #include "statement.hpp"
+#include <uniorm/backend/backend.hpp>
 
 namespace uniorm::odbc {
 

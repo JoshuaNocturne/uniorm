@@ -8,9 +8,9 @@
 #include <vector>
 
 #include <uniorm/backend/error.hpp>
+#include <uniorm/builder/expression.hpp>
 #include <uniorm/dialect.hpp>
 #include <uniorm/error.hpp>
-#include <uniorm/builder/expression.hpp>
 #include <uniorm/mapping/registry.hpp>
 
 using namespace uniorm;
@@ -124,7 +124,9 @@ void test_expression() {
     mysql.identifiers = dialect::identifier_case::upper;
     CHECK(mysql.quote_identifier("user_id") == "`USER_ID`");
     // Folding stops at ASCII, so a name in another alphabet is left alone.
-    CHECK(lower.fold_identifier("Stra\xc3\x9f" "e") == "stra\xc3\x9f" "e");
+    CHECK(lower.fold_identifier("Stra\xc3\x9f"
+                                "e") == "stra\xc3\x9f"
+                                        "e");
   }
   {
     dialect mysql = dialect::detect("MySQL");
@@ -139,8 +141,7 @@ void test_expression() {
     CHECK(dialect::detect("mariadb").quote_open == '`');
     CHECK(dialect::detect("MariaDB").table_qualification ==
           dialect::qualification::catalog);
-    CHECK(dialect{}.table_qualification ==
-          dialect::qualification::unsupported);
+    CHECK(dialect{}.table_qualification == dialect::qualification::unsupported);
     for (auto dbms_name : { "", "SQLite", "SQL Server" }) {
       CHECK(dialect::detect(dbms_name).table_qualification ==
             dialect::qualification::unsupported);
@@ -155,19 +156,20 @@ void test_expression() {
     CHECK(oracle.pagination(std::size_t{ 5 }, 10) ==
           " OFFSET 10 ROWS FETCH NEXT 5 ROWS ONLY");
     CHECK(oracle.table_qualification == dialect::qualification::schema);
-    CHECK(dialect::detect(
-      "Oracle Database 21c Express Edition Release 21.3.0.0.0 - Production")
-      .identifiers == dialect::identifier_case::upper);
+    CHECK(
+      dialect::detect(
+        "Oracle Database 21c Express Edition Release 21.3.0.0.0 - Production")
+        .identifiers == dialect::identifier_case::upper);
     // PostgreSQL folds the other way, and the banner answers that too. A name
-    // written with a capital is the one that says the fold ran before the quote.
+    // written with a capital is the one that says the fold ran before the
+    // quote.
     dialect postgres = dialect::detect("PostgreSQL");
     CHECK(postgres.identifiers == dialect::identifier_case::lower);
     CHECK(postgres.quote_identifier("Col") == "\"col\"");
     CHECK(postgres.quote_exact_identifier("Col") == "\"Col\"");
     // No other vendor's fold is answered here: a name stays as declared until
     // someone says otherwise.
-    for (auto dbms_name : { "MySQL", "MariaDB", "SQL Server",
-      "" }) {
+    for (auto dbms_name : { "MySQL", "MariaDB", "SQL Server", "" }) {
       auto detected = dialect::detect(dbms_name);
       CHECK(detected.identifiers == dialect::identifier_case::keep);
       // Which is what a caller that asks for a label back has to be handed:
@@ -179,12 +181,12 @@ void test_expression() {
     dialect postgres = dialect::detect("PostgreSQL");
     postgres.identifiers = dialect::identifier_case::lower;
     CHECK(postgres.quote_identifier("User\"Name") == "\"user\"\"name\"");
-    CHECK(postgres.quote_exact_identifier("User\"Name") ==
-          "\"User\"\"Name\"");
+    CHECK(postgres.quote_exact_identifier("User\"Name") == "\"User\"\"Name\"");
     CHECK(postgres.quote_exact_identifier("") == "\"\"");
     CHECK(postgres.quote_exact_identifier("App.Users") == "\"App.Users\"");
-    CHECK(postgres.quote_exact_identifier("Stra\xc3\x9f" "e") ==
-          "\"Stra\xc3\x9f" "e\"");
+    CHECK(postgres.quote_exact_identifier("Stra\xc3\x9f"
+                                          "e") == "\"Stra\xc3\x9f"
+                                                  "e\"");
 
     dialect mysql = dialect::detect("MySQL");
     mysql.identifiers = dialect::identifier_case::upper;
@@ -195,8 +197,7 @@ void test_expression() {
     brackets.quote_open = '[';
     brackets.quote_close = ']';
     CHECK(brackets.quote_identifier("[User]Name]") == "[[User]]Name]]]");
-    CHECK(brackets.quote_exact_identifier("[User]Name]") ==
-          "[[User]]Name]]]");
+    CHECK(brackets.quote_exact_identifier("[User]Name]") == "[[User]]Name]]]");
 
     std::string_view nul_name("User\0Name", 9);
     CHECK_THROWS(postgres.quote_exact_identifier(nul_name), uniorm_error);
@@ -229,19 +230,17 @@ void test_expression() {
     CHECK(meta.column_sql(id_key, dialect{}) == "\"Declared_Id\"");
     CHECK_THROWS(meta.column_sql(email_key, postgres), mapping_error);
 
-    row declared_row({"Declared_Name", "Declared_Id"},
+    row declared_row({ "Declared_Name", "Declared_Id" },
       { std::string("Before"), std::int32_t{ 7 } });
     User user{};
     meta.populate(&user, declared_row);
     CHECK(user.id == 7);
     CHECK(user.name == "Before");
 
-    meta.resolved = identifier_resolution{
-      { "IgnoredCatalog", "App.Schema\"V1", "User\"Rows" },
-      { "User_Id", "Display\"Name" }
-    };
-    CHECK(meta.table_sql(postgres) ==
-          "\"App.Schema\"\"V1\".\"User\"\"Rows\"");
+    meta.resolved = identifier_resolution{ { "IgnoredCatalog", "App.Schema\"V1",
+                                             "User\"Rows" },
+      { "User_Id", "Display\"Name" } };
+    CHECK(meta.table_sql(postgres) == "\"App.Schema\"\"V1\".\"User\"\"Rows\"");
     CHECK(meta.column_sql(0, postgres) == "\"User_Id\"");
     CHECK(meta.column_sql(id_key, postgres) == "\"User_Id\"");
     CHECK(meta.column_sql(1, postgres) == "\"Display\"\"Name\"");
@@ -253,14 +252,13 @@ void test_expression() {
     CHECK(meta.column_name(name_key) == "Declared_Name");
     CHECK_THROWS(meta.column_name(email_key), mapping_error);
     CHECK_THROWS(meta.column_sql(email_key, postgres), mapping_error);
-    CHECK_THROWS(meta.table_sql(dialect{}),
-      backend::capability_not_supported);
-    CHECK_THROWS(meta.column_sql(0, dialect{}),
-      backend::capability_not_supported);
-    CHECK_THROWS(meta.column_sql(name_key, dialect{}),
-      backend::capability_not_supported);
+    CHECK_THROWS(meta.table_sql(dialect{}), backend::capability_not_supported);
+    CHECK_THROWS(
+      meta.column_sql(0, dialect{}), backend::capability_not_supported);
+    CHECK_THROWS(
+      meta.column_sql(name_key, dialect{}), backend::capability_not_supported);
 
-    row resolved_row({"Display\"Name", "User_Id"},
+    row resolved_row({ "Display\"Name", "User_Id" },
       { std::string("After"), std::int32_t{ 8 } });
     meta.populate(&user, resolved_row);
     CHECK(user.id == 8);
@@ -270,22 +268,20 @@ void test_expression() {
     CHECK_THROWS(mapping.column("Extra", &User::email), mapping_error);
     CHECK_THROWS(mapping.primary_key("Extra", &User::email), mapping_error);
     CHECK_THROWS(mapping.ignore(&User::name), mapping_error);
-    CHECK_THROWS(mapping_builder<User>(meta).column("Extra", &User::email),
-      mapping_error);
+    CHECK_THROWS(
+      mapping_builder<User>(meta).column("Extra", &User::email), mapping_error);
     CHECK(meta.columns.size() == 2);
     CHECK(meta.ignored.size() == 1);
     CHECK(meta.ignored[0] == email_key);
     CHECK(meta.resolved->columns.size() == 2);
-    CHECK(meta.table_sql(postgres) ==
-          "\"App.Schema\"\"V1\".\"User\"\"Rows\"");
+    CHECK(meta.table_sql(postgres) == "\"App.Schema\"\"V1\".\"User\"\"Rows\"");
   }
   {
     entity_meta meta;
     meta.table = "declared_users";
     mapping_builder<User>(meta).column("declared_name", &User::name);
     meta.resolved = identifier_resolution{
-      { "App.Database`V1", "IgnoredSchema", "User`Rows" },
-      { "Display`Name" }
+      { "App.Database`V1", "IgnoredSchema", "User`Rows" }, { "Display`Name" }
     };
     dialect mysql = dialect::detect("MySQL");
     mysql.identifiers = dialect::identifier_case::upper;

@@ -47,7 +47,7 @@ void pq_connection::rollback() {
 // executed row by row here. The counts run_batch() adds up are the whole
 // array's total, which is the second flag's question.
 backend::capabilities pq_connection::caps() const noexcept {
-  return {/*columnar_batch=*/false, /*array_rowcount_totals=*/true};
+  return { /*columnar_batch=*/false, /*array_rowcount_totals=*/true };
 }
 
 // The version the server reported at connect time, under the one name this
@@ -66,8 +66,7 @@ std::string pq_connection::dbms_name() const {
   return name;
 }
 
-std::unique_ptr<backend::statement_iface>
-pq_connection::create_statement() {
+std::unique_ptr<backend::statement_iface> pq_connection::create_statement() {
   return std::make_unique<pq_statement>(conn_);
 }
 
@@ -87,7 +86,6 @@ extern "C" UNIORM_LIBPQ_API uint32_t uniorm_plugin_abi_version() {
 
 extern "C" UNIORM_LIBPQ_API void uniorm_plugin_register(
   uniorm::backend::registry& reg) {
-  reg.register_backend("postgresql", [] {
-    return std::make_unique<uniorm::libpq::pq_connection>();
-  });
+  reg.register_backend("postgresql",
+    [] { return std::make_unique<uniorm::libpq::pq_connection>(); });
 }

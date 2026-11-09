@@ -40,16 +40,16 @@ struct ddl_snapshot {
 // ignored schema statement, a generated column, a foreign key whose target the
 // script does not create. A type outside the mapped set keeps the script's own
 // spelling and answers sql_type::other, which is what a live read answers with.
-ddl_snapshot parse_ddl(std::string_view script,
-  std::vector<std::string>* warnings = nullptr);
+ddl_snapshot parse_ddl(
+  std::string_view script, std::vector<std::string>* warnings = nullptr);
 
 // A parsed script behind the interface a live catalog answers through, so the
 // generator's selection, config checks and output never know where the schema
 // came from. Names come back as the script spells them.
 class ddl_meta : public uniorm::schema_meta {
 public:
-  explicit ddl_meta(std::string_view script,
-    std::vector<std::string>* warnings = nullptr);
+  explicit ddl_meta(
+    std::string_view script, std::vector<std::string>* warnings = nullptr);
 
   std::string database_name() override;
   std::vector<table_row> tables(

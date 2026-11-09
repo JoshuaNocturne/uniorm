@@ -13,11 +13,11 @@
 #include <sys/wait.h>
 #endif
 
+#include "uniorm/builder/builder.hpp"
+#include "uniorm/mapping/registry.hpp"
 #include <uniorm/connection.hpp>
 #include <uniorm/converter.hpp>
 #include <uniorm/decimal.hpp>
-#include "uniorm/mapping/registry.hpp"
-#include "uniorm/builder/builder.hpp"
 
 // The checked-in golden header was produced by uniorm-gen against the
 // fixture tables below and the override file beside it; regenerate it with
@@ -84,8 +84,7 @@ void prepare_schema(connection& conn) {
                       " note VARCHAR(128) NULL,"
                       " CONSTRAINT fk_gen_order_user FOREIGN KEY (user_id)"
                       " REFERENCES " +
-                      k_user_table +
-                      " (id))");
+                      k_user_table + " (id))");
   // The generator reads this index back out of the driver's catalog, and the
   // line that creates it is the only one the MySQL table syntax owns.
   conn.execute_update(std::string("CREATE INDEX idx_gen_order_user ON ") +
@@ -204,28 +203,28 @@ void require_matches_golden(
          generated[pos] == golden[pos]) {
     ++pos;
   }
-  std::printf("FAIL %s differs from golden at byte %zu\n", out_dir.c_str(),
-    pos);
-  std::printf("  generated: %s\n",
-    generated.substr(pos > 40 ? pos - 40 : 0, 80).c_str());
-  std::printf("  golden:    %s\n",
-    golden.substr(pos > 40 ? pos - 40 : 0, 80).c_str());
+  std::printf(
+    "FAIL %s differs from golden at byte %zu\n", out_dir.c_str(), pos);
+  std::printf(
+    "  generated: %s\n", generated.substr(pos > 40 ? pos - 40 : 0, 80).c_str());
+  std::printf(
+    "  golden:    %s\n", golden.substr(pos > 40 ? pos - 40 : 0, 80).c_str());
   ++uniorm::test::failure_count();
 }
 
 // Live extraction: the fixture tables this test just created.
 void test_generate_matches_golden(std::string const& conn_string) {
-  require_matches_golden("--connection-string=\"" + conn_string + "\"",
-    UNIORM_GEN_OUT_DIR);
+  require_matches_golden(
+    "--connection-string=\"" + conn_string + "\"", UNIORM_GEN_OUT_DIR);
 }
 
 // The same server reached by handing the tool the pieces instead of a string:
 // the tool spells nothing, so this run matching the golden is the backend's
 // own spelling working end to end, catalog read included.
-void test_generate_matches_golden_by_pieces(std::string const& dsn,
-  std::string const& user, std::string const& pwd) {
-  std::string const pieces = "--dsn=\"" + dsn + "\" --user=\"" + user +
-    "\" --password=\"" + pwd + "\"";
+void test_generate_matches_golden_by_pieces(
+  std::string const& dsn, std::string const& user, std::string const& pwd) {
+  std::string const pieces =
+    "--dsn=\"" + dsn + "\" --user=\"" + user + "\" --password=\"" + pwd + "\"";
   require_matches_golden(pieces, std::string(UNIORM_GEN_OUT_DIR) + "/pieces");
 }
 
@@ -233,8 +232,8 @@ void test_generate_matches_golden_by_pieces(std::string const& dsn,
 // reproducible without a server, and the two sources owe each other nothing
 // but the code.
 void test_generate_from_a_script_matches_golden() {
-  require_matches_golden("--input-ddl=" UNIORM_GEN_SQL,
-    std::string(UNIORM_GEN_OUT_DIR) + "/ddl");
+  require_matches_golden(
+    "--input-ddl=" UNIORM_GEN_SQL, std::string(UNIORM_GEN_OUT_DIR) + "/ddl");
 }
 
 struct run_result {
@@ -246,8 +245,8 @@ struct run_result {
 // command processor's exit status, which is a wait status here and the exit
 // code itself on Windows.
 run_result run_gen(std::string const& args, std::string const& log_path) {
-  std::string const cmd = std::string(UNIORM_GEN_PATH) + " " + args +
-                          " >" + log_path + " 2>&1";
+  std::string const cmd =
+    std::string(UNIORM_GEN_PATH) + " " + args + " >" + log_path + " 2>&1";
   int const raw = std::system(cmd.c_str());
   run_result result;
 #ifdef _WIN32
@@ -263,13 +262,12 @@ void require_code(std::string const& item, int code, int expected) {
   if (code == expected) {
     return;
   }
-  std::printf("FAIL %s: exit %d, expected %d\n", item.c_str(), code,
-    expected);
+  std::printf("FAIL %s: exit %d, expected %d\n", item.c_str(), code, expected);
   ++uniorm::test::failure_count();
 }
 
-void require_text(std::string const& item, std::string const& text,
-  std::string const& needle) {
+void require_text(
+  std::string const& item, std::string const& text, std::string const& needle) {
   if (text.find(needle) != std::string::npos) {
     return;
   }
@@ -278,8 +276,8 @@ void require_text(std::string const& item, std::string const& text,
   ++uniorm::test::failure_count();
 }
 
-std::string write_script(std::string const& dir, std::string const& name,
-  std::string const& body) {
+std::string write_script(
+  std::string const& dir, std::string const& name, std::string const& body) {
   std::filesystem::create_directories(dir);
   std::string const path = dir + "/" + name;
   std::ofstream out(path, std::ios::binary | std::ios::trunc);
@@ -301,8 +299,8 @@ void test_cli_contract() {
   std::filesystem::remove_all(out, ignored);
   std::filesystem::remove_all(rejected, ignored);
 
-  run_result good = run_gen("--input-ddl=" UNIORM_GEN_SQL " --out=" + out +
-    " --name=gen_it", log);
+  run_result good = run_gen(
+    "--input-ddl=" UNIORM_GEN_SQL " --out=" + out + " --name=gen_it", log);
   require_code("--input-ddl run", good.code, 0);
   // The tool prints the path it wrote, in this platform's separators, so the
   // line is what is checked and the file itself is looked for by the API.
@@ -315,8 +313,8 @@ void test_cli_contract() {
 
   // Two sources, then none: the same rule the tool prints its usage for.
   for (std::string const& args :
-      { "--input-ddl=" UNIORM_GEN_SQL " --dsn=anything --out=" + rejected,
-          "--out=" + rejected }) {
+    { "--input-ddl=" UNIORM_GEN_SQL " --dsn=anything --out=" + rejected,
+      "--out=" + rejected }) {
     run_result both = run_gen(args, log);
     require_code("two sources refused", both.code, 2);
     require_text("two sources refused", both.text,
@@ -327,23 +325,25 @@ void test_cli_contract() {
   require_code("--out required", no_out.code, 2);
   require_text("--out required", no_out.text, "--out=<dir> is required");
 
-  run_result absent = run_gen(
-    "--input-ddl=" + root + "/no_such_file.sql --out=" + rejected, log);
+  run_result absent =
+    run_gen("--input-ddl=" + root + "/no_such_file.sql --out=" + rejected, log);
   require_code("missing script", absent.code, 1);
   require_text("missing script", absent.text, "cannot open DDL file");
 
   // A script the parser refuses names the line it gave up on, and a refused
   // run writes no header at all.
-  std::string const arrays = write_script(root, "arrays.sql",
-    "CREATE TABLE t (\n  a INT[]\n);\n");
-  run_result array = run_gen("--input-ddl=" + arrays + " --out=" + rejected,
-    log);
+  std::string const arrays =
+    write_script(root, "arrays.sql", "CREATE TABLE t (\n  a INT[]\n);\n");
+  run_result array =
+    run_gen("--input-ddl=" + arrays + " --out=" + rejected, log);
   require_code("array column", array.code, 1);
   require_text("array column", array.text, "ddl: line 2:");
   require_text("array column", array.text, "carries no arrays");
 
-  run_result missing_table = run_gen("--input-ddl=" UNIORM_GEN_SQL
-    " --out=" + rejected + " --tables=no_such_table", log);
+  run_result missing_table =
+    run_gen("--input-ddl=" UNIORM_GEN_SQL " --out=" + rejected +
+              " --tables=no_such_table",
+      log);
   require_code("unknown --tables name", missing_table.code, 1);
   require_text("unknown --tables name", missing_table.text,
     "table not found: no_such_table");
@@ -352,10 +352,10 @@ void test_cli_contract() {
 
   // A type the mapping has no entry for is a warning and a text column, not a
   // failure: the live read answers the same way.
-  std::string const odd = write_script(root, "odd_type.sql",
-    "CREATE TABLE t (\n  a WIDGET NOT NULL\n);\n");
-  run_result odd_run = run_gen(
-    "--input-ddl=" + odd + " --out=" + out + " --name=odd_type", log);
+  std::string const odd = write_script(
+    root, "odd_type.sql", "CREATE TABLE t (\n  a WIDGET NOT NULL\n);\n");
+  run_result odd_run =
+    run_gen("--input-ddl=" + odd + " --out=" + out + " --name=odd_type", log);
   require_code("unmapped type", odd_run.code, 0);
   require_text("unmapped type", odd_run.text,
     "warning: t.a: unmapped SQL type 'WIDGET', using std::string");
@@ -364,8 +364,8 @@ void test_cli_contract() {
   std::string const dropped = write_script(root, "dropped.sql",
     "CREATE TABLE t (\n  a INT NOT NULL\n);\n"
     "ALTER TABLE t DROP COLUMN a;\n");
-  run_result dropped_run = run_gen("--input-ddl=" + dropped +
-    " --out=" + out + " --name=dropped", log);
+  run_result dropped_run = run_gen(
+    "--input-ddl=" + dropped + " --out=" + out + " --name=dropped", log);
   require_code("ignored action", dropped_run.code, 0);
   require_text("ignored action", dropped_run.text,
     "warning: ignored ALTER TABLE t DROP action");
@@ -380,8 +380,8 @@ static int skip_or_report(std::string const& reason, int counted) {
     std::printf("skip: %s\n", reason.c_str());
     return 77;
   }
-  std::printf("%d gen e2e test(s) failed; the database legs did not run\n",
-    counted);
+  std::printf(
+    "%d gen e2e test(s) failed; the database legs did not run\n", counted);
   return 1;
 }
 
@@ -402,7 +402,8 @@ int main() {
   if (!dsn_env || !*dsn_env || !user_env || !*user_env || !pwd_env ||
       !*pwd_env) {
     return skip_or_report("set UNIORM_IT_DSN / UNIORM_IT_USER / "
-      "UNIORM_IT_PWD to run gen e2e tests", offline_failures);
+                          "UNIORM_IT_PWD to run gen e2e tests",
+      offline_failures);
   }
   std::string dsn = dsn_env;
   std::string user = user_env;
@@ -412,8 +413,8 @@ int main() {
   try {
     connection probe(conn_string);
   } catch (std::exception const& e) {
-    return skip_or_report("cannot connect to DSN '" + dsn + "': " + e.what(),
-      offline_failures);
+    return skip_or_report(
+      "cannot connect to DSN '" + dsn + "': " + e.what(), offline_failures);
   }
 
   try {

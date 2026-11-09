@@ -33,8 +33,8 @@ public:
   // none while a password may. With no '@' at all there are no credentials
   // and the server's external authentication answers for them.
   void open(std::string_view tail);
-  void open(std::string_view connect, std::string_view user,
-    std::string_view password);
+  void open(
+    std::string_view connect, std::string_view user, std::string_view password);
   void close();
   bool is_open() const noexcept {
     return service_ != nullptr;
@@ -61,8 +61,8 @@ public:
   }
 
 private:
-  void logon(std::string_view connect, std::string_view user,
-    std::string_view password);
+  void logon(
+    std::string_view connect, std::string_view user, std::string_view password);
 
   std::shared_ptr<environment> env_;
   detail::error_handle error_;

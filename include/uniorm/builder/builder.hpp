@@ -11,12 +11,12 @@
 #include <utility>
 #include <vector>
 
-#include <uniorm/dialect.hpp>
-#include <uniorm/orm.hpp>
-#include <uniorm/params.hpp>
 #include <uniorm/builder/expression.hpp>
 #include <uniorm/detail/entity_binding.hpp>
 #include <uniorm/detail/fetch_rows.hpp>
+#include <uniorm/dialect.hpp>
+#include <uniorm/orm.hpp>
+#include <uniorm/params.hpp>
 #include <uniorm/result_set.hpp>
 #include <uniorm/row.hpp>
 
@@ -162,9 +162,8 @@ protected:
   }
 
   statement render_count() const {
-    statement made{
-      "SELECT COUNT(*) FROM " + meta_->table_sql(sql_dialect()), {}
-    };
+    statement made{ "SELECT COUNT(*) FROM " + meta_->table_sql(sql_dialect()),
+      {} };
     if (!wheres_.empty()) {
       made.sql += " WHERE " + where_sql(make_resolver(), made.bound);
     }

@@ -40,31 +40,31 @@ void test_oracle_oci_sql_type_from_native() {
   CHECK(oracle_oci::sql_type_from_native(SQLT_BFLOAT, 0, 0) == sql_type::real);
   CHECK(oracle_oci::sql_type_from_native(SQLT_IBFLOAT, 0, 0) == sql_type::real);
   CHECK(oracle_oci::sql_type_from_native(SQLT_BDOUBLE, 0, 0) ==
-    sql_type::double_precision);
+        sql_type::double_precision);
   CHECK(oracle_oci::sql_type_from_native(SQLT_IBDOUBLE, 0, 0) ==
-    sql_type::double_precision);
+        sql_type::double_precision);
 
-  CHECK(oracle_oci::sql_type_from_native(SQLT_AFC, 1, 0) ==
-    sql_type::character);
+  CHECK(
+    oracle_oci::sql_type_from_native(SQLT_AFC, 1, 0) == sql_type::character);
   CHECK(oracle_oci::sql_type_from_native(SQLT_CHR, 10, 0) == sql_type::varchar);
   CHECK(oracle_oci::sql_type_from_native(SQLT_VCS, 10, 0) == sql_type::varchar);
   CHECK(oracle_oci::sql_type_from_native(SQLT_STR, 10, 0) == sql_type::varchar);
-  CHECK(oracle_oci::sql_type_from_native(SQLT_AVC, 10, 0) ==
-    sql_type::wvarchar);
+  CHECK(
+    oracle_oci::sql_type_from_native(SQLT_AVC, 10, 0) == sql_type::wvarchar);
 
-  CHECK(oracle_oci::sql_type_from_native(SQLT_LNG, 0, 0) ==
-    sql_type::longvarchar);
-  CHECK(oracle_oci::sql_type_from_native(SQLT_LVC, 0, 0) ==
-    sql_type::longvarchar);
-  CHECK(oracle_oci::sql_type_from_native(SQLT_CLOB, 0, 0) ==
-    sql_type::longvarchar);
-  CHECK(oracle_oci::sql_type_from_native(SQLT_NCLOB, 0, 0) ==
-    sql_type::wvarchar);
+  CHECK(
+    oracle_oci::sql_type_from_native(SQLT_LNG, 0, 0) == sql_type::longvarchar);
+  CHECK(
+    oracle_oci::sql_type_from_native(SQLT_LVC, 0, 0) == sql_type::longvarchar);
+  CHECK(
+    oracle_oci::sql_type_from_native(SQLT_CLOB, 0, 0) == sql_type::longvarchar);
+  CHECK(
+    oracle_oci::sql_type_from_native(SQLT_NCLOB, 0, 0) == sql_type::wvarchar);
 
-  CHECK(oracle_oci::sql_type_from_native(SQLT_BIN, 10, 0) ==
-    sql_type::varbinary);
-  CHECK(oracle_oci::sql_type_from_native(SQLT_VBI, 10, 0) ==
-    sql_type::varbinary);
+  CHECK(
+    oracle_oci::sql_type_from_native(SQLT_BIN, 10, 0) == sql_type::varbinary);
+  CHECK(
+    oracle_oci::sql_type_from_native(SQLT_VBI, 10, 0) == sql_type::varbinary);
   CHECK(oracle_oci::sql_type_from_native(SQLT_LBI, 0, 0) == sql_type::binary);
   CHECK(oracle_oci::sql_type_from_native(SQLT_LVB, 0, 0) == sql_type::binary);
   CHECK(oracle_oci::sql_type_from_native(SQLT_BLOB, 0, 0) == sql_type::binary);
@@ -73,11 +73,11 @@ void test_oracle_oci_sql_type_from_native() {
   CHECK(oracle_oci::sql_type_from_native(SQLT_ODT, 0, 0) == sql_type::date);
   CHECK(oracle_oci::sql_type_from_native(SQLT_DATE, 0, 0) == sql_type::date);
   CHECK(oracle_oci::sql_type_from_native(SQLT_TIMESTAMP, 0, 0) ==
-    sql_type::timestamp);
+        sql_type::timestamp);
   CHECK(oracle_oci::sql_type_from_native(SQLT_TIMESTAMP_TZ, 0, 0) ==
-    sql_type::timestamp);
+        sql_type::timestamp);
   CHECK(oracle_oci::sql_type_from_native(SQLT_TIMESTAMP_LTZ, 0, 0) ==
-    sql_type::timestamp);
+        sql_type::timestamp);
   CHECK(oracle_oci::sql_type_from_native(SQLT_TIME, 0, 0) == sql_type::time);
   CHECK(oracle_oci::sql_type_from_native(SQLT_TIME_TZ, 0, 0) == sql_type::time);
 

@@ -22,8 +22,8 @@ UNIORM_LIBPQ_API std::string conninfo_of(std::string_view tail);
 // "[host[:port]][/dbname]" -- or a word list of its own, in which case only
 // the two pieces it cannot carry are added -- and an empty user or password is
 // the server's default rather than a blank one.
-UNIORM_LIBPQ_API std::string conninfo_of(std::string_view target,
-  std::string_view user, std::string_view password);
+UNIORM_LIBPQ_API std::string conninfo_of(
+  std::string_view target, std::string_view user, std::string_view password);
 
 // One connected session. libpq keeps no parent handle to share, so this owns
 // the PGconn outright and the statements above it borrow it. Move-only: a
@@ -42,8 +42,8 @@ public:
   // What follows "postgresql://", and the four pieces, each taken to libpq
   // through the spelling named above it.
   void open(std::string_view tail);
-  void open(std::string_view target, std::string_view user,
-    std::string_view password);
+  void open(
+    std::string_view target, std::string_view user, std::string_view password);
   void close();
   bool is_open() const noexcept;
 
@@ -64,8 +64,7 @@ public:
 
 private:
   void connect(std::string const& conninfo);
-  void run_transaction_command(
-    char const* sql, std::string const& context);
+  void run_transaction_command(char const* sql, std::string const& context);
 
   PGconn* conn_ = nullptr;
   bool autocommit_ = true;

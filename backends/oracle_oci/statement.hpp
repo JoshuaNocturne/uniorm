@@ -29,12 +29,12 @@ namespace uniorm::oracle_oci {
 // What OCI writes for one row of a bound column, before it reaches the
 // caller's slot.
 enum class stage_kind {
-  number,        // an OCINumber, then converted to the caller's width
-  text,          // bytes, one row-sized slot each
-  binary,        // bytes, one row-sized slot each
-  date,          // an OCIDate
-  timestamp,     // a datetime descriptor per row
-  wide_text,     // a locator per row; the value only a read of its own gives
+  number,  // an OCINumber, then converted to the caller's width
+  text,  // bytes, one row-sized slot each
+  binary,  // bytes, one row-sized slot each
+  date,  // an OCIDate
+  timestamp,  // a datetime descriptor per row
+  wide_text,  // a locator per row; the value only a read of its own gives
   wide_binary
 };
 
@@ -99,11 +99,11 @@ struct param_slot {
 // What one column of a batch holds, decided by looking at every row of it. A
 // column whose rows do not agree cannot go to the server as one slab.
 enum class batch_kind {
-  number,      // bool and the integer widths and double, each an OCINumber
-  text,        // UTF-8, one stride of bytes per row with its length beside it
-  binary,      // bytes, same shape as text
-  timestamp,   // one datetime descriptor per row, bound as a pointer
-  empty        // every row NULL, which still needs a type to be bound as
+  number,  // bool and the integer widths and double, each an OCINumber
+  text,  // UTF-8, one stride of bytes per row with its length beside it
+  binary,  // bytes, same shape as text
+  timestamp,  // one datetime descriptor per row, bound as a pointer
+  empty  // every row NULL, which still needs a type to be bound as
 };
 
 // One column of a batch as its rows describe it, before any slab is touched.
@@ -148,14 +148,14 @@ struct batch_column {
     }
   }
   std::size_t element_size() const noexcept {
-    return kind == batch_kind::number ? sizeof(OCINumber)
-      : kind == batch_kind::timestamp ? sizeof(OCIDateTime*)
-      : stride;
+    return kind == batch_kind::number      ? sizeof(OCINumber)
+           : kind == batch_kind::timestamp ? sizeof(OCIDateTime*)
+                                           : stride;
   }
   ub2* row_lengths() {
     return kind == batch_kind::text || kind == batch_kind::binary
-      ? lengths.data()
-      : nullptr;
+             ? lengths.data()
+             : nullptr;
   }
 };
 
@@ -199,8 +199,8 @@ private:
     std::vector<params> const& rows);
   // One column's slab bound to the placeholder at `position`, returned so the
   // caller owns the bind handle until the execute is over.
-  detail::bind_handle bind_batch_column(std::size_t position,
-    batch_column& column);
+  detail::bind_handle bind_batch_column(
+    std::size_t position, batch_column& column);
   // A count OCI keeps on the statement handle: the rows a write affected, or
   // the rows one fetch put into the array.
   std::size_t statement_count(ub4 attribute);
@@ -209,8 +209,8 @@ private:
   void apply_define(std::size_t position, column_slot& slot);
   void materialize(std::size_t rows);
   void fill_cell(column_slot& slot, std::size_t row);
-  void put_text(column_slot& slot, std::size_t row, char const* data,
-    std::size_t length);
+  void put_text(
+    column_slot& slot, std::size_t row, char const* data, std::size_t length);
   void put_number(column_slot& slot, std::size_t row);
   void put_date(column_slot& slot, std::size_t row);
   void put_timestamp(column_slot& slot, std::size_t row);

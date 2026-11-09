@@ -8,9 +8,9 @@
 #include <string_view>
 #include <vector>
 
-#include <uniorm/schema.hpp>
 #include "connection.hpp"
 #include "identifier.hpp"
+#include <uniorm/schema.hpp>
 
 namespace uniorm::odbc {
 
@@ -21,13 +21,14 @@ namespace uniorm::odbc {
 inline bool catalog_name_matches(
   std::string_view asked, std::string_view reported) {
   return asked.empty() || reported.empty() ||
-    uniorm::detail::fold_lower(asked) == uniorm::detail::fold_lower(reported);
+         uniorm::detail::fold_lower(asked) ==
+           uniorm::detail::fold_lower(reported);
 }
 
 inline SQLSMALLINT exact_catalog_arg_length(std::string_view text) {
   if (text.find('\0') != std::string_view::npos ||
-      text.size() > static_cast<std::size_t>(
-        std::numeric_limits<SQLSMALLINT>::max())) {
+      text.size() >
+        static_cast<std::size_t>(std::numeric_limits<SQLSMALLINT>::max())) {
     throw backend::capability_not_supported(
       "exact catalog argument contains NUL or exceeds the ODBC length limit");
   }
@@ -68,13 +69,12 @@ inline std::string exact_tables_catalog_arg(
   return std::string(catalog);
 }
 
-inline std::string exact_catalog_text(std::string_view buffer,
-  SQLLEN indicator, std::string_view field, bool allow_empty = false) {
+inline std::string exact_catalog_text(std::string_view buffer, SQLLEN indicator,
+  std::string_view field, bool allow_empty = false) {
   if (indicator == SQL_NULL_DATA && allow_empty) {
     return {};
   }
-  if (indicator < 0 ||
-      static_cast<std::size_t>(indicator) >= buffer.size()) {
+  if (indicator < 0 || static_cast<std::size_t>(indicator) >= buffer.size()) {
     throw odbc_error(
       "exact catalog metadata has missing or truncated " + std::string(field),
       {});
@@ -94,10 +94,11 @@ inline bool exact_catalog_namespace_matches(std::string_view catalog,
   return catalog == reported.catalog && schema == reported.schema;
 }
 
-inline bool exact_catalog_table_matches(schema_meta::table_ref const& asked,
-  schema_meta::table_row const& reported) {
-  return exact_catalog_namespace_matches(asked.catalog, asked.schema,
-           reported) && asked.name == reported.name;
+inline bool exact_catalog_table_matches(
+  schema_meta::table_ref const& asked, schema_meta::table_row const& reported) {
+  return exact_catalog_namespace_matches(
+           asked.catalog, asked.schema, reported) &&
+         asked.name == reported.name;
 }
 
 struct odbc_schema_meta : schema_meta {

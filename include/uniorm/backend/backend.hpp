@@ -28,7 +28,7 @@ namespace uniorm::backend {
 // so the ODBC adapter can hand the caller's storage straight to the
 // driver manager.
 inline constexpr std::int64_t null_indicator = -1;  // SQL_NULL_DATA
-inline constexpr std::int64_t no_total = -4;        // SQL_NO_TOTAL
+inline constexpr std::int64_t no_total = -4;  // SQL_NO_TOTAL
 
 // Neutral C-buffer kinds a backend can bind a result column into.
 enum class buffer_type {
@@ -104,8 +104,8 @@ struct batch_writer_iface {
 
   // Allocate a column buffer for `count` rows of the given type.
   // Returns the column index.
-  virtual std::size_t add_column(buffer_type type, std::size_t count,
-    std::size_t element_size) = 0;
+  virtual std::size_t add_column(
+    buffer_type type, std::size_t count, std::size_t element_size) = 0;
 
   // Raw buffer access for the given column. The caller writes values
   // at data()[row * element_size()] and sets indicators()[row].
@@ -162,7 +162,9 @@ struct statement_iface {
   // Estimated total rows of the current result set, if the backend can
   // tell before fetching (e.g. buffered result sets). 0 when unknown;
   // callers use it only to pre-size result vectors.
-  virtual std::size_t result_row_estimate() const { return 0; }
+  virtual std::size_t result_row_estimate() const {
+    return 0;
+  }
 
   // Batch insert support: set the number of parameter sets per SQLExecute.
   virtual void set_paramset_size(std::size_t size) = 0;
@@ -219,7 +221,9 @@ struct connection_iface {
   // the connection is open. Relational catalogs all answer these reads, so
   // a backend that cannot offer them is the exception: nullptr lets the
   // caller say so instead of failing inside a read.
-  virtual schema_meta* schema() noexcept { return nullptr; }
+  virtual schema_meta* schema() noexcept {
+    return nullptr;
+  }
 
   // Escape hatch (design doc 5.3): the native handle of the backend
   // connection (SQLHDBC, PGconn*, OCIEnv*, ...). It remains owned by

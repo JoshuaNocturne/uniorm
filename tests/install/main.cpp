@@ -130,7 +130,8 @@ int main() {
     std::cerr << "bare DSN threw the wrong type: " << e.what() << '\n';
     ++failures;
   }
-  expect(bare_rejected, "a bare DSN with no plugin installed is unknown_scheme");
+  expect(
+    bare_rejected, "a bare DSN with no plugin installed is unknown_scheme");
   expect(!uniorm::backend::registry::instance().contains("odbc"),
     "with no plugin installed, odbc never registers");
 #endif
@@ -164,8 +165,7 @@ int main() {
   expect(refused, "a second drive action on one task is refused");
 
   std::exception_ptr reported;
-  throwing().start(here,
-    [&](std::exception_ptr error) { reported = error; });
+  throwing().start(here, [&](std::exception_ptr error) { reported = error; });
   expect(static_cast<bool>(reported),
     "a detached failure reports through its handler");
 

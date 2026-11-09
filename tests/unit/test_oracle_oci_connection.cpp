@@ -67,8 +67,8 @@ void test_oracle_oci_logon_without_credentials() {
   } catch (backend::backend_error const& error) {
     caught = true;
     CHECK(error.backend_name() == "oracle");
-    CHECK(std::string(error.what()).find(
-      "log on to 127.0.0.1:3/orcl") != std::string::npos);
+    CHECK(std::string(error.what()).find("log on to 127.0.0.1:3/orcl") !=
+          std::string::npos);
   }
   CHECK(caught);
 }
@@ -78,8 +78,8 @@ void test_oracle_oci_error_is_backend_error() {
   // records the handle carried. OCIErrorGet serves no SQL state, so the state
   // an entry carries is the ORA- code leading its message.
   try {
-    throw oracle_oci::oci_error("execute", {
-      { "ORA-00942", 942, "table or view does not exist" } });
+    throw oracle_oci::oci_error(
+      "execute", { { "ORA-00942", 942, "table or view does not exist" } });
   } catch (backend::backend_error const& error) {
     CHECK(error.backend_name() == "oracle");
     CHECK(error.diagnostics().size() == 1);
@@ -87,8 +87,9 @@ void test_oracle_oci_error_is_backend_error() {
       CHECK(error.diagnostics()[0].state == "ORA-00942");
       CHECK(error.diagnostics()[0].native_code == 942);
     }
-    CHECK(std::string(error.what()).find(
-      "[ORA-00942] (942) table or view does not exist") != std::string::npos);
+    CHECK(std::string(error.what())
+            .find("[ORA-00942] (942) table or view does not exist") !=
+          std::string::npos);
   }
 }
 
@@ -108,6 +109,5 @@ void test_oracle_oci_error_reports_a_tolerated_code() {
 
   oracle_oci::throw_if_error(OCI_NO_DATA, nullptr, "fetch a row", OCI_NO_DATA);
   oracle_oci::throw_if_error(OCI_SUCCESS, nullptr, "fetch a row");
-  oracle_oci::throw_if_error(
-    OCI_SUCCESS_WITH_INFO, nullptr, "fetch a row");
+  oracle_oci::throw_if_error(OCI_SUCCESS_WITH_INFO, nullptr, "fetch a row");
 }

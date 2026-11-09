@@ -160,8 +160,8 @@ std::optional<std::string> emitted_class(
   return tcfg->class_name ? *tcfg->class_name : to_pascal_case(table.name);
 }
 
-std::string join(std::vector<std::string> const& items,
-  std::string_view separator) {
+std::string join(
+  std::vector<std::string> const& items, std::string_view separator) {
   std::string out;
   for (std::size_t i = 0; i < items.size(); ++i) {
     if (i != 0) {
@@ -175,8 +175,8 @@ std::string join(std::vector<std::string> const& items,
 // What one collision costs the run, and what can undo it. A class override
 // works while the tables have distinct config keys; names differing by case
 // alone share one key, so no section reaches one of them without the other.
-std::string collision_report(std::string const& class_name,
-  std::vector<std::string> const& tables) {
+std::string collision_report(
+  std::string const& class_name, std::vector<std::string> const& tables) {
   std::map<std::string, std::vector<std::string>> by_key;
   for (std::string const& name : tables) {
     by_key[fold_lower(name)].push_back(name);
@@ -192,8 +192,9 @@ std::string collision_report(std::string const& class_name,
     return out + ". Set class in one of their [tables.*] sections.";
   }
   return out + ". " + join(twins, ", ") +
-    " differ by case alone, which no [tables.*] section can split: ask for "
-    "one of them with --tables.";
+         " differ by case alone, which no [tables.*] section can split: ask "
+         "for "
+         "one of them with --tables.";
 }
 
 // Two tables reaching the same class name would declare one struct twice, and
@@ -259,15 +260,13 @@ std::vector<member_info> build_members(
         where + ": member name collision, renamed to '" + member + "'");
     }
     used.insert(member);
-    members.push_back(
-      member_info{ member, cpp_type, &col, through_converter });
+    members.push_back(member_info{ member, cpp_type, &col, through_converter });
   }
   return members;
 }
 
 void emit_table(std::string& text, table_model const& table,
-  gen_config const& cfg, std::string const& class_name,
-  generated_output& out) {
+  gen_config const& cfg, std::string const& class_name, generated_output& out) {
   std::vector<member_info> members = build_members(table, cfg, out);
 
   text += "// table: " + table.name + "\n";
@@ -307,9 +306,8 @@ void emit_table(std::string& text, table_model const& table,
     if (!m.through_converter || !asserted.insert(m.cpp_type).second) {
       continue;
     }
-    text += "static_assert(uniorm::has_converter<" + m.cpp_type +
-            ">,\n  \"" + m.cpp_type +
-            " needs a uniorm::converter specialization\");\n\n";
+    text += "static_assert(uniorm::has_converter<" + m.cpp_type + ">,\n  \"" +
+            m.cpp_type + " needs a uniorm::converter specialization\");\n\n";
   }
 
   text += "inline void register_" + class_name +
@@ -319,8 +317,8 @@ void emit_table(std::string& text, table_model const& table,
     member_info const& m = members[i];
     std::string call =
       m.col->primary_key ? "    .primary_key(" : "    .column(";
-    call += "\"" + m.col->shape.name + "\", &" + class_name + "::" +
-            m.member + ")";
+    call +=
+      "\"" + m.col->shape.name + "\", &" + class_name + "::" + m.member + ")";
     text += call + "\n";
   }
   // Replace the trailing newline with a semicolon.

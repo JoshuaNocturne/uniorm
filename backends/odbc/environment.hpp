@@ -2,9 +2,9 @@
 
 // Private header: ODBC environment handle. Not installed.
 
-#include "handles.hpp"
 #include "error.hpp"
 #include "export.hpp"
+#include "handles.hpp"
 
 namespace uniorm::odbc {
 

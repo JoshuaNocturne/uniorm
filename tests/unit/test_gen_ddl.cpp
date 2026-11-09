@@ -20,8 +20,8 @@ using index_row = schema_meta::index_row;
 
 namespace {
 
-bool mentions(std::vector<std::string> const& warnings,
-  std::string const& needle) {
+bool mentions(
+  std::vector<std::string> const& warnings, std::string const& needle) {
   return std::any_of(warnings.begin(), warnings.end(),
     [&](std::string const& w) { return w.find(needle) != std::string::npos; });
 }
@@ -36,8 +36,7 @@ ddl_table const* table_of(
   return nullptr;
 }
 
-column_row const* column_of(
-  ddl_table const& table, std::string const& name) {
+column_row const* column_of(ddl_table const& table, std::string const& name) {
   for (column_row const& column : table.columns) {
     if (column.shape.name == name) {
       return &column;
@@ -54,7 +53,7 @@ std::string fk_of(ddl_table const& table, std::size_t index) {
   }
   foreign_key_row const& key = table.foreign_keys[index];
   return key.column + " -> " + key.referenced_table + "(" +
-    key.referenced_column + ")";
+         key.referenced_column + ")";
 }
 
 bool index_is(ddl_table const& table, std::string const& name,
@@ -105,8 +104,7 @@ void test_number_and_boolean_types() {
 void test_text_and_binary_types() {
   CHECK(single_column("CHAR(2)").shape.type == sql_type::character);
   CHECK(single_column("VARCHAR(64)").shape.type == sql_type::varchar);
-  CHECK(single_column("CHARACTER VARYING(8)").type_name ==
-    "CHARACTER VARYING");
+  CHECK(single_column("CHARACTER VARYING(8)").type_name == "CHARACTER VARYING");
   CHECK(single_column("CHARACTER VARYING(8)").shape.type == sql_type::varchar);
   CHECK(single_column("TEXT").shape.type == sql_type::longvarchar);
   CHECK(single_column("LONG VARCHAR").shape.type == sql_type::longvarchar);
@@ -132,7 +130,7 @@ void test_date_time_and_decimal_arguments() {
   CHECK(single_column("DATETIME").shape.type == sql_type::timestamp);
   CHECK(single_column("TIMESTAMPTZ").shape.type == sql_type::timestamp);
   CHECK(single_column("TIMESTAMP WITHOUT TIME ZONE").type_name ==
-    "TIMESTAMP WITHOUT TIME ZONE");
+        "TIMESTAMP WITHOUT TIME ZONE");
   CHECK(single_column("TIME WITH TIME ZONE").shape.type == sql_type::time);
   // The arguments sit before the tail of the phrase in one dialect and after it
   // in another; both have to reach the column.
@@ -171,11 +169,11 @@ void test_quoted_names_and_comments() {
 }
 
 void test_default_values() {
-  ddl_snapshot const snapshot = parse_ddl(
-    "CREATE TABLE t (a VARCHAR(8) DEFAULT 'it''s', "
-    "b INT DEFAULT -7, c BIT DEFAULT b'0', d DATETIME DEFAULT now(), "
-    "e INT, f TEXT DEFAULT 'x'::text, g INT DEFAULT (NULL), "
-    "h TEXT DEFAULT NULL, i VARCHAR(4) DEFAULT '')");
+  ddl_snapshot const snapshot =
+    parse_ddl("CREATE TABLE t (a VARCHAR(8) DEFAULT 'it''s', "
+              "b INT DEFAULT -7, c BIT DEFAULT b'0', d DATETIME DEFAULT now(), "
+              "e INT, f TEXT DEFAULT 'x'::text, g INT DEFAULT (NULL), "
+              "h TEXT DEFAULT NULL, i VARCHAR(4) DEFAULT '')");
   ddl_table const& table = snapshot.tables[0];
   CHECK(*column_of(table, "a")->default_value == "'it''s'");
   CHECK(*column_of(table, "b")->default_value == "-7");
@@ -191,10 +189,10 @@ void test_default_values() {
 }
 
 void test_nullability_and_keys() {
-  ddl_snapshot const snapshot = parse_ddl(
-    "CREATE TABLE a (id INT NULL, x INT NOT NULL, PRIMARY KEY (id));"
-    "CREATE TABLE b (id INT, seq INT, PRIMARY KEY (seq, id));"
-    "CREATE TABLE c (id INT PRIMARY KEY, code VARCHAR(4) UNIQUE)");
+  ddl_snapshot const snapshot =
+    parse_ddl("CREATE TABLE a (id INT NULL, x INT NOT NULL, PRIMARY KEY (id));"
+              "CREATE TABLE b (id INT, seq INT, PRIMARY KEY (seq, id));"
+              "CREATE TABLE c (id INT PRIMARY KEY, code VARCHAR(4) UNIQUE)");
   // A primary key is never nullable, whether the column said so or a
   // constraint of its own did.
   ddl_table const& first = snapshot.tables[0];
@@ -202,8 +200,7 @@ void test_nullability_and_keys() {
   CHECK(!column_of(first, "x")->shape.nullable);
   CHECK(first.primary_key == std::vector<std::string>{ "id" });
   ddl_table const& second = snapshot.tables[1];
-  CHECK(second.primary_key ==
-    (std::vector<std::string>{ "seq", "id" }));
+  CHECK(second.primary_key == (std::vector<std::string>{ "seq", "id" }));
   CHECK(!column_of(second, "seq")->shape.nullable);
   CHECK(!column_of(second, "id")->shape.nullable);
   // A column-level UNIQUE is a key of its own, named for what it covers.
@@ -242,10 +239,10 @@ void test_foreign_keys() {
   // A key whose target the script never creates is reported, not guessed: the
   // columns it points at are the one thing a reader of the script cannot know.
   std::vector<std::string> warnings;
-  ddl_snapshot const missing = parse_ddl(
-    "CREATE TABLE kid (a INT, FOREIGN KEY (a) REFERENCES pa);"
-    "CREATE TABLE other (p INT PRIMARY KEY);",
-    &warnings);
+  ddl_snapshot const missing =
+    parse_ddl("CREATE TABLE kid (a INT, FOREIGN KEY (a) REFERENCES pa);"
+              "CREATE TABLE other (p INT PRIMARY KEY);",
+      &warnings);
   CHECK(missing.tables[0].foreign_keys.empty());
   CHECK(mentions(warnings,
     "the FOREIGN KEY on 'kid' references 'pa', whose columns this script does "
@@ -254,16 +251,17 @@ void test_foreign_keys() {
 
 void test_foreign_key_size_mismatch_is_refused() {
   CHECK_THROWS(parse_ddl("CREATE TABLE child (a INT, b INT, FOREIGN KEY (a, b)"
-    " REFERENCES parent (p));"
-    "CREATE TABLE parent (p INT)"), ddl_error);
+                         " REFERENCES parent (p));"
+                         "CREATE TABLE parent (p INT)"),
+    ddl_error);
 }
 
 void test_indexes() {
-  ddl_snapshot const snapshot = parse_ddl(
-    "CREATE TABLE t (a INT, b INT, c VARCHAR(200),"
-    " KEY (a), UNIQUE KEY u (b), INDEX (c, a));"
-    "CREATE INDEX i_desc ON t (c DESC, a(4) varchar_pattern_ops);"
-    "CREATE UNIQUE INDEX i_us ON t USING brin (b);");
+  ddl_snapshot const snapshot =
+    parse_ddl("CREATE TABLE t (a INT, b INT, c VARCHAR(200),"
+              " KEY (a), UNIQUE KEY u (b), INDEX (c, a));"
+              "CREATE INDEX i_desc ON t (c DESC, a(4) varchar_pattern_ops);"
+              "CREATE UNIQUE INDEX i_us ON t USING brin (b);");
   ddl_table const& table = snapshot.tables[0];
   CHECK(table.indexes.size() == 5);
   CHECK(index_is(table, "index_a", { "a" }, false));
@@ -278,11 +276,11 @@ void test_indexes() {
 
 void test_generated_columns() {
   std::vector<std::string> warnings;
-  ddl_snapshot const snapshot = parse_ddl(
-    "CREATE TABLE t (id BIGINT GENERATED ALWAYS AS IDENTITY NOT NULL,"
-    " full_name VARCHAR(80) GENERATED ALWAYS AS (a || b) STORED,"
-    " area INT AS (w * h) VIRTUAL, plain INT)",
-    &warnings);
+  ddl_snapshot const snapshot =
+    parse_ddl("CREATE TABLE t (id BIGINT GENERATED ALWAYS AS IDENTITY NOT NULL,"
+              " full_name VARCHAR(80) GENERATED ALWAYS AS (a || b) STORED,"
+              " area INT AS (w * h) VIRTUAL, plain INT)",
+      &warnings);
   ddl_table const& table = snapshot.tables[0];
   // An identity column is ordinary to read and ordinary to leave out of a
   // write, so it says nothing. An expression column reads but does not take a
@@ -324,12 +322,12 @@ void test_alter_table() {
 
 void test_statements_that_carry_no_schema_are_quiet() {
   std::vector<std::string> warnings;
-  ddl_snapshot const snapshot = parse_ddl(
-    "CREATE TABLE t (a INT);"
-    "INSERT INTO t VALUES (1); UPDATE t SET a = 2; DELETE FROM t;"
-    "SET @@sql_mode = ''; START TRANSACTION; COMMIT;"
-    "DROP TABLE IF EXISTS other; SELECT 1;",
-    &warnings);
+  ddl_snapshot const snapshot =
+    parse_ddl("CREATE TABLE t (a INT);"
+              "INSERT INTO t VALUES (1); UPDATE t SET a = 2; DELETE FROM t;"
+              "SET @@sql_mode = ''; START TRANSACTION; COMMIT;"
+              "DROP TABLE IF EXISTS other; SELECT 1;",
+      &warnings);
   CHECK(snapshot.tables.size() == 1);
   CHECK(warnings.empty());
 }
@@ -337,8 +335,8 @@ void test_statements_that_carry_no_schema_are_quiet() {
 void test_other_create_statements_are_counted() {
   std::vector<std::string> warnings;
   parse_ddl("CREATE TABLE t (a INT); CREATE VIEW v AS SELECT 1;"
-    "CREATE TRIGGER g BEFORE INSERT ON t BEGIN SELECT 1; END;"
-    "CREATE INDEX i ON t (a);",
+            "CREATE TRIGGER g BEFORE INSERT ON t BEGIN SELECT 1; END;"
+            "CREATE INDEX i ON t (a);",
     &warnings);
   CHECK(mentions(warnings, "ignored CREATE VIEW"));
   CHECK(mentions(warnings, "ignored CREATE TRIGGER"));
@@ -347,23 +345,22 @@ void test_other_create_statements_are_counted() {
 
 void test_non_value_constraints_are_counted() {
   std::vector<std::string> warnings;
-  ddl_snapshot const snapshot = parse_ddl(
-    "CREATE TABLE t (a INT, CONSTRAINT ck_a CHECK (a > 0),"
-    " FULLTEXT KEY ft (a));"
-    "ALTER TABLE t ADD CONSTRAINT ck_b CHECK (a < 100);",
-    &warnings);
+  ddl_snapshot const snapshot =
+    parse_ddl("CREATE TABLE t (a INT, CONSTRAINT ck_a CHECK (a > 0),"
+              " FULLTEXT KEY ft (a));"
+              "ALTER TABLE t ADD CONSTRAINT ck_b CHECK (a < 100);",
+      &warnings);
   CHECK(snapshot.tables[0].columns.size() == 1);
   CHECK(snapshot.tables[0].indexes.empty());
   // A constraint no member of a struct can carry is counted, whichever way the
   // script spells it or however late it arrives.
-  CHECK(mentions(warnings,
-    "ignored 3 x a non-value constraint on table 't'"));
+  CHECK(mentions(warnings, "ignored 3 x a non-value constraint on table 't'"));
 }
 
 void test_a_table_created_twice_is_reported() {
   std::vector<std::string> warnings;
-  ddl_snapshot const snapshot = parse_ddl(
-    "CREATE TABLE t (a INT); CREATE TABLE t (b INT);", &warnings);
+  ddl_snapshot const snapshot =
+    parse_ddl("CREATE TABLE t (a INT); CREATE TABLE t (b INT);", &warnings);
   CHECK(mentions(warnings, "created twice"));
   CHECK(snapshot.tables.size() == 1);
   CHECK(snapshot.tables[0].columns.size() == 1);
@@ -382,8 +379,8 @@ void test_rejected_scripts() {
 
 void test_narrowing_and_missing_reads() {
   ddl_meta md("USE shop;"
-    "CREATE TABLE billing.invoice (id INT NOT NULL PRIMARY KEY);"
-    "CREATE TABLE plain (a INT);");
+              "CREATE TABLE billing.invoice (id INT NOT NULL PRIMARY KEY);"
+              "CREATE TABLE plain (a INT);");
   CHECK(md.database_name() == "shop");
   std::vector<schema_meta::table_row> const all = md.tables("", "");
   CHECK(all.size() == 2);
@@ -432,13 +429,12 @@ void test_generation_from_a_script() {
   CHECK(out.warnings.empty());
   CHECK(out.text.find("namespace app {") != std::string::npos);
   CHECK(out.text.find("struct TUser {") != std::string::npos);
-  CHECK(out.text.find(".column(\"name\", &TUser::name)") !=
-    std::string::npos);
+  CHECK(out.text.find(".column(\"name\", &TUser::name)") != std::string::npos);
   CHECK(out.text.find("DECIMAL(10,2) DEFAULT NULL") != std::string::npos);
   CHECK(out.text.find("FK: user_id -> t_user(id)") != std::string::npos);
   CHECK(out.text.find("index: idx_user (user_id)") != std::string::npos);
   CHECK(out.text.find("register_app_schema(uniorm::orm& registry)") !=
-    std::string::npos);
+        std::string::npos);
 }
 
 }  // namespace

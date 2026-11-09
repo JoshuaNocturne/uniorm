@@ -93,8 +93,7 @@ void test_registry() {
   {
     std::vector<std::string> short_names{ "id", "owner", "balance" };
     row r(
-      short_names, { sql_value(std::int64_t{ 1 }),
-                     sql_value(std::string("x")),
+      short_names, { sql_value(std::int64_t{ 1 }), sql_value(std::string("x")),
                      sql_value(std::int32_t{ 2 }) });
     Account acc{};
     CHECK_THROWS(meta.populate(&acc, r), column_not_found);
@@ -108,9 +107,9 @@ void test_registry() {
     .column("maybe", &Flag::maybe);
   {
     auto const& meta = registry.meta<Flag>();
-    row r({ "id", "on", "maybe" }, { sql_value(std::int64_t{ 1 }),
-                                     sql_value(true),
-                                     sql_value(std::monostate{}) });
+    row r(
+      { "id", "on", "maybe" }, { sql_value(std::int64_t{ 1 }), sql_value(true),
+                                 sql_value(std::monostate{}) });
     Flag f{};
     meta.populate(&f, r);
     CHECK(f.on);

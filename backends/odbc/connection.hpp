@@ -4,9 +4,9 @@
 
 #include <string_view>
 
-#include "handles.hpp"
 #include "environment.hpp"
 #include "error.hpp"
+#include "handles.hpp"
 
 namespace uniorm::odbc {
 

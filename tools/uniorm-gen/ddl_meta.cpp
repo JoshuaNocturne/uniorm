@@ -27,7 +27,7 @@ bool ident_start(char ch) {
 
 bool ident_char(char ch) {
   return ident_start(ch) || std::isdigit(static_cast<unsigned char>(ch)) != 0 ||
-    ch == '$';
+         ch == '$';
 }
 
 // Every skip that hunts for punctuation has to step over these: a ';' or a '('
@@ -149,8 +149,8 @@ bool known_type(std::string const& phrase) {
 bool type_continues(std::string const& phrase) {
   for (auto const& entry : type_table()) {
     if (entry.first.size() > phrase.size() &&
-      entry.first.compare(0, phrase.size(), phrase) == 0 &&
-      entry.first[phrase.size()] == ' ') {
+        entry.first.compare(0, phrase.size(), phrase) == 0 &&
+        entry.first[phrase.size()] == ' ') {
       return true;
     }
   }
@@ -200,7 +200,9 @@ public:
     return pos_ >= text_.size();
   }
 
-  spot place() const { return spot{ pos_, line_ }; }
+  spot place() const {
+    return spot{ pos_, line_ };
+  }
   void restore(spot const& at);
 
   void skip_blanks();
@@ -264,7 +266,7 @@ void scanner::advance_to(std::size_t stop) {
 
 bool scanner::line_comment(std::size_t at) const {
   return text_[at] == '#' ||
-    (text_[at] == '-' && at + 1 < text_.size() && text_[at + 1] == '-');
+         (text_[at] == '-' && at + 1 < text_.size() && text_[at + 1] == '-');
 }
 
 void scanner::skip_line() {
@@ -278,7 +280,7 @@ void scanner::skip_block() {
   advance(2);
   while (pos_ < text_.size()) {
     if (text_[pos_] == '*' && pos_ + 1 < text_.size() &&
-      text_[pos_ + 1] == '/') {
+        text_[pos_ + 1] == '/') {
       advance(2);
       return;
     }
@@ -295,8 +297,7 @@ void scanner::skip_blanks() {
       advance(1);
     } else if (line_comment(pos_)) {
       skip_line();
-    } else if (ch == '/' && pos_ + 1 < text_.size() &&
-      text_[pos_ + 1] == '*') {
+    } else if (ch == '/' && pos_ + 1 < text_.size() && text_[pos_ + 1] == '*') {
       skip_block();
     } else {
       return;
@@ -309,8 +310,8 @@ void scanner::skip_quoted() {
   if (open == '$') {
     std::size_t tag = pos_ + 1;
     while (tag < text_.size() &&
-      (std::isalnum(static_cast<unsigned char>(text_[tag])) != 0 ||
-        text_[tag] == '_')) {
+           (std::isalnum(static_cast<unsigned char>(text_[tag])) != 0 ||
+             text_[tag] == '_')) {
       ++tag;
     }
     if (tag >= text_.size() || text_[tag] != '$') {
@@ -377,7 +378,7 @@ bool scanner::peek_keyword(std::string_view word) {
     }
   }
   return pos_ + word.size() >= text_.size() ||
-    !ident_char(text_[pos_ + word.size()]);
+         !ident_char(text_[pos_ + word.size()]);
 }
 
 bool scanner::eat_keyword(std::string_view word) {
@@ -486,12 +487,13 @@ std::string scanner::value() {
     skip_quoted();
     end = pos_;
   } else if (std::isdigit(static_cast<unsigned char>(ch)) != 0 ||
-    ((ch == '-' || ch == '+') && pos_ + 1 < text_.size() &&
-      std::isdigit(static_cast<unsigned char>(text_[pos_ + 1])) != 0)) {
+             ((ch == '-' || ch == '+') && pos_ + 1 < text_.size() &&
+               std::isdigit(static_cast<unsigned char>(text_[pos_ + 1])) !=
+                 0)) {
     advance(1);
     while (pos_ < text_.size() &&
-      (std::isdigit(static_cast<unsigned char>(text_[pos_])) != 0 ||
-        text_[pos_] == '.' || text_[pos_] == 'x' || text_[pos_] == 'X')) {
+           (std::isdigit(static_cast<unsigned char>(text_[pos_])) != 0 ||
+             text_[pos_] == '.' || text_[pos_] == 'x' || text_[pos_] == 'X')) {
       advance(1);
     }
     end = pos_;
@@ -522,7 +524,7 @@ std::string scanner::value() {
     } else if (text_[pos_] == '(') {
       skip_balanced();
     } else if (text_[pos_] == ':' && pos_ + 1 < text_.size() &&
-      text_[pos_ + 1] == ':') {
+               text_[pos_ + 1] == ':') {
       advance(2);
       identifier();
     } else {
@@ -626,8 +628,7 @@ void scanner::skip_balanced() {
     } else if (line_comment(pos_)) {
       skip_line();
       continue;
-    } else if (ch == '/' && pos_ + 1 < text_.size() &&
-      text_[pos_ + 1] == '*') {
+    } else if (ch == '/' && pos_ + 1 < text_.size() && text_[pos_ + 1] == '*') {
       skip_block();
       continue;
     }
@@ -705,8 +706,7 @@ std::string scanner::here() {
 }
 
 void scanner::fail(std::string const& message) {
-  throw ddl_error(
-    "ddl: line " + std::to_string(line_) + ": " + message);
+  throw ddl_error("ddl: line " + std::to_string(line_) + ": " + message);
 }
 
 // What a script asks for that a mapping cannot carry. Statements of one kind
@@ -731,8 +731,8 @@ public:
   void flush() {
     for (auto const& entry : counts_) {
       note(entry.second == 1
-          ? "ignored " + entry.first
-          : "ignored " + std::to_string(entry.second) + " x " + entry.first);
+             ? "ignored " + entry.first
+             : "ignored " + std::to_string(entry.second) + " x " + entry.first);
     }
   }
 
@@ -755,7 +755,9 @@ struct reader {
   std::vector<pending_key>& pending;
   std::size_t slot = 0;
 
-  ddl_table& table() { return out.tables[slot]; }
+  ddl_table& table() {
+    return out.tables[slot];
+  }
 };
 
 std::size_t find_table(
@@ -767,10 +769,10 @@ std::size_t find_table(
       continue;
     }
     if (parts.size() > 1 &&
-      (!table.ref.schema.empty() || !table.ref.catalog.empty())) {
+        (!table.ref.schema.empty() || !table.ref.catalog.empty())) {
       std::string const qualifier = fold_lower(parts[parts.size() - 2]);
       if (fold_lower(table.ref.schema) != qualifier &&
-        fold_lower(table.ref.catalog) != qualifier) {
+          fold_lower(table.ref.catalog) != qualifier) {
         continue;
       }
     }
@@ -807,9 +809,8 @@ std::vector<std::string> table_name(scanner& in) {
 
 // An index the script leaves unnamed still has to be reported, and its columns
 // spell the name the comment prints.
-std::string index_name(
-  std::string const& given, std::vector<std::string> const& columns,
-  char const* fallback) {
+std::string index_name(std::string const& given,
+  std::vector<std::string> const& columns, char const* fallback) {
   if (!given.empty()) {
     return given;
   }
@@ -823,7 +824,7 @@ std::string index_name(
 
 void mark_key(ddl_table& table, std::string const& column) {
   if (std::find(table.primary_key.begin(), table.primary_key.end(), column) ==
-    table.primary_key.end()) {
+      table.primary_key.end()) {
     table.primary_key.push_back(column);
   }
 }
@@ -834,7 +835,7 @@ void apply_keys(ddl_table& table) {
   for (std::string const& column : table.primary_key) {
     for (column_row& row : table.columns) {
       if (row.shape.name == column ||
-        fold_lower(row.shape.name) == fold_lower(column)) {
+          fold_lower(row.shape.name) == fold_lower(column)) {
         row.shape.nullable = false;
       }
     }
@@ -864,12 +865,12 @@ bool opens_a_key_list(scanner& in, char const* lead) {
 
 bool constraint_lead(scanner& in) {
   if (in.peek_keyword("primary") || in.peek_keyword("foreign") ||
-    in.peek_keyword("check") || in.peek_keyword("exclude") ||
-    in.peek_keyword("fulltext") || in.peek_keyword("spatial")) {
+      in.peek_keyword("check") || in.peek_keyword("exclude") ||
+      in.peek_keyword("fulltext") || in.peek_keyword("spatial")) {
     return true;
   }
   return opens_a_key_list(in, "unique") || opens_a_key_list(in, "key") ||
-    opens_a_key_list(in, "index");
+         opens_a_key_list(in, "index");
 }
 
 void read_references(
@@ -887,8 +888,8 @@ void read_references(
   } else {
     if (columns.size() != local.size()) {
       in.fail("a FOREIGN KEY of " + std::to_string(local.size()) +
-        " columns references " + std::to_string(columns.size()) +
-        " columns in '" + target.back() + "'");
+              " columns references " + std::to_string(columns.size()) +
+              " columns in '" + target.back() + "'");
     }
     ddl_table& table = rd.table();
     for (std::size_t index = 0; index < columns.size(); ++index) {
@@ -954,11 +955,11 @@ void read_type(scanner& in, column_row& row, std::string const& column) {
     read_arguments(in, row);
   }
   while (in.eat_keyword("unsigned") || in.eat_keyword("signed") ||
-    in.eat_keyword("zerofill")) {
+         in.eat_keyword("zerofill")) {
   }
   if (in.peek_is('[')) {
     in.fail("column '" + column + "' has type '" + phrase +
-      "[]': the v1 binding set carries no arrays");
+            "[]': the v1 binding set carries no arrays");
   }
   row.type_name = phrase;
   row.shape.type = sql_type_of(phrase);
@@ -996,7 +997,8 @@ void read_generated(
   in.eat_keyword("stored");
   in.eat_keyword("virtual");
   if (expression) {
-    sink.note("generated column '" + column +
+    sink.note(
+      "generated column '" + column +
       "' is emitted as a plain column: reading it works, writing it does not");
   }
 }
@@ -1084,7 +1086,7 @@ void read_column_def(scanner& in, reader& rd) {
       continue;
     }
     if (in.eat_keyword("storage") || in.eat_keyword("compression") ||
-      in.eat_keyword("srid")) {
+        in.eat_keyword("srid")) {
       in.value();
       continue;
     }
@@ -1094,8 +1096,8 @@ void read_column_def(scanner& in, reader& rd) {
       continue;
     }
     if (in.eat_keyword("auto_increment") || in.eat_keyword("invisible") ||
-      in.eat_keyword("visible") || in.eat_keyword("mandatory") ||
-      in.eat_keyword("deferrable")) {
+        in.eat_keyword("visible") || in.eat_keyword("mandatory") ||
+        in.eat_keyword("deferrable")) {
       continue;
     }
     // A column added by ALTER TABLE also says where in the table it goes;
@@ -1108,7 +1110,7 @@ void read_column_def(scanner& in, reader& rd) {
       continue;
     }
     in.fail("unsupported definition of column '" + row.shape.name +
-      "': found '" + in.here() + "'");
+            "': found '" + in.here() + "'");
   }
   table.columns.push_back(std::move(row));
 }
@@ -1164,13 +1166,13 @@ void read_constraint(scanner& in, reader& rd) {
     return;
   }
   if (in.eat_keyword("fulltext") || in.eat_keyword("spatial") ||
-    in.eat_keyword("exclude")) {
+      in.eat_keyword("exclude")) {
     in.skip_item();
     rd.sink.ignore("a non-value constraint on table '" + table.ref.name + "'");
     return;
   }
   in.fail("unsupported table constraint on '" + table.ref.name + "': found '" +
-    in.here() + "'");
+          in.here() + "'");
 }
 
 void read_table_item(scanner& in, reader& rd) {
@@ -1236,7 +1238,7 @@ void read_create_index(
   ddl_table* table = target_table(out, parts);
   if (table == nullptr) {
     sink.note("index '" + name + "' is on table '" + parts.back() +
-      "', which this script does not create");
+              "', which this script does not create");
   } else {
     table->indexes.push_back(
       index_row{ index_name(name, columns, "index"), columns, unique });
@@ -1244,8 +1246,7 @@ void read_create_index(
   in.statement_end();
 }
 
-void read_create_table(
-  scanner& in, ddl_snapshot& out, warning_sink& sink,
+void read_create_table(scanner& in, ddl_snapshot& out, warning_sink& sink,
   std::vector<pending_key>& pending) {
   in.eat_keyword("if");
   in.eat_keyword("not");
@@ -1257,7 +1258,7 @@ void read_create_table(
     out.tables.push_back(fresh_table(parts));
   } else {
     sink.note("table '" + parts.back() +
-      "' is created twice: the last definition is the one read");
+              "' is created twice: the last definition is the one read");
     out.tables[slot] = fresh_table(parts);
   }
   read_table_items(in, out, slot, sink, pending);
@@ -1274,8 +1275,7 @@ void read_added_columns(scanner& in, reader& rd) {
   }
 }
 
-void read_alter(
-  scanner& in, ddl_snapshot& out, warning_sink& sink,
+void read_alter(scanner& in, ddl_snapshot& out, warning_sink& sink,
   std::vector<pending_key>& pending) {
   if (!in.eat_keyword("table")) {
     sink.ignore("ALTER " + in.here());
@@ -1291,7 +1291,7 @@ void read_alter(
   std::size_t const slot = find_table(out.tables, parts);
   if (slot == no_table) {
     sink.note("ALTER TABLE names '" + parts.back() +
-      "', which this script does not create");
+              "', which this script does not create");
     in.statement_end();
     return;
   }
@@ -1327,17 +1327,14 @@ void read_alter(
 // Statements that carry no schema: their own subject is data, a session setting
 // or an administration task, and nothing a mapping is built from goes missing.
 bool carries_no_schema(std::string const& word) {
-  static char const* const quiet[] = { "insert",    "replace",   "update",
-    "delete",      "merge",     "set",       "begin",   "start",
-    "commit",      "rollback",  "truncate",  "drop",    "lock",
-    "unlock",      "grant",     "revoke",    "flush",   "analyze",
-    "analyse",     "optimize",  "repair",    "show",    "describe",
-    "explain",     "call",      "do",        "pragma",  "reset",
-    "kill",        "handler",   "savepoint", "prepare", "execute",
-    "deallocate",  "table",     "values",    "select",  "with",
-    "go",          "declare",   "print",     "sleep",   "refresh",
-    "vacuum",      "cluster",   "reindex",   "listen",  "notify",
-    "unlisten",    "checkpoint" };
+  static char const* const quiet[] = { "insert", "replace", "update", "delete",
+    "merge", "set", "begin", "start", "commit", "rollback", "truncate", "drop",
+    "lock", "unlock", "grant", "revoke", "flush", "analyze", "analyse",
+    "optimize", "repair", "show", "describe", "explain", "call", "do", "pragma",
+    "reset", "kill", "handler", "savepoint", "prepare", "execute", "deallocate",
+    "table", "values", "select", "with", "go", "declare", "print", "sleep",
+    "refresh", "vacuum", "cluster", "reindex", "listen", "notify", "unlisten",
+    "checkpoint" };
   for (char const* candidate : quiet) {
     if (word == candidate) {
       return true;
@@ -1411,12 +1408,13 @@ void resolve_pending_keys(ddl_snapshot& out,
     ddl_table const* target = target_table(out, key.target);
     if (target == nullptr || target->primary_key.size() != key.local.size()) {
       sink.note("the FOREIGN KEY on '" + owner.ref.name + "' references '" +
-        key.target.back() + "', whose columns this script does not name");
+                key.target.back() +
+                "', whose columns this script does not name");
       continue;
     }
     for (std::size_t index = 0; index < key.local.size(); ++index) {
-      owner.foreign_keys.push_back(foreign_key_row{ key.target.back(),
-        target->primary_key[index], key.local[index] });
+      owner.foreign_keys.push_back(foreign_key_row{
+        key.target.back(), target->primary_key[index], key.local[index] });
     }
   }
 }
@@ -1453,11 +1451,11 @@ std::vector<schema_meta::table_row> ddl_meta::tables(
     // A script that leaves a table unqualified says nothing about where it
     // lives, so a narrowing that names a place cannot exclude it.
     if (!catalog.empty() && !table.ref.catalog.empty() &&
-      fold_lower(catalog) != fold_lower(table.ref.catalog)) {
+        fold_lower(catalog) != fold_lower(table.ref.catalog)) {
       continue;
     }
     if (!schema.empty() && !table.ref.schema.empty() &&
-      fold_lower(schema) != fold_lower(table.ref.schema)) {
+        fold_lower(schema) != fold_lower(table.ref.schema)) {
       continue;
     }
     rows.push_back(
@@ -1469,7 +1467,7 @@ std::vector<schema_meta::table_row> ddl_meta::tables(
 ddl_table const* ddl_meta::find(table_ref const& ref) const {
   for (ddl_table const& table : tables_) {
     if (table.ref.name == ref.name && table.ref.schema == ref.schema &&
-      table.ref.catalog == ref.catalog) {
+        table.ref.catalog == ref.catalog) {
       return &table;
     }
   }
@@ -1499,8 +1497,7 @@ std::vector<schema_meta::foreign_key_row> ddl_meta::foreign_keys(
   return {};
 }
 
-std::vector<schema_meta::index_row> ddl_meta::indexes(
-  table_ref const& ref) {
+std::vector<schema_meta::index_row> ddl_meta::indexes(table_ref const& ref) {
   if (ddl_table const* table = find(ref)) {
     return table->indexes;
   }

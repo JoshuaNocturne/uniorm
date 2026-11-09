@@ -1,7 +1,7 @@
 #include "uniorm/mapping/registry.hpp"
 
-#include <uniorm/backend/error.hpp>
 #include "../identifier.hpp"
+#include <uniorm/backend/error.hpp>
 
 namespace uniorm {
 
@@ -93,8 +93,8 @@ std::size_t entity_meta::result_ordinal(
   if (resolved) {
     require_resolution_size(*this);
   }
-  auto const& label = resolved
-    ? resolved->columns.at(index) : columns[index].column;
+  auto const& label =
+    resolved ? resolved->columns.at(index) : columns[index].column;
   for (std::size_t slot = 0; slot < result.size(); ++slot) {
     if (result[slot].name == label) {
       return slot + 1;

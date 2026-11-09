@@ -17,8 +17,10 @@ void test_exact_catalog_patterns() {
   CHECK(catalog_pattern_literal("a%_!b", "!") == "a!%!_!!b");
   CHECK(catalog_pattern_literal("%_", "%") == "%%%_");
   CHECK(catalog_pattern_literal("%_", "_") == "_%__");
-  CHECK(catalog_pattern_literal("stra\xc3\x9f" "e", "\\") ==
-    "stra\xc3\x9f" "e");
+  CHECK(catalog_pattern_literal("stra\xc3\x9f"
+                                "e",
+          "\\") == "stra\xc3\x9f"
+                   "e");
   CHECK_THROWS(catalog_pattern_literal("name", ""), unsupported);
   CHECK_THROWS(catalog_pattern_literal("name", "ab"), unsupported);
   CHECK_THROWS(catalog_pattern_literal("name", { "\0", 1 }), unsupported);
@@ -40,8 +42,8 @@ void test_exact_catalog_patterns() {
   CHECK_THROWS(odbc::exact_tables_catalog_arg("app\\db", "\\"), unsupported);
   CHECK_THROWS(odbc::exact_tables_catalog_arg("app!db", "!"), unsupported);
   CHECK_THROWS(odbc::exact_tables_catalog_arg("app", ""), unsupported);
-  CHECK_THROWS(odbc::exact_tables_catalog_arg({ "a\0b", 3 }, "\\"),
-    unsupported);
+  CHECK_THROWS(
+    odbc::exact_tables_catalog_arg({ "a\0b", 3 }, "\\"), unsupported);
 }
 
 void test_exact_catalog_fields() {
@@ -52,10 +54,8 @@ void test_exact_catalog_fields() {
   std::string_view storage(buffer, sizeof(buffer));
   CHECK(exact_catalog_text(storage, 4, "table") == "name");
   for (auto field : { "catalog", "schema", "table", "column" }) {
-    CHECK_THROWS(exact_catalog_text(storage, SQL_NULL_DATA, field),
-      odbc_error);
-    CHECK_THROWS(exact_catalog_text(storage, SQL_NO_TOTAL, field),
-      odbc_error);
+    CHECK_THROWS(exact_catalog_text(storage, SQL_NULL_DATA, field), odbc_error);
+    CHECK_THROWS(exact_catalog_text(storage, SQL_NO_TOTAL, field), odbc_error);
     CHECK_THROWS(exact_catalog_text(storage, 5, field), odbc_error);
     CHECK_THROWS(exact_catalog_text(storage, 100, field), odbc_error);
     CHECK_THROWS(exact_catalog_text(storage, -2, field), odbc_error);
@@ -64,8 +64,8 @@ void test_exact_catalog_fields() {
   CHECK(exact_catalog_text(storage, SQL_NULL_DATA, "schema", true).empty());
   CHECK(exact_catalog_text({ "\0", 1 }, 0, "schema", true).empty());
   CHECK_THROWS(exact_catalog_text(storage, 5, "schema", true), odbc_error);
-  CHECK_THROWS(exact_catalog_text(storage, SQL_NO_TOTAL, "schema", true),
-    odbc_error);
+  CHECK_THROWS(
+    exact_catalog_text(storage, SQL_NO_TOTAL, "schema", true), odbc_error);
   CHECK_THROWS(exact_catalog_text({ "a\0b\0", 4 }, 3, "table"), odbc_error);
   CHECK_THROWS(exact_catalog_text({ "abcd", 4 }, 3, "table"), odbc_error);
   CHECK_THROWS(exact_catalog_text({}, 0, "table"), odbc_error);
@@ -103,7 +103,8 @@ void test_exact_catalog_identities() {
   CHECK(exact_catalog_table_matches(asked, row));
   CHECK(exact_catalog_namespace_matches(asked.catalog, "", row));
   CHECK(!exact_catalog_namespace_matches("", "", row));
-  asked.name = "stra\xc3\x9f" "e";
+  asked.name = "stra\xc3\x9f"
+               "e";
   row.name = "strasse";
   CHECK(!exact_catalog_table_matches(asked, row));
   row.name = asked.name;
@@ -113,7 +114,9 @@ void test_exact_catalog_identities() {
 struct legacy_catalog : schema_meta {
   bool legacy_read = false;
 
-  std::string database_name() override { return {}; }
+  std::string database_name() override {
+    return {};
+  }
   std::vector<table_row> tables(std::string_view, std::string_view) override {
     legacy_read = true;
     return {};
@@ -122,11 +125,15 @@ struct legacy_catalog : schema_meta {
     legacy_read = true;
     return {};
   }
-  std::vector<std::string> primary_key(table_ref const&) override { return {}; }
+  std::vector<std::string> primary_key(table_ref const&) override {
+    return {};
+  }
   std::vector<foreign_key_row> foreign_keys(table_ref const&) override {
     return {};
   }
-  std::vector<index_row> indexes(table_ref const&) override { return {}; }
+  std::vector<index_row> indexes(table_ref const&) override {
+    return {};
+  }
 };
 
 void test_exact_catalog_defaults() {
@@ -157,8 +164,12 @@ void test_odbc_catalog_name_matches() {
   CHECK(odbc::catalog_name_matches("", ""));
   // Folding stops at ASCII, so a non-ASCII name cannot fold onto another:
   // both of these are 7 bytes.
-  CHECK(!odbc::catalog_name_matches("strasse", "stra\xc3\x9f" "e"));
-  CHECK(odbc::catalog_name_matches("stra\xc3\x9f" "e", "stra\xc3\x9f" "e"));
+  CHECK(!odbc::catalog_name_matches("strasse", "stra\xc3\x9f"
+                                               "e"));
+  CHECK(odbc::catalog_name_matches("stra\xc3\x9f"
+                                   "e",
+    "stra\xc3\x9f"
+    "e"));
 
   test_exact_catalog_patterns();
   test_exact_catalog_fields();

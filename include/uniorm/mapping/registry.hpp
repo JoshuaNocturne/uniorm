@@ -14,6 +14,7 @@
 #include <vector>
 
 #include <uniorm/backend/backend.hpp>
+#include <uniorm/builder/expression.hpp>
 #include <uniorm/converter.hpp>
 #include <uniorm/decimal.hpp>
 #include <uniorm/detail/projection.hpp>
@@ -22,7 +23,6 @@
 #include <uniorm/dialect.hpp>
 #include <uniorm/error.hpp>
 #include <uniorm/export.hpp>
-#include <uniorm/builder/expression.hpp>
 #include <uniorm/row.hpp>
 #include <uniorm/schema.hpp>
 #include <uniorm/types.hpp>
@@ -46,12 +46,14 @@ struct column_meta {
   // Direct backend binding onto the member of obj (query materialization).
   std::function<std::unique_ptr<detail::field_binding>(void*)> make_binding;
   // Direct write to parameter buffer for batch insert (bypasses sql_value).
-  // Returns buffer type, writes value from obj to buffer[row*stride], sets indicator.
+  // Returns buffer type, writes value from obj to buffer[row*stride], sets
+  // indicator.
   std::function<backend::buffer_type(void const* obj, std::size_t row,
     void* buffer, std::size_t stride, std::int64_t* indicators)>
     write_to_param_buffer;
-  // Get string/binary size without creating sql_value (for buffer pre-allocation).
-  // Returns 0 for non-string/binary types, or the size for string/binary types.
+  // Get string/binary size without creating sql_value (for buffer
+  // pre-allocation). Returns 0 for non-string/binary types, or the size for
+  // string/binary types.
   std::function<std::size_t(void const* obj)> get_string_size;
 };
 
@@ -69,8 +71,7 @@ struct UNIORM_API entity_meta {
   std::string const& column_name(
     member_key const& key) const;  // throws mapping_error
   std::string table_sql(dialect const& sql_dialect) const;
-  std::string column_sql(
-    std::size_t index, dialect const& sql_dialect) const;
+  std::string column_sql(std::size_t index, dialect const& sql_dialect) const;
   std::string column_sql(
     member_key const& key, dialect const& sql_dialect) const;
   // One-based ordinal, in a described result set, of the column this mapping
@@ -125,8 +126,8 @@ void stage_param(V const& value, std::size_t row, void* buffer,
   using U = std::remove_cvref_t<V>;
   if constexpr (std::is_same_v<U, std::string> ||
                 std::is_same_v<U, std::vector<std::byte>>) {
-    std::memcpy(static_cast<char*>(buffer) + row * stride, value.data(),
-      value.size());
+    std::memcpy(
+      static_cast<char*>(buffer) + row * stride, value.data(), value.size());
     indicators[row] = static_cast<std::int64_t>(value.size());
   } else if constexpr (std::is_same_v<U, timestamp>) {
     auto src = break_timestamp(value);
@@ -202,8 +203,7 @@ constexpr backend::buffer_type member_buffer_type() {
   } else if constexpr (std::is_same_v<U, timestamp>) {
     return backend::buffer_type::timestamp_parts;
   } else {
-    static_assert(
-      std::is_same_v<U, U> && false,
+    static_assert(std::is_same_v<U, U> && false,
       "member or converter db_type must be one uniorm binds directly");
     return backend::buffer_type::chars;
   }
@@ -231,18 +231,18 @@ constexpr sql_type_set accepted_sql_types() {
     return sql_type_bit(sql_type::bigint);
   } else if constexpr (std::is_same_v<U, double>) {
     return sql_type_bit(sql_type::real) |
-      sql_type_bit(sql_type::double_precision) |
-      sql_type_bit(sql_type::decimal);
+           sql_type_bit(sql_type::double_precision) |
+           sql_type_bit(sql_type::decimal);
   } else if constexpr (std::is_same_v<U, std::string>) {
     return sql_type_bit(sql_type::character) | sql_type_bit(sql_type::varchar) |
-      sql_type_bit(sql_type::longvarchar) | sql_type_bit(sql_type::wchar) |
-      sql_type_bit(sql_type::wvarchar) | sql_type_bit(sql_type::guid) |
-      sql_type_bit(sql_type::decimal);
+           sql_type_bit(sql_type::longvarchar) | sql_type_bit(sql_type::wchar) |
+           sql_type_bit(sql_type::wvarchar) | sql_type_bit(sql_type::guid) |
+           sql_type_bit(sql_type::decimal);
   } else if constexpr (std::is_same_v<U, std::vector<std::byte>>) {
     return sql_type_bit(sql_type::binary) | sql_type_bit(sql_type::varbinary);
   } else if constexpr (std::is_same_v<U, timestamp>) {
     return sql_type_bit(sql_type::date) | sql_type_bit(sql_type::time) |
-      sql_type_bit(sql_type::timestamp);
+           sql_type_bit(sql_type::timestamp);
   } else {
     return 0;
   }
@@ -275,10 +275,9 @@ column_meta make_column_meta(
   c.make_binding = [member](void* obj) {
     return make_field_binding(static_cast<T*>(obj)->*member, obj);
   };
-  c.write_to_param_buffer = [member](void const* obj, std::size_t row,
-                                      void* buffer, std::size_t stride,
-                                      std::int64_t* indicators)
-    -> backend::buffer_type {
+  c.write_to_param_buffer =
+    [member](void const* obj, std::size_t row, void* buffer, std::size_t stride,
+      std::int64_t* indicators) -> backend::buffer_type {
     auto const& field = static_cast<T const*>(obj)->*member;
     if constexpr (is_optional_v<M>) {
       if (!field.has_value()) {

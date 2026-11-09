@@ -80,13 +80,12 @@ uniorm::pool_options pool_options_for() {
 }
 
 void register_fake_backend() {
-  uniorm::backend::registry::instance().register_backend(
-    "poolfake", [] {
-      auto conn = std::make_unique<recording_connection>();
-      conn->fail_rollback = fail_next_rollback;
-      current = conn.get();
-      return conn;
-    });
+  uniorm::backend::registry::instance().register_backend("poolfake", [] {
+    auto conn = std::make_unique<recording_connection>();
+    conn->fail_rollback = fail_next_rollback;
+    current = conn.get();
+    return conn;
+  });
 }
 
 void test_release_drops_the_previous_lease() {
@@ -274,7 +273,8 @@ void test_registry_waiter_does_not_stall_other_keys() {
   auto started = std::chrono::steady_clock::now();
   uniorm::pooled_connection elsewhere = registry.acquire(open_key);
   auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-    std::chrono::steady_clock::now() - started).count();
+    std::chrono::steady_clock::now() - started)
+                   .count();
   CHECK(bool(elsewhere));
   CHECK(elapsed < 300);
 

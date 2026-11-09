@@ -84,8 +84,8 @@ struct reported_names {
   bool asked_as(std::string_view catalog_name, std::string_view schema_name,
     std::string_view table_name) const {
     return catalog_name_matches(catalog_name, catalog.str()) &&
-      catalog_name_matches(schema_name, schema.str()) &&
-      catalog_name_matches(table_name, table.str());
+           catalog_name_matches(schema_name, schema.str()) &&
+           catalog_name_matches(table_name, table.str());
   }
 
   table_row exact_row(bool schema_required) const {
@@ -99,14 +99,12 @@ struct reported_names {
 std::string info_text(SQLHDBC dbc, SQLUSMALLINT info) {
   char data[1024] = {};
   SQLSMALLINT length = 0;
-  if (!SQL_SUCCEEDED(
-        SQLGetInfo(dbc, info, data, sizeof(data), &length)) ||
+  if (!SQL_SUCCEEDED(SQLGetInfo(dbc, info, data, sizeof(data), &length)) ||
       length <= 0) {
     return {};
   }
-  return std::string(
-    data, static_cast<std::size_t>(
-      std::min<SQLSMALLINT>(length, sizeof(data) - 1)));
+  return std::string(data,
+    static_cast<std::size_t>(std::min<SQLSMALLINT>(length, sizeof(data) - 1)));
 }
 
 std::string exact_info_text(SQLHDBC connection, SQLUSMALLINT info) {
@@ -125,15 +123,15 @@ std::string exact_info_text(SQLHDBC connection, SQLUSMALLINT info) {
     "ODBC information " + std::to_string(info), true);
 }
 
-std::string exact_namespace_escape(connection& conn,
-  std::string_view catalog, std::string_view schema) {
+std::string exact_namespace_escape(
+  connection& conn, std::string_view catalog, std::string_view schema) {
   exact_catalog_arg_length(catalog);
   exact_catalog_arg_length(schema);
   if (catalog.empty()) {
     throw mapping_error("exact catalog reads require a nonempty catalog");
   }
-  auto dbms = uniorm::detail::fold_lower(
-    exact_info_text(conn.native(), SQL_DBMS_NAME));
+  auto dbms =
+    uniorm::detail::fold_lower(exact_info_text(conn.native(), SQL_DBMS_NAME));
   if (dbms == "postgresql") {
     if (schema.empty() ||
         catalog != exact_info_text(conn.native(), SQL_DATABASE_NAME)) {
@@ -185,16 +183,16 @@ bool fetch_catalog_row(odbc::statement& stmt, bool exact) {
   return true;
 }
 
-std::vector<table_row> read_tables(connection& conn,
-  std::string_view catalog, std::string_view schema, bool exact) {
+std::vector<table_row> read_tables(connection& conn, std::string_view catalog,
+  std::string_view schema, bool exact) {
   std::string escape;
   if (exact) {
     escape = exact_namespace_escape(conn, catalog, schema);
   }
-  std::string schema_pattern = exact
-    ? catalog_pattern_literal(schema, escape) : std::string(schema);
-  std::string catalog_name = exact
-    ? exact_tables_catalog_arg(catalog, escape) : std::string(catalog);
+  std::string schema_pattern =
+    exact ? catalog_pattern_literal(schema, escape) : std::string(schema);
+  std::string catalog_name =
+    exact ? exact_tables_catalog_arg(catalog, escape) : std::string(catalog);
   std::string table_pattern = exact ? "%" : "";
   text_arg catalog_arg(catalog_name, exact);
   text_arg schema_arg(schema_pattern, exact);
@@ -204,22 +202,20 @@ std::vector<table_row> read_tables(connection& conn,
   if (exact) {
     require_pattern_metadata(stmt);
   }
-  SQLRETURN status = SQLTables(stmt.native(), catalog_arg.ptr,
-    catalog_arg.len, schema_arg.ptr, schema_arg.len, table_arg.ptr,
-    table_arg.len, nullptr, 0);
+  SQLRETURN status = SQLTables(stmt.native(), catalog_arg.ptr, catalog_arg.len,
+    schema_arg.ptr, schema_arg.len, table_arg.ptr, table_arg.len, nullptr, 0);
   check_catalog_result(status, stmt, "SQLTables", exact);
 
   reported_names names;
   char_buffer table_type;
   names.bind(stmt, 1);
   stmt.bind_column(
-    4, SQL_C_CHAR, table_type.data, sizeof(table_type.data),
-    &table_type.ind);
+    4, SQL_C_CHAR, table_type.data, sizeof(table_type.data), &table_type.ind);
 
   std::vector<table_row> rows;
   while (fetch_catalog_row(stmt, exact)) {
-    std::string type = exact
-      ? table_type.exact_str("table type") : table_type.str();
+    std::string type =
+      exact ? table_type.exact_str("table type") : table_type.str();
     if (type != "TABLE" && type != "BASE TABLE") {
       continue;
     }
@@ -236,8 +232,8 @@ std::vector<table_row> read_tables(connection& conn,
   return rows;
 }
 
-std::vector<column_row> read_table_columns(connection& conn,
-  meta::table_ref const& table, bool exact) {
+std::vector<column_row> read_table_columns(
+  connection& conn, meta::table_ref const& table, bool exact) {
   std::string escape;
   if (exact) {
     exact_catalog_arg_length(table.name);
@@ -248,10 +244,10 @@ std::vector<column_row> read_table_columns(connection& conn,
   }
   // Unlike SQLTables, SQLColumns takes CatalogName as a literal value.
   std::string catalog(table.catalog);
-  std::string schema = exact
-    ? catalog_pattern_literal(table.schema, escape) : table.schema;
-  std::string table_name = exact
-    ? catalog_pattern_literal(table.name, escape) : table.name;
+  std::string schema =
+    exact ? catalog_pattern_literal(table.schema, escape) : table.schema;
+  std::string table_name =
+    exact ? catalog_pattern_literal(table.name, escape) : table.name;
   std::string column_pattern = exact ? "%" : "";
   text_arg catalog_arg(catalog, exact);
   text_arg schema_arg(schema, exact);
@@ -262,9 +258,9 @@ std::vector<column_row> read_table_columns(connection& conn,
   if (exact) {
     require_pattern_metadata(stmt);
   }
-  SQLRETURN status = SQLColumns(stmt.native(), catalog_arg.ptr,
-    catalog_arg.len, schema_arg.ptr, schema_arg.len, table_arg.ptr,
-    table_arg.len, column_arg.ptr, column_arg.len);
+  SQLRETURN status = SQLColumns(stmt.native(), catalog_arg.ptr, catalog_arg.len,
+    schema_arg.ptr, schema_arg.len, table_arg.ptr, table_arg.len,
+    column_arg.ptr, column_arg.len);
   check_catalog_result(status, stmt, "SQLColumns(" + table.name + ")", exact);
 
   reported_names names;
@@ -288,8 +284,7 @@ std::vector<column_row> read_table_columns(connection& conn,
     6, SQL_C_CHAR, type_name.data, sizeof(type_name.data), &type_name.ind);
   stmt.bind_column(
     7, SQL_C_SLONG, &column_size, sizeof(column_size), &size_ind);
-  stmt.bind_column(
-    9, SQL_C_SSHORT, &decimals, sizeof(decimals), &decimals_ind);
+  stmt.bind_column(9, SQL_C_SSHORT, &decimals, sizeof(decimals), &decimals_ind);
   stmt.bind_column(
     11, SQL_C_SSHORT, &nullable, sizeof(nullable), &nullable_ind);
   stmt.bind_column(13, SQL_C_CHAR, default_value.data,
@@ -311,15 +306,16 @@ std::vector<column_row> read_table_columns(connection& conn,
     row.shape.type = data_type_ind == SQL_NULL_DATA
                        ? sql_type::other
                        : sql_type_from_native(data_type);
-    row.type_name = exact
-      ? type_name.exact_str("type name", true) : type_name.str();
+    row.type_name =
+      exact ? type_name.exact_str("type name", true) : type_name.str();
     row.size = size_ind == SQL_NULL_DATA ? 0 : column_size;
     row.decimals = decimals_ind == SQL_NULL_DATA ? 0 : decimals;
     row.shape.nullable =
       nullable_ind != SQL_NULL_DATA && nullable != SQL_NO_NULLS;
     if (default_value.ind != SQL_NULL_DATA) {
       row.default_value = exact
-        ? default_value.exact_str("column default", true) : default_value.str();
+                            ? default_value.exact_str("column default", true)
+                            : default_value.str();
     }
     rows.push_back(std::move(row));
   }
@@ -352,8 +348,7 @@ std::vector<meta::column_row> odbc_schema_meta::exact_table_columns(
   return read_table_columns(conn_, table, true);
 }
 
-std::vector<std::string> odbc_schema_meta::primary_key(
-  table_ref const& table) {
+std::vector<std::string> odbc_schema_meta::primary_key(table_ref const& table) {
   std::string cat(table.catalog);
   std::string sch(table.schema);
   std::string tbl(table.name);
@@ -416,14 +411,13 @@ std::vector<meta::foreign_key_row> odbc_schema_meta::foreign_keys(
     if (!names.asked_as(cat, sch, tbl)) {
       continue;
     }
-    rows.push_back(foreign_key_row{
-      pk_table.str(), pk_column.str(), fk_column.str() });
+    rows.push_back(
+      foreign_key_row{ pk_table.str(), pk_column.str(), fk_column.str() });
   }
   return rows;
 }
 
-std::vector<meta::index_row> odbc_schema_meta::indexes(
-  table_ref const& table) {
+std::vector<meta::index_row> odbc_schema_meta::indexes(table_ref const& table) {
   std::string cat(table.catalog);
   std::string sch(table.schema);
   std::string tbl(table.name);
@@ -432,9 +426,9 @@ std::vector<meta::index_row> odbc_schema_meta::indexes(
   text_arg tbl_arg(tbl);
 
   odbc::statement stmt(conn_);
-  SQLRETURN rc = SQLStatistics(stmt.native(), cat_arg.ptr, cat_arg.len,
-    sch_arg.ptr, sch_arg.len, tbl_arg.ptr, tbl_arg.len, SQL_INDEX_ALL,
-    SQL_QUICK);
+  SQLRETURN rc =
+    SQLStatistics(stmt.native(), cat_arg.ptr, cat_arg.len, sch_arg.ptr,
+      sch_arg.len, tbl_arg.ptr, tbl_arg.len, SQL_INDEX_ALL, SQL_QUICK);
   odbc::throw_if_error(
     rc, SQL_HANDLE_STMT, stmt.native(), "SQLStatistics(" + tbl + ")");
 
@@ -451,8 +445,7 @@ std::vector<meta::index_row> odbc_schema_meta::indexes(
     4, SQL_C_SSHORT, &non_unique, sizeof(non_unique), &non_unique_ind);
   stmt.bind_column(
     6, SQL_C_CHAR, index_name.data, sizeof(index_name.data), &index_name.ind);
-  stmt.bind_column(
-    7, SQL_C_SSHORT, &row_type, sizeof(row_type), &row_type_ind);
+  stmt.bind_column(7, SQL_C_SSHORT, &row_type, sizeof(row_type), &row_type_ind);
   stmt.bind_column(
     9, SQL_C_CHAR, column.data, sizeof(column.data), &column.ind);
 

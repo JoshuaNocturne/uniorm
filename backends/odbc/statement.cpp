@@ -4,8 +4,8 @@ namespace uniorm::odbc {
 
 statement::statement(connection& conn) : handle_(conn.native(), "statement") {
   // Set up rows fetched pointer for block fetch support
-  SQLRETURN rc = SQLSetStmtAttr(native(), SQL_ATTR_ROWS_FETCHED_PTR,
-    &rows_fetched_, 0);
+  SQLRETURN rc =
+    SQLSetStmtAttr(native(), SQL_ATTR_ROWS_FETCHED_PTR, &rows_fetched_, 0);
   throw_if_error(rc, SQL_HANDLE_STMT, native(), "set rows fetched pointer");
 }
 
@@ -40,15 +40,15 @@ bool statement::fetch() {
 
 void statement::set_row_array_size(SQLULEN size) {
   row_array_size_ = size;
-  SQLRETURN rc = SQLSetStmtAttr(native(), SQL_ATTR_ROW_ARRAY_SIZE,
-    reinterpret_cast<SQLPOINTER>(size), 0);
+  SQLRETURN rc = SQLSetStmtAttr(
+    native(), SQL_ATTR_ROW_ARRAY_SIZE, reinterpret_cast<SQLPOINTER>(size), 0);
   throw_if_error(rc, SQL_HANDLE_STMT, native(), "set row array size");
 }
 
 void statement::set_paramset_size(SQLULEN size) {
   paramset_size_ = size;
-  SQLRETURN rc = SQLSetStmtAttr(native(), SQL_ATTR_PARAMSET_SIZE,
-    reinterpret_cast<SQLPOINTER>(size), 0);
+  SQLRETURN rc = SQLSetStmtAttr(
+    native(), SQL_ATTR_PARAMSET_SIZE, reinterpret_cast<SQLPOINTER>(size), 0);
   throw_if_error(rc, SQL_HANDLE_STMT, native(), "set paramset size");
 }
 
@@ -95,19 +95,19 @@ void statement::reset() {
   // So SQL_RESET_PARAMS and SQL_UNBIND are redundant.
   SQLRETURN rc = SQLFreeStmt(native(), SQL_CLOSE);
   throw_if_error(rc, SQL_HANDLE_STMT, native(), "close statement cursor");
-  
+
   // Reset row array size to 1 for next use
   if (row_array_size_ != 1) {
     row_array_size_ = 1;
-    rc = SQLSetStmtAttr(native(), SQL_ATTR_ROW_ARRAY_SIZE,
-      reinterpret_cast<SQLPOINTER>(1), 0);
+    rc = SQLSetStmtAttr(
+      native(), SQL_ATTR_ROW_ARRAY_SIZE, reinterpret_cast<SQLPOINTER>(1), 0);
     throw_if_error(rc, SQL_HANDLE_STMT, native(), "reset row array size");
   }
   // Reset paramset size to 1 for next use
   if (paramset_size_ != 1) {
     paramset_size_ = 1;
-    rc = SQLSetStmtAttr(native(), SQL_ATTR_PARAMSET_SIZE,
-      reinterpret_cast<SQLPOINTER>(1), 0);
+    rc = SQLSetStmtAttr(
+      native(), SQL_ATTR_PARAMSET_SIZE, reinterpret_cast<SQLPOINTER>(1), 0);
     throw_if_error(rc, SQL_HANDLE_STMT, native(), "reset paramset size");
   }
 }

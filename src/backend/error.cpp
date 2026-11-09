@@ -2,8 +2,8 @@
 
 namespace uniorm::backend {
 
-backend_error::backend_error(std::string backend, std::string context,
-  std::vector<diagnostic> diags)
+backend_error::backend_error(
+  std::string backend, std::string context, std::vector<diagnostic> diags)
   : uniorm_error([&] {
       std::string msg = context;
       for (auto const& d : diags) {
@@ -12,7 +12,6 @@ backend_error::backend_error(std::string backend, std::string context,
       }
       return msg;
     }()),
-    backend_(std::move(backend)),
-    diags_(std::move(diags)) {}
+    backend_(std::move(backend)), diags_(std::move(diags)) {}
 
 }  // namespace uniorm::backend

@@ -16,7 +16,7 @@ namespace {
 std::pair<std::string, std::size_t> rewrite(std::string_view sql) {
   std::size_t count = 0;
   std::string out = oracle_oci::rewrite_placeholders(sql, count);
-  return {std::move(out), count};
+  return { std::move(out), count };
 }
 
 }  // namespace
@@ -87,11 +87,11 @@ void test_oracle_oci_leads_with_query() {
   CHECK(oracle_oci::leads_with_query("  SELECT * FROM t WHERE id = ?"));
   CHECK(oracle_oci::leads_with_query(
     "with x as (select 1 from dual) select * from x"));
-  CHECK(oracle_oci::leads_with_query(
-    "WitH x AS (SELECT 1 FROM dual) SELECT 1"));
+  CHECK(
+    oracle_oci::leads_with_query("WitH x AS (SELECT 1 FROM dual) SELECT 1"));
   CHECK(oracle_oci::leads_with_query("-- a note\nselect 1 from dual"));
-  CHECK(oracle_oci::leads_with_query(
-    "/* a note */ with q as (select 1) select 1"));
+  CHECK(
+    oracle_oci::leads_with_query("/* a note */ with q as (select 1) select 1"));
 
   CHECK(!oracle_oci::leads_with_query("insert into t values (1)"));
   CHECK(!oracle_oci::leads_with_query("update t set a = 1"));

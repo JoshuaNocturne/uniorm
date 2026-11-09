@@ -81,7 +81,7 @@ std::size_t number_text_width(described_column const& column) {
 
 bool is_timestamp_column(ub2 dty) {
   return dty == SQLT_TIMESTAMP || dty == SQLT_TIMESTAMP_TZ ||
-    dty == SQLT_TIMESTAMP_LTZ;
+         dty == SQLT_TIMESTAMP_LTZ;
 }
 
 // The shape OCI writes for one row, from what the caller bound and what the
@@ -122,7 +122,7 @@ stage_kind pick_stage(
       return stage_kind::timestamp;
     }
     throw oci_error("bind a column of type " + std::to_string(column.dty) +
-        " into a date or time field",
+                      " into a date or time field",
       {});
   }
   throw oci_error("bind a result column of an unknown buffer type", {});
@@ -144,9 +144,8 @@ std::size_t stage_width(
     return width > max_scalar_width ? max_scalar_width : width;
   }
   if (column.byte_size == 0) {
-    return unknown_scalar_width > requested_capacity
-      ? unknown_scalar_width
-      : requested_capacity;
+    return unknown_scalar_width > requested_capacity ? unknown_scalar_width
+                                                     : requested_capacity;
   }
   return column.byte_size > max_scalar_width ? max_scalar_width
                                              : column.byte_size;
@@ -155,21 +154,19 @@ std::size_t stage_width(
 sb8 number_to_integer(OCINumber const& number, OCIError* error) {
   sb8 out = 0;
   throw_if_error(
-    OCINumberToInt(error, &number, sizeof(out), OCI_NUMBER_SIGNED, &out),
-    error, "read a NUMBER as an integer");
+    OCINumberToInt(error, &number, sizeof(out), OCI_NUMBER_SIGNED, &out), error,
+    "read a NUMBER as an integer");
   return out;
 }
 
 double number_to_real(OCINumber const& number, OCIError* error) {
   double out = 0;
-  throw_if_error(
-    OCINumberToReal(error, &number, sizeof(out), &out), error,
+  throw_if_error(OCINumberToReal(error, &number, sizeof(out), &out), error,
     "read a NUMBER as a real");
   return out;
 }
 
-std::string number_to_text(
-  OCINumber const& number, OCIError* error) {
+std::string number_to_text(OCINumber const& number, OCIError* error) {
   // TM: the shortest spelling that reads back as the same value, with no
   // group separator and no currency, which is what a column's text should be.
   // The buffer is Oracle's own ceiling for a NUMBER's text -- a value like
@@ -178,19 +175,19 @@ std::string number_to_text(
   // handed.
   char buffer[178] = {};
   ub4 size = static_cast<ub4>(sizeof(buffer) - 1);
-  throw_if_error(OCINumberToText(error, &number,
-                   readable_text("TM"), 2, nullptr, 0, &size,
-                   reinterpret_cast<OraText*>(buffer)),
+  throw_if_error(OCINumberToText(error, &number, readable_text("TM"), 2,
+                   nullptr, 0, &size, reinterpret_cast<OraText*>(buffer)),
     error, "read a NUMBER as text");
   if (size > sizeof(buffer) - 1) {
     throw oci_error("read a NUMBER whose text runs past " +
-      std::to_string(size) + " characters", {});
+                      std::to_string(size) + " characters",
+      {});
   }
   return std::string(buffer, size);
 }
 
-void integer_from_value(sql_value const& value, OCIError* error,
-  OCINumber& number) {
+void integer_from_value(
+  sql_value const& value, OCIError* error, OCINumber& number) {
   std::int64_t whole = 0;
   std::visit(
     [&whole](auto const& held) {
@@ -202,8 +199,8 @@ void integer_from_value(sql_value const& value, OCIError* error,
       }
     },
     value);
-  throw_if_error(OCINumberFromInt(error, &whole, sizeof(whole),
-                   OCI_NUMBER_SIGNED, &number),
+  throw_if_error(
+    OCINumberFromInt(error, &whole, sizeof(whole), OCI_NUMBER_SIGNED, &number),
     error, "bind an integer parameter");
 }
 
@@ -236,7 +233,7 @@ constexpr std::size_t max_batch_slab_bytes = 32u << 20;
 // as against an OCINumber or a descriptor pointer, whose width OCI knows.
 bool stages_as_slab(batch_kind kind) noexcept {
   return kind == batch_kind::text || kind == batch_kind::binary ||
-    kind == batch_kind::empty;
+         kind == batch_kind::empty;
 }
 
 // The type a staged column is bound as.
@@ -286,15 +283,13 @@ void oci_statement::prepare(std::string_view sql) {
   // OCIStmtPrepare, not OCIStmtPrepare2: the second keeps a server-side
   // statement cache keyed by a cursor name, and this library's own cache
   // already holds the handle to reuse.
-  throw_if_error(OCIStmtPrepare(stmt_.get(), conn_.error(),
-                   readable_text(rewritten_),
-                   static_cast<ub4>(rewritten_.size()), OCI_NTV_SYNTAX,
-                   OCI_DEFAULT),
+  throw_if_error(
+    OCIStmtPrepare(stmt_.get(), conn_.error(), readable_text(rewritten_),
+      static_cast<ub4>(rewritten_.size()), OCI_NTV_SYNTAX, OCI_DEFAULT),
     conn_.error(), "prepare statement");
 }
 
-void oci_statement::bind_parameter(
-  std::size_t index, sql_value const& value) {
+void oci_statement::bind_parameter(std::size_t index, sql_value const& value) {
   while (params_.size() < index) {
     params_.emplace_back();
   }
@@ -329,16 +324,14 @@ void oci_statement::bind_one(std::size_t index, sql_value const& value) {
   } else if (std::holds_alternative<timestamp>(value)) {
     auto const parts =
       uniorm::detail::break_timestamp(std::get<timestamp>(value));
-    slot.stamp = detail::timestamp_descriptor(
-      conn_.env(), "bind a timestamp parameter");
-    throw_if_error(OCIDateTimeConstruct(conn_.env(), conn_.error(),
-                     slot.stamp.get(), static_cast<sb2>(parts.year),
-                     static_cast<ub1>(parts.month),
-                     static_cast<ub1>(parts.day),
-                     static_cast<ub1>(parts.hour),
-                     static_cast<ub1>(parts.minute),
-                     static_cast<ub1>(parts.second),
-                     static_cast<ub4>(parts.fraction_ns), nullptr, 0),
+    slot.stamp =
+      detail::timestamp_descriptor(conn_.env(), "bind a timestamp parameter");
+    throw_if_error(
+      OCIDateTimeConstruct(conn_.env(), conn_.error(), slot.stamp.get(),
+        static_cast<sb2>(parts.year), static_cast<ub1>(parts.month),
+        static_cast<ub1>(parts.day), static_cast<ub1>(parts.hour),
+        static_cast<ub1>(parts.minute), static_cast<ub1>(parts.second),
+        static_cast<ub4>(parts.fraction_ns), nullptr, 0),
       conn_.error(), "build a timestamp to bind");
     slot.dty = SQLT_TIMESTAMP;
     slot.value = slot.stamp.address();
@@ -364,15 +357,16 @@ void oci_statement::bind_column(
       "bind a result column of a statement that was never described", {});
   }
   if (index == 0 || index > described_.size()) {
-    throw oci_error("result column " + std::to_string(index) +
-      " is past the select list", {});
+    throw oci_error(
+      "result column " + std::to_string(index) + " is past the select list",
+      {});
   }
   // The core binds its fields in whatever order it mapped them, so a column
   // may arrive at any point in the run -- twice may not.
   for (column_slot const& slot : slots_) {
     if (slot.position == index) {
-      throw oci_error("bind result column " + std::to_string(index) +
-        " a second time", {});
+      throw oci_error(
+        "bind result column " + std::to_string(index) + " a second time", {});
     }
   }
   slots_.emplace_back();
@@ -459,10 +453,10 @@ void oci_statement::apply_define(std::size_t position, column_slot& slot) {
   }
 
   OCIDefine* handle = nullptr;
-  throw_if_error(OCIDefineByPos(stmt_.get(), &handle, conn_.error(),
-                   static_cast<ub4>(position), value, size, dty,
-                   slot.nulls.data(), slot.lengths.data(), nullptr,
-                   OCI_DEFAULT),
+  throw_if_error(
+    OCIDefineByPos(stmt_.get(), &handle, conn_.error(),
+      static_cast<ub4>(position), value, size, dty, slot.nulls.data(),
+      slot.lengths.data(), nullptr, OCI_DEFAULT),
     conn_.error(), "define result column " + std::to_string(position));
   slot.define = detail::define_handle::adopt(handle);
   // The strides that turn one define into an array of them: the value steps
@@ -487,8 +481,7 @@ void oci_statement::describe() {
     conn_.error(), "count the select-list columns");
   for (ub4 position = 1; position <= columns; ++position) {
     OCIParam* parameter = nullptr;
-    throw_if_error(OCIParamGet(stmt_.get(), OCI_HTYPE_STMT,
-                     conn_.error(),
+    throw_if_error(OCIParamGet(stmt_.get(), OCI_HTYPE_STMT, conn_.error(),
                      reinterpret_cast<void**>(&parameter), position),
       conn_.error(), "describe a select-list column");
     auto owned_parameter = detail::param_handle::adopt(parameter);
@@ -526,7 +519,8 @@ void oci_statement::describe() {
     OraText const* name = nullptr;
     ub4 name_length = 0;
     if (OCIAttrGet(parameter, OCI_DTYPE_PARAM, &name, &name_length,
-          OCI_ATTR_NAME, conn_.error()) == OCI_SUCCESS && name != nullptr) {
+          OCI_ATTR_NAME, conn_.error()) == OCI_SUCCESS &&
+        name != nullptr) {
       column.name.assign(reinterpret_cast<char const*>(name), name_length);
     }
     described_.push_back(std::move(column));
@@ -536,7 +530,7 @@ void oci_statement::describe() {
 
 std::size_t oci_statement::run(ub4 mode, ub4 iterations) {
   throw_if_error(OCIStmtExecute(conn_.service(), stmt_.get(), conn_.error(),
-    iterations, 0, nullptr, nullptr, mode),
+                   iterations, 0, nullptr, nullptr, mode),
     conn_.error(), "execute statement");
   return mode == OCI_DESCRIBE_ONLY ? 0 : row_count();
 }
@@ -579,11 +573,11 @@ std::optional<std::vector<batch_plan_column>> plan_batch(
         return {};
       }
       if (kind == batch_kind::text) {
-        column.stride = std::max(column.stride,
-          std::get<std::string>(value).size());
+        column.stride =
+          std::max(column.stride, std::get<std::string>(value).size());
       } else if (kind == batch_kind::binary) {
-        column.stride = std::max(column.stride,
-          std::get<std::vector<std::byte>>(value).size());
+        column.stride = std::max(
+          column.stride, std::get<std::vector<std::byte>>(value).size());
       }
     }
     if (column.kind == batch_kind::number) {
@@ -633,16 +627,15 @@ std::optional<std::vector<batch_column>> oci_statement::stage_batch(
     if (column.kind == batch_kind::number) {
       column.numbers.resize(count);
     }
-    if (column.kind == batch_kind::text ||
-        column.kind == batch_kind::binary) {
+    if (column.kind == batch_kind::text || column.kind == batch_kind::binary) {
       column.lengths.assign(count, 0);
     }
     for (std::size_t row = 0; row < count; ++row) {
       sql_value const& value = rows[row].at(slot);
       OCIDateTime* stamp = column.kind == batch_kind::timestamp
-        ? column.stamps.add(conn_.env(), OCI_DTYPE_TIMESTAMP,
-            "bind a batch timestamp")
-        : nullptr;
+                             ? column.stamps.add(conn_.env(),
+                                 OCI_DTYPE_TIMESTAMP, "bind a batch timestamp")
+                             : nullptr;
       if (is_null(value)) {
         column.indicators[row] = -1;
         continue;
@@ -650,38 +643,36 @@ std::optional<std::vector<batch_column>> oci_statement::stage_batch(
       switch (column.kind) {
       case batch_kind::number:
         if (std::holds_alternative<double>(value)) {
-          real_from_value(std::get<double>(value), conn_.error(),
-            column.numbers[row]);
+          real_from_value(
+            std::get<double>(value), conn_.error(), column.numbers[row]);
         } else {
           integer_from_value(value, conn_.error(), column.numbers[row]);
         }
         break;
       case batch_kind::text: {
         std::string const& text = std::get<std::string>(value);
-        std::memcpy(column.bytes.data() + row * column.stride, text.data(),
-          text.size());
+        std::memcpy(
+          column.bytes.data() + row * column.stride, text.data(), text.size());
         column.lengths[row] = static_cast<ub2>(text.size());
         break;
       }
       case batch_kind::binary: {
         std::vector<std::byte> const& raw =
           std::get<std::vector<std::byte>>(value);
-        std::memcpy(column.bytes.data() + row * column.stride, raw.data(),
-          raw.size());
+        std::memcpy(
+          column.bytes.data() + row * column.stride, raw.data(), raw.size());
         column.lengths[row] = static_cast<ub2>(raw.size());
         break;
       }
       case batch_kind::timestamp: {
         auto const parts =
           uniorm::detail::break_timestamp(std::get<timestamp>(value));
-        throw_if_error(OCIDateTimeConstruct(conn_.env(), conn_.error(), stamp,
-                         static_cast<sb2>(parts.year),
-                         static_cast<ub1>(parts.month),
-                         static_cast<ub1>(parts.day),
-                         static_cast<ub1>(parts.hour),
-                         static_cast<ub1>(parts.minute),
-                         static_cast<ub1>(parts.second),
-                         static_cast<ub4>(parts.fraction_ns), nullptr, 0),
+        throw_if_error(
+          OCIDateTimeConstruct(conn_.env(), conn_.error(), stamp,
+            static_cast<sb2>(parts.year), static_cast<ub1>(parts.month),
+            static_cast<ub1>(parts.day), static_cast<ub1>(parts.hour),
+            static_cast<ub1>(parts.minute), static_cast<ub1>(parts.second),
+            static_cast<ub4>(parts.fraction_ns), nullptr, 0),
           conn_.error(), "build a batch timestamp");
         break;
       }
@@ -697,8 +688,8 @@ std::optional<std::vector<batch_column>> oci_statement::stage_batch(
 // One column of the batch at the placeholder it belongs to. `maxarr_len` zero
 // is the form the server takes: the row count comes from the execute, and OCI
 // walks the slab and its two arrays by their own element sizes.
-detail::bind_handle oci_statement::bind_batch_column(std::size_t position,
-  batch_column& column) {
+detail::bind_handle oci_statement::bind_batch_column(
+  std::size_t position, batch_column& column) {
   OCIBind* handle = nullptr;
   throw_if_error(OCIBindByPos(stmt_.get(), &handle, conn_.error(),
                    static_cast<ub4>(position), column.values(),
@@ -948,8 +939,7 @@ void oci_statement::put_number(column_slot& slot, std::size_t row) {
   case backend::buffer_type::chars:
   case backend::buffer_type::bytes: {
     std::string const text = number_to_text(number, conn_.error());
-    put_text(
-      slot, row, text.data(), static_cast<std::size_t>(text.size()));
+    put_text(slot, row, text.data(), static_cast<std::size_t>(text.size()));
     return;
   }
   case backend::buffer_type::timestamp_parts:
@@ -986,8 +976,7 @@ void oci_statement::put_date(column_slot& slot, std::size_t row) {
     return;
   }
   case backend::buffer_type::timestamp_parts: {
-    auto* parts =
-      reinterpret_cast<backend::timestamp_parts*>(destination);
+    auto* parts = reinterpret_cast<backend::timestamp_parts*>(destination);
     parts->year = year;
     parts->month = month;
     parts->day = day;
@@ -1000,8 +989,7 @@ void oci_statement::put_date(column_slot& slot, std::size_t row) {
   default:
     // A field that wants text was staged as text, not as a date: pick_stage()
     // reaches this shape only for a date, time or timestamp field.
-    throw oci_error("bind a DATE column into a field that is not a date",
-      {});
+    throw oci_error("bind a DATE column into a field that is not a date", {});
   }
 }
 
@@ -1017,9 +1005,8 @@ void oci_statement::put_timestamp(column_slot& slot, std::size_t row) {
   throw_if_error(
     OCIDateTimeGetDate(conn_.env(), conn_.error(), value, &year, &month, &day),
     conn_.error(), "read a TIMESTAMP column's date");
-  throw_if_error(OCIDateTimeGetTime(
-                     conn_.env(), conn_.error(), value, &hour, &minute, &second,
-                     &fraction),
+  throw_if_error(OCIDateTimeGetTime(conn_.env(), conn_.error(), value, &hour,
+                   &minute, &second, &fraction),
     conn_.error(), "read a TIMESTAMP column's time");
   char* destination = caller_at(slot, row);
   switch (slot.target.type) {
@@ -1038,8 +1025,7 @@ void oci_statement::put_timestamp(column_slot& slot, std::size_t row) {
     return;
   }
   case backend::buffer_type::timestamp_parts: {
-    auto* parts =
-      reinterpret_cast<backend::timestamp_parts*>(destination);
+    auto* parts = reinterpret_cast<backend::timestamp_parts*>(destination);
     parts->year = year;
     parts->month = month;
     parts->day = day;
@@ -1068,10 +1054,9 @@ std::vector<column_info> oci_statement::column_meta() const {
     info.type =
       sql_type_from_native(column.dty, column.precision, column.scale);
     info.display_size = info.type == sql_type::decimal
-      ? static_cast<std::size_t>(column.precision)
-      : column.byte_size;
-    info.scale = static_cast<std::size_t>(column.scale < 0 ? 0
-                                                           : column.scale);
+                          ? static_cast<std::size_t>(column.precision)
+                          : column.byte_size;
+    info.scale = static_cast<std::size_t>(column.scale < 0 ? 0 : column.scale);
     info.nullable = column.nullable;
     out.push_back(std::move(info));
   }
@@ -1120,8 +1105,9 @@ column_slot& oci_statement::wide_slot(std::size_t column) {
 void oci_statement::require_wide(
   column_slot& slot, std::size_t column, std::size_t row) {
   if (row >= slot.wide_rows.size() || slot.wide_rows[row] == 0) {
-    throw oci_error("read column " + std::to_string(column) +
-      " of row " + std::to_string(row) + ", which owes no such read", {});
+    throw oci_error("read column " + std::to_string(column) + " of row " +
+                      std::to_string(row) + ", which owes no such read",
+      {});
   }
 }
 
@@ -1136,8 +1122,7 @@ std::string oci_statement::read_long_text(std::size_t column, std::size_t row) {
   }
   // A scalar whose value did not fit the caller's slot is whole in the
   // staging it was fetched into, unless the server truncated that too.
-  return std::string(
-    slot_at(slot, row), staged_length(slot, row));
+  return std::string(slot_at(slot, row), staged_length(slot, row));
 }
 
 std::vector<std::byte> oci_statement::read_long_bytes(
@@ -1173,9 +1158,9 @@ std::string oci_statement::read_locator_text(
   for (;;) {
     char chunk[4096];
     ub4 amount = static_cast<ub4>(sizeof(chunk));
-    sword const status = OCILobRead(conn_.service(), conn_.error(), locator,
-      &amount, offset, chunk, static_cast<ub4>(sizeof(chunk)), nullptr,
-      nullptr, 0, 0);
+    sword const status =
+      OCILobRead(conn_.service(), conn_.error(), locator, &amount, offset,
+        chunk, static_cast<ub4>(sizeof(chunk)), nullptr, nullptr, 0, 0);
     throw_if_error(
       status, conn_.error(), "read a character LOB", OCI_NEED_DATA);
     out.append(chunk, amount);
@@ -1197,11 +1182,10 @@ std::vector<std::byte> oci_statement::read_locator_bytes(
   for (;;) {
     std::byte chunk[4096];
     ub4 amount = static_cast<ub4>(sizeof(chunk));
-    sword const status = OCILobRead(conn_.service(), conn_.error(), locator,
-      &amount, offset, chunk, static_cast<ub4>(sizeof(chunk)), nullptr,
-      nullptr, 0, 0);
-    throw_if_error(
-      status, conn_.error(), "read a binary LOB", OCI_NEED_DATA);
+    sword const status =
+      OCILobRead(conn_.service(), conn_.error(), locator, &amount, offset,
+        chunk, static_cast<ub4>(sizeof(chunk)), nullptr, nullptr, 0, 0);
+    throw_if_error(status, conn_.error(), "read a binary LOB", OCI_NEED_DATA);
     out.insert(out.end(), chunk, chunk + amount);
     if (amount == 0) {
       return out;

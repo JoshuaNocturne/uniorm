@@ -42,8 +42,8 @@ public:
 
   void prepare(std::string_view sql) override;
   void bind_parameter(std::size_t index, sql_value const& value) override;
-  void bind_column(std::size_t index, backend::column_buffer const& buffer)
-    override;
+  void bind_column(
+    std::size_t index, backend::column_buffer const& buffer) override;
   void bind_batch_params(std::vector<params> const& rows) override;
   backend::batch_writer_iface& prepare_batch() override;
   void execute() override;

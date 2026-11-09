@@ -132,8 +132,8 @@ struct task_promise;
 // the core always outlives the frame -- a promise destructor must never read
 // through that pointer.
 template <class T>
-struct operation_core
-  : result_slot<T>, std::enable_shared_from_this<operation_core<T>> {
+struct operation_core : result_slot<T>,
+                        std::enable_shared_from_this<operation_core<T>> {
   std::coroutine_handle<task_promise<T>> frame;
   std::exception_ptr failure;
   std::binary_semaphore finished{ 0 };
@@ -362,8 +362,7 @@ struct task_awaiter {
 
   // Handle rather than void, so that a refusal transfers to the parent instead
   // of unwinding out of whoever is running this frame.
-  std::coroutine_handle<> await_suspend(
-    std::coroutine_handle<> parent) const {
+  std::coroutine_handle<> await_suspend(std::coroutine_handle<> parent) const {
     core->continuation = parent;
     try {
       core->claim(task_drive::awaited);
@@ -528,8 +527,8 @@ struct callback_guard {
 // callbacks without a second count to wait on, and what makes a slow callback
 // hold up the next request on the same session.
 template <class R>
-task<void> answered(std::function<R()> work,
-  std::shared_ptr<callback_guard<R>> guard) {
+task<void> answered(
+  std::function<R()> work, std::shared_ptr<callback_guard<R>> guard) {
   R value{};
   std::exception_ptr error;
   try {

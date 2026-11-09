@@ -21,8 +21,8 @@ public:
     std::string message;
   };
 
-  backend_error(std::string backend, std::string context,
-    std::vector<diagnostic> diags);
+  backend_error(
+    std::string backend, std::string context, std::vector<diagnostic> diags);
 
   std::string const& backend_name() const noexcept {
     return backend_;

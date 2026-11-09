@@ -133,26 +133,24 @@ void test_create_for_scheme() {
 
   CHECK_THROWS(
     reg.create_for_scheme("nosuch"), uniorm::backend::unknown_scheme);
-  CHECK_THROWS(
-    reg.create_for_scheme(""), uniorm::backend::unknown_scheme);
+  CHECK_THROWS(reg.create_for_scheme(""), uniorm::backend::unknown_scheme);
 }
 
 void test_spec_open_is_optional() {
   // dummy_connection overrides only the string form: leaving the four-piece
   // form alone is a statement about the backend, and the core reports it.
   uniorm::connection_spec spec{ "dummy", "where", "who", "secret" };
-  CHECK_THROWS(uniorm::connection(spec),
-    uniorm::backend::capability_not_supported);
+  CHECK_THROWS(
+    uniorm::connection(spec), uniorm::backend::capability_not_supported);
 }
 
 void test_pieces_reach_the_backend_as_written() {
   registry& reg = registry::instance();
-  reg.register_backend(
-    "specraw", [] {
-      auto conn = std::make_unique<spec_recording_connection>();
-      recorded = conn.get();
-      return conn;
-    });
+  reg.register_backend("specraw", [] {
+    auto conn = std::make_unique<spec_recording_connection>();
+    recorded = conn.get();
+    return conn;
+  });
 
   // The scheme is folded to lowercase for the lookup only, so a spec naming it
   // another way still lands on this factory; what the backend is handed stays

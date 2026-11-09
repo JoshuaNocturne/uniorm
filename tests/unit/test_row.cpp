@@ -15,7 +15,7 @@ row make_row() {
   values.push_back(std::string{ "alice" });
   values.push_back(std::monostate{});
   values.push_back(std::vector<std::byte>{ std::byte{ 1 }, std::byte{ 2 } });
-  return row({"id", "name", "age", "data"}, values);
+  return row({ "id", "name", "age", "data" }, values);
 }
 
 }  // namespace
@@ -43,7 +43,7 @@ void test_row() {
   // out-of-range narrowing must throw
   {
     std::vector<sql_value> values{ std::int64_t{ 5'000'000'000LL } };
-    row big({"big"}, values);
+    row big({ "big" }, values);
     CHECK_THROWS(big.get<std::int32_t>("big"), type_mismatch);
   }
 
@@ -51,7 +51,7 @@ void test_row() {
   {
     std::vector<sql_value> text{ std::string{ "12345678901234.5678" },
       std::string{ "42" }, std::string{ "alice" } };
-    row dec({"amount", "whole", "label"}, text);
+    row dec({ "amount", "whole", "label" }, text);
     CHECK(dec.get<std::string>("amount") == "12345678901234.5678");
     CHECK(dec.get<double>("amount") > 12345678901234.56);
     CHECK(dec.get<double>("amount") < 12345678901234.57);

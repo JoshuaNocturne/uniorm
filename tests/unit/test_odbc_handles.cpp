@@ -32,8 +32,8 @@ void test_odbc_handles() {
 
 void test_odbc_dsn_string() {
   CHECK(odbc::dsn_string("mydb", "", "") == "DSN=mydb");
-  CHECK(odbc::dsn_string("mydb", "who", "secret") ==
-    "DSN=mydb;UID=who;PWD=secret");
+  CHECK(
+    odbc::dsn_string("mydb", "who", "secret") == "DSN=mydb;UID=who;PWD=secret");
   // An absent credential is left out rather than sent blank.
   CHECK(odbc::dsn_string("mydb", "", "secret") == "DSN=mydb;PWD=secret");
 
@@ -46,7 +46,7 @@ void test_odbc_dsn_string() {
   CHECK(odbc::dsn_string("a}b", "", "") == "DSN={a}}b}");
   CHECK(odbc::dsn_string(" mydb ", "", "") == "DSN={ mydb }");
   CHECK(odbc::dsn_string("mydb", "who", "p ss;d") ==
-    "DSN=mydb;UID=who;PWD={p ss;d}");
+        "DSN=mydb;UID=who;PWD={p ss;d}");
 }
 
 void test_odbc_error_is_backend_error() {
@@ -63,6 +63,6 @@ void test_odbc_error_is_backend_error() {
       CHECK(e.diagnostics()[0].native_code == 1146);
     }
     CHECK(std::string(e.what()).find("[42S02] (1146) no such table") !=
-      std::string::npos);
+          std::string::npos);
   }
 }

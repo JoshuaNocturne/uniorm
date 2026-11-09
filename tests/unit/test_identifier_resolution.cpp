@@ -54,10 +54,10 @@ mapping_builder<account> map_account(
   return mapping;
 }
 
-bool same_table(schema_meta::table_ref const& left,
-  schema_meta::table_ref const& right) {
+bool same_table(
+  schema_meta::table_ref const& left, schema_meta::table_ref const& right) {
   return left.catalog == right.catalog && left.schema == right.schema &&
-    left.name == right.name;
+         left.name == right.name;
 }
 
 struct catalog_table {
@@ -67,18 +67,20 @@ struct catalog_table {
 
 catalog_table accounts_at(std::string catalog = "Tenant",
   std::string schema = "App", std::string name = "Accounts") {
-  return { { std::move(catalog), std::move(schema), std::move(name) }, {
-    { { "Balance", sql_type::integer, true }, "integer", 10, 0, {} },
-    { { "User_Id", sql_type::bigint, false }, "bigint", 19, 0, {} },
-    { { "Display_Name", sql_type::varchar, false }, "varchar", 80, 0, {} },
-    { { "Tenant_Id", sql_type::bigint, false }, "bigint", 19, 0, {} },
-  } };
+  return { { std::move(catalog), std::move(schema), std::move(name) },
+    {
+      { { "Balance", sql_type::integer, true }, "integer", 10, 0, {} },
+      { { "User_Id", sql_type::bigint, false }, "bigint", 19, 0, {} },
+      { { "Display_Name", sql_type::varchar, false }, "varchar", 80, 0, {} },
+      { { "Tenant_Id", sql_type::bigint, false }, "bigint", 19, 0, {} },
+    } };
 }
 
 catalog_table events_at(std::string schema = "App") {
-  return { { "Tenant", std::move(schema), "Events" }, {
-    { { "Event_Id", sql_type::bigint, false }, "bigint", 19, 0, {} },
-  } };
+  return { { "Tenant", std::move(schema), "Events" },
+    {
+      { { "Event_Id", sql_type::bigint, false }, "bigint", 19, 0, {} },
+    } };
 }
 
 class exact_catalog : public schema_meta {
@@ -170,8 +172,7 @@ public:
       (count * element_size + sizeof(std::max_align_t) - 1) /
       sizeof(std::max_align_t);
     columns_.push_back({ type, element_size,
-      std::vector<std::max_align_t>(words),
-      std::vector<std::int64_t>(count) });
+      std::vector<std::max_align_t>(words), std::vector<std::int64_t>(count) });
     return columns_.size() - 1;
   }
 
@@ -400,9 +401,8 @@ pool_options register_recording_backend(
   std::shared_ptr<recording_state> const& state) {
   static std::size_t next_backend = 0;
   std::string const scheme = "identifierfake" + std::to_string(next_backend++);
-  backend::registry::instance().register_backend(scheme, [state] {
-    return std::make_unique<recording_connection>(state);
-  });
+  backend::registry::instance().register_backend(
+    scheme, [state] { return std::make_unique<recording_connection>(state); });
   pool_options options;
   options.target = scheme + "://test;DSN=" + scheme;
   options.size = 1;
@@ -450,15 +450,15 @@ void check_declarations(entity_meta const& metadata) {
   CHECK(metadata.columns.at(1).column == "DISPLAY_NAME");
   CHECK(metadata.columns.at(2).column == "USER_ID");
   CHECK(metadata.columns.at(3).column == "BALANCE");
-  CHECK(metadata.column_name(make_member_key(&account::name)) ==
-    "DISPLAY_NAME");
+  CHECK(
+    metadata.column_name(make_member_key(&account::name)) == "DISPLAY_NAME");
 }
 
 void check_executions(recording_state& state, std::string const& sql,
   parameter_rows const& expected) {
   CHECK(!state.executed.empty());
   CHECK(std::find(state.prepared.begin(), state.prepared.end(), sql) !=
-    state.prepared.end());
+        state.prepared.end());
   parameter_rows rows;
   for (auto const& execution : state.executed) {
     CHECK(execution.sql == sql);
@@ -486,8 +486,8 @@ void test_exact_scope_and_order() {
   CHECK(catalog.table_reads.size() == 1);
   CHECK(same_table(catalog.table_reads.at(0), { "Tenant", "App", {} }));
   CHECK(catalog.column_reads.size() == 1);
-  CHECK(same_table(catalog.column_reads.at(0),
-    { "Tenant", "App", "Accounts" }));
+  CHECK(
+    same_table(catalog.column_reads.at(0), { "Tenant", "App", "Accounts" }));
   CHECK(catalog.legacy_reads == 0);
 
   auto exact = accounts_at("Tenant", "App", "ACCOUNTS");
@@ -531,8 +531,8 @@ void test_resolution_failures_are_atomic() {
     CHECK(account_address->columns.data() == columns_address);
     check_resolution(*account_address, { "Tenant", "App", "Accounts" },
       { "Tenant_Id", "Display_Name", "User_Id", "Balance" });
-    check_resolution(*event_address, { "Tenant", "App", "Events" },
-      { "Event_Id" });
+    check_resolution(
+      *event_address, { "Tenant", "App", "Events" }, { "Event_Id" });
     CHECK(retained.build_select() == previous_sql);
     check_declarations(*account_address);
   };
@@ -565,8 +565,8 @@ void test_resolution_failures_are_atomic() {
   check_resolution(*account_address, { "Tenant", "Next", "ACCOUNTS" },
     { "Tenant_Id", "Display_Name", "User_Id", "Balance" });
   CHECK(retained.build_select() ==
-    "SELECT \"Tenant_Id\", \"Display_Name\", \"User_Id\", \"Balance\" "
-    "FROM \"Next\".\"ACCOUNTS\"");
+        "SELECT \"Tenant_Id\", \"Display_Name\", \"User_Id\", \"Balance\" "
+        "FROM \"Next\".\"ACCOUNTS\"");
   check_declarations(*account_address);
 }
 
@@ -576,9 +576,8 @@ void test_ambiguous_missing_and_conflicting_catalogs() {
   orm database(fixture.pool);
   map_account(database);
   auto rejected = [&] {
-    auto message = mapping_failure([&] {
-      database.resolve_identifiers("Tenant", "App");
-    });
+    auto message =
+      mapping_failure([&] { database.resolve_identifiers("Tenant", "App"); });
     CHECK(!database.meta<account>().resolved);
     return message;
   };
@@ -605,27 +604,39 @@ void test_ambiguous_missing_and_conflicting_catalogs() {
   catalog.entries[0].columns.push_back(alternate);
   auto const ambiguous_column = rejected();
   CHECK(ambiguous_column.find("User_Id, user_id") != std::string::npos);
-  std::reverse(catalog.entries[0].columns.begin(),
-    catalog.entries[0].columns.end());
+  std::reverse(
+    catalog.entries[0].columns.begin(), catalog.entries[0].columns.end());
   CHECK(rejected() == ambiguous_column);
 
   for (int conflict = 0; conflict < 6; ++conflict) {
     catalog.entries = { accounts_at() };
     auto duplicate = catalog.entries[0].columns[1];
     switch (conflict) {
-    case 0: duplicate.shape.type = sql_type::integer; break;
-    case 1: duplicate.shape.nullable = true; break;
-    case 2: duplicate.type_name = "int8"; break;
-    case 3: duplicate.size = 20; break;
-    case 4: duplicate.decimals = 1; break;
-    case 5: duplicate.default_value = "0"; break;
+    case 0:
+      duplicate.shape.type = sql_type::integer;
+      break;
+    case 1:
+      duplicate.shape.nullable = true;
+      break;
+    case 2:
+      duplicate.type_name = "int8";
+      break;
+    case 3:
+      duplicate.size = 20;
+      break;
+    case 4:
+      duplicate.decimals = 1;
+      break;
+    case 5:
+      duplicate.default_value = "0";
+      break;
     }
     catalog.entries[0].columns.push_back(duplicate);
     auto const conflicting = rejected();
     CHECK(conflicting.find("conflicting catalog column") != std::string::npos);
     CHECK(conflicting.find("User_Id") != std::string::npos);
-    std::reverse(catalog.entries[0].columns.begin(),
-      catalog.entries[0].columns.end());
+    std::reverse(
+      catalog.entries[0].columns.begin(), catalog.entries[0].columns.end());
     CHECK(rejected() == conflicting);
   }
 
@@ -640,11 +651,10 @@ void test_ambiguous_missing_and_conflicting_catalogs() {
   duplicate_mapping.map<account>("ACCOUNTS")
     .column("USER_ID", &account::tenant)
     .column("user_id", &account::id);
-  auto const duplicate_destination = mapping_failure([&] {
-    duplicate_mapping.resolve_identifiers("Tenant", "App");
-  });
+  auto const duplicate_destination = mapping_failure(
+    [&] { duplicate_mapping.resolve_identifiers("Tenant", "App"); });
   CHECK(duplicate_destination.find("multiple mapped columns resolve to") !=
-    std::string::npos);
+        std::string::npos);
   CHECK(duplicate_destination.find("User_Id") != std::string::npos);
   CHECK(!duplicate_mapping.meta<account>().resolved);
 }
@@ -656,12 +666,12 @@ void test_new_registration_and_retained_builders() {
   auto const* address = &database.meta<account>();
   auto retained = database.query<account>();
   CHECK(retained.build_select() ==
-    "SELECT \"tenant_id\", \"display_name\", \"user_id\", \"balance\" "
-    "FROM \"accounts\"");
+        "SELECT \"tenant_id\", \"display_name\", \"user_id\", \"balance\" "
+        "FROM \"accounts\"");
   database.resolve_identifiers("Tenant", "App");
   CHECK_THROWS(mapping.column("EXTRA", &account::extra), mapping_error);
-  CHECK_THROWS(mapping.primary_key("REVISION", &account::revision),
-    mapping_error);
+  CHECK_THROWS(
+    mapping.primary_key("REVISION", &account::revision), mapping_error);
   CHECK_THROWS(mapping.ignore(&account::scratch), mapping_error);
   check_declarations(*address);
   CHECK(address->ignored.empty());
@@ -673,12 +683,12 @@ void test_new_registration_and_retained_builders() {
   CHECK(database.meta<account>().resolved.has_value());
   CHECK(&database.meta<account>() == address);
   CHECK_THROWS(mapping.ignore(&account::scratch), mapping_error);
-  CHECK(retained.build_select().find("\"App\".\"Accounts\"") !=
-    std::string::npos);
+  CHECK(
+    retained.build_select().find("\"App\".\"Accounts\"") != std::string::npos);
   fixture.state->catalog.entries.push_back(events_at());
   database.resolve_identifiers("Tenant", "App");
-  check_resolution(database.meta<event>(),
-    { "Tenant", "App", "Events" }, { "Event_Id" });
+  check_resolution(
+    database.meta<event>(), { "Tenant", "App", "Events" }, { "Event_Id" });
 
   database.clear_identifier_resolution();
   database.clear_identifier_resolution();
@@ -686,8 +696,8 @@ void test_new_registration_and_retained_builders() {
   CHECK(!database.meta<event>().resolved);
   CHECK(&database.meta<account>() == address);
   CHECK(retained.build_select() ==
-    "SELECT \"tenant_id\", \"display_name\", \"user_id\", \"balance\" "
-    "FROM \"accounts\"");
+        "SELECT \"tenant_id\", \"display_name\", \"user_id\", \"balance\" "
+        "FROM \"accounts\"");
   mapping.column("EXTRA", &account::extra)
     .primary_key("REVISION", &account::revision)
     .ignore(&account::scratch);
@@ -708,14 +718,14 @@ void test_resolved_validation_uses_exact_names() {
   catalog.entries[0].columns[2].shape.nullable = false;
   auto const* address = &database.meta<account>();
   auto const table_reads = catalog.table_reads.size();
-  for (auto policy : { dialect::identifier_case::lower,
-         dialect::identifier_case::upper }) {
+  for (auto policy :
+    { dialect::identifier_case::lower, dialect::identifier_case::upper }) {
     database.identifier_case(policy);
     database.validate(validation_mode::strict);
     CHECK(address->table_sql(database.native_connection().sql_dialect()) ==
-      "\"App\".\"Accounts\"");
+          "\"App\".\"Accounts\"");
     CHECK(address->column_sql(make_member_key(&account::name),
-      database.native_connection().sql_dialect()) == "\"Display_Name\"");
+            database.native_connection().sql_dialect()) == "\"Display_Name\"");
   }
   database.native_connection().identifier_case(dialect::identifier_case::lower);
   database.validate();
@@ -747,14 +757,13 @@ void test_non_ascii_names_are_byte_preserving() {
   catalog.entries = { accounts_at("Tenant", "App", "\xc3\x84_Table") };
   catalog.entries[0].columns[1].shape.name = "\xc3\x84_Id";
   orm database(fixture.pool);
-  database.map<event>("\xc3\x84_TABLE")
-    .primary_key("\xc3\x84_ID", &event::id);
+  database.map<event>("\xc3\x84_TABLE").primary_key("\xc3\x84_ID", &event::id);
   database.resolve_identifiers("Tenant", "App");
   check_resolution(database.meta<event>(),
     { "Tenant", "App", "\xc3\x84_Table" }, { "\xc3\x84_Id" });
   auto query = database.query<event>();
   CHECK(query.build_select() ==
-    "SELECT \"\xc3\x84_Id\" FROM \"App\".\"\xc3\x84_Table\"");
+        "SELECT \"\xc3\x84_Id\" FROM \"App\".\"\xc3\x84_Table\"");
   catalog.entries[0].columns[1].shape.name = "\xc3\xa4_Id";
   CHECK_THROWS(database.resolve_identifiers("Tenant", "App"), mapping_error);
   check_resolution(database.meta<event>(),
@@ -770,8 +779,7 @@ void test_scope_requirements_and_unsupported_backends() {
   orm disconnected;
   disconnected.clear_identifier_resolution();
   map_account(disconnected);
-  CHECK_THROWS(disconnected.resolve_identifiers("Tenant", "App"),
-    uniorm_error);
+  CHECK_THROWS(disconnected.resolve_identifiers("Tenant", "App"), uniorm_error);
 
   recording_fixture fixture;
   orm database(fixture.pool);
@@ -783,8 +791,8 @@ void test_scope_requirements_and_unsupported_backends() {
   std::string const nul_catalog("Tenant\0Other", 12);
   std::string const nul_schema("App\0Other", 9);
   CHECK_THROWS(database.resolve_identifiers(nul_catalog, "App"), mapping_error);
-  CHECK_THROWS(database.resolve_identifiers("Tenant", nul_schema),
-    mapping_error);
+  CHECK_THROWS(
+    database.resolve_identifiers("Tenant", nul_schema), mapping_error);
   CHECK(fixture.state->catalog.table_reads.empty());
   fixture.state->introspection = false;
   CHECK_THROWS(database.resolve_identifiers("Tenant", "App"),
@@ -837,8 +845,8 @@ void test_lifecycle_and_pool_reuse() {
     CHECK(!reused.meta<account>().resolved);
     auto query = reused.query<account>();
     CHECK(query.build_select() ==
-      "SELECT \"tenant_id\", \"display_name\", \"user_id\", \"balance\" "
-      "FROM \"accounts\"");
+          "SELECT \"tenant_id\", \"display_name\", \"user_id\", \"balance\" "
+          "FROM \"accounts\"");
     reused.resolve_identifiers("Tenant", "App");
   }
   CHECK(fixture.pool.idle_count() == 1);
@@ -888,9 +896,9 @@ void test_queries_and_statement_cache() {
   };
   describe_accounts();
   auto const account_rows = [] {
-    return parameter_rows{
-      params(std::int64_t{ 8 }, "Ada", std::int64_t{ 17 },
-        std::int32_t{ 25 }).values(),
+    return parameter_rows{ params(std::int64_t{ 8 }, "Ada", std::int64_t{ 17 },
+                             std::int32_t{ 25 })
+                             .values(),
       params(std::int64_t{ 9 }, "Lin", std::int64_t{ 17 }, nullptr).values() };
   };
   state.result_rows = account_rows();
@@ -916,7 +924,8 @@ void test_queries_and_statement_cache() {
     { "Display_Name", sql_type::varchar, 80, false },
     { "Tenant_Id", sql_type::bigint, 19, false } };
   state.result_rows = {
-    params(std::int64_t{ 17 }, nullptr, "Ada", std::int64_t{ 8 }).values() };
+    params(std::int64_t{ 17 }, nullptr, "Ada", std::int64_t{ 8 }).values()
+  };
   auto const hand_read =
     database.query<account>(hand, params(std::int64_t{ 17 }));
   CHECK(hand_read.size() == 1);
@@ -938,8 +947,8 @@ void test_queries_and_statement_cache() {
   auto one = retained.one();
   CHECK(one.has_value());
   CHECK(one && one->id == 17 && one->name == "Ada");
-  check_executions(state, select + " OFFSET 0 ROWS FETCH NEXT 1 ROWS ONLY",
-    predicate_params);
+  check_executions(
+    state, select + " OFFSET 0 ROWS FETCH NEXT 1 ROWS ONLY", predicate_params);
 
   state.result_columns = { { "count", sql_type::bigint, 19, false } };
   state.result_rows = { params(std::int64_t{ 2 }).values() };
@@ -950,19 +959,20 @@ void test_queries_and_statement_cache() {
   state.result_rows.clear();
   describe_accounts();
   CHECK(!retained.one());
-  check_executions(state, select + " OFFSET 0 ROWS FETCH NEXT 1 ROWS ONLY",
-    predicate_params);
+  check_executions(
+    state, select + " OFFSET 0 ROWS FETCH NEXT 1 ROWS ONLY", predicate_params);
 
   auto update = database.update<account>();
   CHECK(update.set(&account::name, "Grace")
-    .set(&account::balance, nullptr)
-    .where(eq(&account::tenant, std::int64_t{ 8 }))
-    .where(eq(&account::id, std::int64_t{ 17 })).execute() == 1);
+          .set(&account::balance, nullptr)
+          .where(eq(&account::tenant, std::int64_t{ 8 }))
+          .where(eq(&account::id, std::int64_t{ 17 }))
+          .execute() == 1);
   check_executions(state,
     "UPDATE \"App\".\"Accounts\" SET \"Display_Name\" = ?, \"Balance\" = ? "
     "WHERE \"Tenant_Id\" = ? AND \"User_Id\" = ?",
-    { params("Grace", nullptr,
-      std::int64_t{ 8 }, std::int64_t{ 17 }).values() });
+    { params("Grace", nullptr, std::int64_t{ 8 }, std::int64_t{ 17 })
+        .values() });
   auto remove = database.remove<account>();
   CHECK(remove.where(eq(&account::id, std::int64_t{ 17 })).execute() == 1);
   check_executions(state,
@@ -1001,15 +1011,14 @@ void test_direct_crud(bool columnar) {
   std::string const update_sql =
     "UPDATE \"App\".\"Accounts\" SET \"Display_Name\" = ?, \"Balance\" = ? "
     "WHERE \"Tenant_Id\" = ? AND \"User_Id\" = ?";
-  std::string const remove_sql =
-    "DELETE FROM \"App\".\"Accounts\" "
-    "WHERE \"Tenant_Id\" = ? AND \"User_Id\" = ?";
+  std::string const remove_sql = "DELETE FROM \"App\".\"Accounts\" "
+                                 "WHERE \"Tenant_Id\" = ? AND \"User_Id\" = ?";
   parameter_rows insert_params;
   parameter_rows update_params;
   parameter_rows remove_params;
   for (auto const& row : rows) {
-    sql_value const balance = row.balance
-      ? sql_value(*row.balance) : sql_value(std::monostate{});
+    sql_value const balance =
+      row.balance ? sql_value(*row.balance) : sql_value(std::monostate{});
     insert_params.push_back(params(row.tenant, row.name, row.id).values());
     insert_params.back().push_back(balance);
     update_params.push_back({ row.name, balance, row.tenant, row.id });
@@ -1056,15 +1065,16 @@ void test_direct_crud(bool columnar) {
   parameter_rows named_update;
   parameter_rows named_remove;
   for (auto const& row : rows) {
-    sql_value const balance = row.balance
-      ? sql_value(*row.balance) : sql_value(std::monostate{});
+    sql_value const balance =
+      row.balance ? sql_value(*row.balance) : sql_value(std::monostate{});
     named_update.push_back({ row.tenant, row.id, balance, row.name });
     named_remove.push_back(params(row.name).values());
   }
   CHECK(database.update(rows, { "DISPLAY_NAME" }) == 3);
   check_executions(state,
     "UPDATE \"App\".\"Accounts\" SET \"Tenant_Id\" = ?, \"User_Id\" = ?, "
-    "\"Balance\" = ? WHERE \"Display_Name\" = ?", named_update);
+    "\"Balance\" = ? WHERE \"Display_Name\" = ?",
+    named_update);
   CHECK(database.remove(rows, { "DISPLAY_NAME" }) == 3);
   check_executions(state,
     "DELETE FROM \"App\".\"Accounts\" WHERE \"Display_Name\" = ?",
@@ -1088,14 +1098,14 @@ void test_mysql_and_literal_namespace_quoting() {
   orm database(fixture.pool);
   database.map<event>("ACCOUNT`BOOK").primary_key("USER`ID", &event::id);
   database.identifier_case(dialect::identifier_case::lower);
-  CHECK_THROWS(database.resolve_identifiers("Ware.house`x", "App"),
-    mapping_error);
+  CHECK_THROWS(
+    database.resolve_identifiers("Ware.house`x", "App"), mapping_error);
   database.resolve_identifiers("Ware.house`x", {});
   check_resolution(database.meta<event>(),
     { "Ware.house`x", {}, "Account`Book" }, { "User`Id" });
   auto query = database.query<event>();
   CHECK(query.build_select() ==
-    "SELECT `User``Id` FROM `Ware.house``x`.`Account``Book`");
+        "SELECT `User``Id` FROM `Ware.house``x`.`Account``Book`");
   CHECK(database.remove(event{ 7 }) == 1);
   check_executions(state,
     "DELETE FROM `Ware.house``x`.`Account``Book` WHERE `User``Id` = ?",
@@ -1104,8 +1114,8 @@ void test_mysql_and_literal_namespace_quoting() {
   CHECK(state.catalog.legacy_reads == 0);
 
   recording_fixture postgres;
-  postgres.state->catalog.entries = {
-    accounts_at("Tenant", "A.pp\"x", "Account\"Book") };
+  postgres.state->catalog.entries = { accounts_at(
+    "Tenant", "A.pp\"x", "Account\"Book") };
   postgres.state->catalog.entries[0].columns[1].shape.name = "User\"Id";
   orm quoted(postgres.pool);
   quoted.map<event>("ACCOUNT\"BOOK").primary_key("USER\"ID", &event::id);

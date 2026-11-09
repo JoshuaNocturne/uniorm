@@ -14,8 +14,8 @@
 namespace uniorm::backend {
 
 struct parsed_scheme {
-  std::string scheme;      // lowercase; "odbc" for bare strings
-  std::string_view tail;   // everything after "scheme://"
+  std::string scheme;  // lowercase; "odbc" for bare strings
+  std::string_view tail;  // everything after "scheme://"
 };
 
 // Splits a connection string into backend scheme and backend-specific

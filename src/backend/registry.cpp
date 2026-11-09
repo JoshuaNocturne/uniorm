@@ -24,22 +24,21 @@ bool valid_scheme_char(char c, bool first) {
 parsed_scheme parse_scheme(std::string_view cs) {
   std::size_t sep = cs.find("://");
   if (sep == std::string_view::npos) {
-    return {"odbc", cs};
+    return { "odbc", cs };
   }
   std::string_view candidate = cs.substr(0, sep);
-  if (candidate.empty() ||
-      !valid_scheme_char(candidate.front(), true)) {
-    return {"odbc", cs};
+  if (candidate.empty() || !valid_scheme_char(candidate.front(), true)) {
+    return { "odbc", cs };
   }
   for (char c : candidate.substr(1)) {
     if (!valid_scheme_char(c, false)) {
-      return {"odbc", cs};
+      return { "odbc", cs };
     }
   }
   std::string scheme(candidate);
   std::transform(scheme.begin(), scheme.end(), scheme.begin(),
     [](unsigned char c) { return std::tolower(c); });
-  return {std::move(scheme), cs.substr(sep + 3)};
+  return { std::move(scheme), cs.substr(sep + 3) };
 }
 
 registry& registry::instance() {
@@ -100,9 +99,8 @@ registry::factory registry::resolve(
       return it->second;
     }
   }
-  std::string msg =
-    "no backend registered for scheme '" + std::string(scheme) +
-    "' (registered:";
+  std::string msg = "no backend registered for scheme '" + std::string(scheme) +
+                    "' (registered:";
   for (auto const& s : schemes()) {
     msg += " " + s;
   }

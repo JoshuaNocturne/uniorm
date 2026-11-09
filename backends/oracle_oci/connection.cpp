@@ -11,9 +11,8 @@ namespace {
 // An empty piece has no bytes to point at, and OCI reads a null pointer as
 // "none" where an empty one would be a blank value.
 OraText const* text_of(std::string_view value) {
-  return value.empty()
-    ? nullptr
-    : reinterpret_cast<OraText const*>(value.data());
+  return value.empty() ? nullptr
+                       : reinterpret_cast<OraText const*>(value.data());
 }
 
 ub4 length_of(std::string_view value) {
@@ -23,8 +22,7 @@ ub4 length_of(std::string_view value) {
 }  // namespace
 
 connection::connection()
-  : env_(shared_environment()),
-    error_(env_->native(), "session diagnostics") {}
+  : env_(shared_environment()), error_(env_->native(), "session diagnostics") {}
 
 connection::~connection() {
   if (service_ != nullptr) {
@@ -55,8 +53,8 @@ connection& connection::operator=(connection&& other) noexcept {
   return *this;
 }
 
-void connection::logon(std::string_view connect, std::string_view user,
-  std::string_view password) {
+void connection::logon(
+  std::string_view connect, std::string_view user, std::string_view password) {
   if (connect.empty()) {
     throw backend::backend_error(
       "oracle", "an Oracle session needs a connect string", {});
@@ -76,8 +74,8 @@ void connection::logon(std::string_view connect, std::string_view user,
       OCIHandleFree(service_, OCI_HTYPE_SVCCTX);
       service_ = nullptr;
     }
-    throw oci_error("log on to " + std::string(connect),
-      collect_diagnostics(error_.get()));
+    throw oci_error(
+      "log on to " + std::string(connect), collect_diagnostics(error_.get()));
   }
 }
 
@@ -97,8 +95,8 @@ void connection::open(std::string_view tail) {
     credentials.substr(slash + 1));
 }
 
-void connection::open(std::string_view connect, std::string_view user,
-  std::string_view password) {
+void connection::open(
+  std::string_view connect, std::string_view user, std::string_view password) {
   logon(connect, user, password);
 }
 
@@ -125,15 +123,13 @@ void connection::set_autocommit(bool enabled) {
 }
 
 void connection::commit() {
-  throw_if_error(OCITransCommit(
-                     service_, error_.get(), OCI_DEFAULT), error_.get(),
-    "commit transaction");
+  throw_if_error(OCITransCommit(service_, error_.get(), OCI_DEFAULT),
+    error_.get(), "commit transaction");
 }
 
 void connection::rollback() {
-  throw_if_error(OCITransRollback(
-                     service_, error_.get(), OCI_DEFAULT), error_.get(),
-    "roll back transaction");
+  throw_if_error(OCITransRollback(service_, error_.get(), OCI_DEFAULT),
+    error_.get(), "roll back transaction");
 }
 
 }  // namespace uniorm::oracle_oci

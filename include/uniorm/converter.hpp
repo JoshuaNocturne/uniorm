@@ -20,12 +20,12 @@ struct converter {};  // specialize: db_type, to_db, from_db
 // and a converter that stores the representation can steal it rather than
 // copy; one that names db_type const& satisfies this too and pays the copy.
 template <class T>
-concept has_converter = requires(T const& value,
-                                 typename converter<T>::db_type& slot) {
-  typename converter<T>::db_type;
-  converter<T>::to_db(value, slot);
-  { converter<T>::from_db(std::move(slot)) } -> std::same_as<T>;
-};
+concept has_converter =
+  requires(T const& value, typename converter<T>::db_type& slot) {
+    typename converter<T>::db_type;
+    converter<T>::to_db(value, slot);
+    { converter<T>::from_db(std::move(slot)) } -> std::same_as<T>;
+  };
 
 namespace detail {
 

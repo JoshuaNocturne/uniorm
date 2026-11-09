@@ -180,7 +180,7 @@ public:
 private:
   struct impl;
   impl* impl_;
-  
+
   void destroy() noexcept;
 };
 

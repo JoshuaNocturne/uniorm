@@ -102,7 +102,7 @@ void test_orm_crud_helpers() {
   CHECK(inferred == expected_inferred);
   auto const solo_key = std::vector<std::size_t>{ 0 };
   CHECK(detail::resolve_where(registry.meta<Solo>(), std::nullopt, "remove") ==
-    solo_key);
+        solo_key);
   CHECK_THROWS(
     detail::resolve_where(registry.meta<Keyless>(), std::nullopt, "update"),
     uniorm_error);

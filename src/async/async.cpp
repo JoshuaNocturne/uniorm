@@ -34,7 +34,7 @@ std::size_t operation_queue::pending() const {
 void operation_queue::push(starter start) {
   std::unique_lock lock(mutex_);
   if (waiting_.size() + (in_flight_ ? 1 : 0) >=
-    limit_.load(std::memory_order_relaxed)) {
+      limit_.load(std::memory_order_relaxed)) {
     throw submit_overflow(
       "async session: submit_limit reached, nothing started");
   }
@@ -121,8 +121,7 @@ bool orm::auto_commit() const noexcept {
   return db_.auto_commit();
 }
 
-std::optional<dialect::identifier_case>
-orm::identifier_case() const noexcept {
+std::optional<dialect::identifier_case> orm::identifier_case() const noexcept {
   return db_.identifier_case();
 }
 
@@ -221,18 +220,17 @@ bool transaction::active() const noexcept {
   return inner_ && inner_->active();
 }
 
-transaction::transaction(std::shared_ptr<uniorm::transaction> inner,
-  orm& session)
+transaction::transaction(
+  std::shared_ptr<uniorm::transaction> inner, orm& session)
   : inner_(std::move(inner)), session_(&session), door_(session.door_) {
   // Handing the session this handle's transaction is what makes the promise in
   // the header hold: the registry is weak, so closing a handle stays the
   // handle's own business, and only the ones still open are left for ~orm().
   auto& registry = session.open_transactions_;
-  registry.erase(
-    std::remove_if(registry.begin(), registry.end(),
-      [](std::weak_ptr<uniorm::transaction> const& entry) {
-        return entry.expired();
-      }),
+  registry.erase(std::remove_if(registry.begin(), registry.end(),
+                   [](std::weak_ptr<uniorm::transaction> const& entry) {
+                     return entry.expired();
+                   }),
     registry.end());
   registry.push_back(inner_);
 }

@@ -9,8 +9,7 @@ namespace {
 // Only UTF-16 has a documented id in the SDK headers; the others are read
 // from the client, so neither name is spelled with a number here.
 ub2 lookup_id(OCIEnv* env, char const* name) {
-  return OCINlsCharSetNameToId(
-    env, reinterpret_cast<OraText const*>(name));
+  return OCINlsCharSetNameToId(env, reinterpret_cast<OraText const*>(name));
 }
 
 // The ids are needed to create the environment that is asked for them, so a
@@ -19,8 +18,8 @@ ub2 lookup_id(OCIEnv* env, char const* name) {
 // corrupt it silently, which is worse than one extra handle at startup.
 void charset_ids(ub2& declared, ub2& national) {
   OCIEnv* bootstrap = nullptr;
-  if (OCIEnvCreate(&bootstrap, OCI_THREADED, nullptr, nullptr, nullptr,
-        nullptr, 0, nullptr) != OCI_SUCCESS) {
+  if (OCIEnvCreate(&bootstrap, OCI_THREADED, nullptr, nullptr, nullptr, nullptr,
+        0, nullptr) != OCI_SUCCESS) {
     throw oci_error("create an OCI environment to look up charset ids", {});
   }
   ub2 const utf8 = lookup_id(bootstrap, "AL32UTF8");

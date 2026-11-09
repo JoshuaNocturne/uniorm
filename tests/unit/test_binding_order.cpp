@@ -82,8 +82,7 @@ struct scripted_state {
 class scripted_statement : public backend::statement_iface {
 public:
   explicit scripted_statement(std::shared_ptr<scripted_state> state)
-    : state_(std::move(state))
-  {}
+    : state_(std::move(state)) {}
 
   void bind_column(
     std::size_t index, backend::column_buffer const& buffer) override {
@@ -163,8 +162,7 @@ private:
 class scripted_connection : public backend::connection_iface {
 public:
   explicit scripted_connection(std::shared_ptr<scripted_state> state)
-    : state_(std::move(state))
-  {}
+    : state_(std::move(state)) {}
 
   void open(std::string_view) override {}
   void close() override {}
@@ -202,10 +200,8 @@ void test_binding_order() {
     { "id", sql_type::varchar, 24, false } };
   state->rows = { { "Seattle", "Ada", "42" } };
 
-  backend::registry::instance().register_backend(
-    "scriptedorder", [state] {
-      return std::make_unique<scripted_connection>(state);
-    });
+  backend::registry::instance().register_backend("scriptedorder",
+    [state] { return std::make_unique<scripted_connection>(state); });
   pool_options options;
   options.target = "scriptedorder://test";
   options.size = 1;
@@ -328,8 +324,9 @@ void test_binding_order() {
     database.query<opaque_row>("SELECT id FROM contacts");
   } catch (mapping_error const& error) {
     refused = true;
-    reported_both = std::string_view(error.what()).find(
-      "registered entity or an aggregate") != std::string_view::npos;
+    reported_both =
+      std::string_view(error.what())
+        .find("registered entity or an aggregate") != std::string_view::npos;
   }
   CHECK(refused);
   CHECK(reported_both);

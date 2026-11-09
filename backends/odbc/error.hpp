@@ -14,8 +14,8 @@
 #include <sql.h>
 #include <sqlext.h>
 
-#include <uniorm/backend/error.hpp>
 #include "export.hpp"
+#include <uniorm/backend/error.hpp>
 
 namespace uniorm::odbc {
 

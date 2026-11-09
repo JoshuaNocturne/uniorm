@@ -1,7 +1,7 @@
 #include "uniorm/decimal.hpp"
 
-#include <cstddef>
 #include <compare>
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 
@@ -150,9 +150,10 @@ std::int64_t decimal_t::to_int64() const {
     }
     magnitude = magnitude * 10 + digit;
   }
-  std::uint64_t const limit = negative_
-    ? std::uint64_t{ 1 } << 63
-    : static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+  std::uint64_t const limit =
+    negative_
+      ? std::uint64_t{ 1 } << 63
+      : static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
   if (magnitude > limit) {
     throw type_mismatch("decimal_t value is out of int64 range");
   }

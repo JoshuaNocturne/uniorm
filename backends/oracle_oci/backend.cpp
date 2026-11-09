@@ -50,20 +50,19 @@ void oci_connection::rollback() {
 // execute. The counts it adds up are the whole array's total, which is the
 // second flag's question.
 backend::capabilities oci_connection::caps() const noexcept {
-  return {/*columnar_batch=*/false, /*array_rowcount_totals=*/true};
+  return { /*columnar_batch=*/false, /*array_rowcount_totals=*/true };
 }
 
 std::string oci_connection::dbms_name() const {
   OraText banner[512] = {};
   throw_if_error(OCIServerVersion(conn_.service(), conn_.error(), banner,
-                     static_cast<ub4>(sizeof(banner)), OCI_HTYPE_SVCCTX),
+                   static_cast<ub4>(sizeof(banner)), OCI_HTYPE_SVCCTX),
     conn_.error(), "read the server version");
   char const* const text = reinterpret_cast<char const*>(banner);
   return std::string(text, std::strlen(text));
 }
 
-std::unique_ptr<backend::statement_iface>
-oci_connection::create_statement() {
+std::unique_ptr<backend::statement_iface> oci_connection::create_statement() {
   return std::make_unique<oci_statement>(conn_);
 }
 
@@ -83,7 +82,6 @@ extern "C" UNIORM_ORACLE_OCI_API uint32_t uniorm_plugin_abi_version() {
 
 extern "C" UNIORM_ORACLE_OCI_API void uniorm_plugin_register(
   uniorm::backend::registry& reg) {
-  reg.register_backend("oracle", [] {
-    return std::make_unique<uniorm::oracle_oci::oci_connection>();
-  });
+  reg.register_backend("oracle",
+    [] { return std::make_unique<uniorm::oracle_oci::oci_connection>(); });
 }

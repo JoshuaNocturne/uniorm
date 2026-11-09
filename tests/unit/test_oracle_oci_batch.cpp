@@ -45,10 +45,10 @@ void test_oracle_oci_batch_shapes() {
   // them beside their own lengths, and neither cares what the row beside it
   // leaves NULL.
   {
-    auto plan = plan_batch({ row_of({ timestamp{},
-        std::vector<std::byte>{ std::byte{ 1 } } }),
-      row_of({ std::monostate{},
-        std::vector<std::byte>(7, std::byte{ 2 }) }) });
+    auto plan = plan_batch(
+      { row_of({ timestamp{}, std::vector<std::byte>{ std::byte{ 1 } } }),
+        row_of(
+          { std::monostate{}, std::vector<std::byte>(7, std::byte{ 2 }) }) });
     CHECK(plan.has_value());
     CHECK(plan->at(0).kind == batch_kind::timestamp);
     CHECK(plan->at(0).stride == sizeof(OCIDateTime*));
@@ -77,14 +77,17 @@ void test_oracle_oci_batch_refusals() {
   CHECK(!plan_batch({ row_of({}), row_of({}) }).has_value());
   // Rows of different widths leave a column of the shorter row unread.
   CHECK(!plan_batch({ row_of({ std::int32_t{ 1 }, std::int32_t{ 2 } }),
-    row_of({ std::int32_t{ 3 } }) }).has_value());
+                      row_of({ std::int32_t{ 3 } }) })
+      .has_value());
   // A column holding two shapes cannot be one slab: a row's text has no home
   // beside another row's number.
-  CHECK(!plan_batch({ row_of({ std::int32_t{ 1 } }),
-    row_of({ std::string("one") }) }).has_value());
+  CHECK(!plan_batch(
+    { row_of({ std::int32_t{ 1 } }), row_of({ std::string("one") }) })
+      .has_value());
   // Bytes and text are two shapes too, whatever one server makes of them.
   CHECK(!plan_batch({ row_of({ std::vector<std::byte>{ std::byte{ 1 } } }),
-    row_of({ std::string("a") }) }).has_value());
+                      row_of({ std::string("a") }) })
+      .has_value());
   // A row's length reaches OCI in two bytes, and a longer one would be told
   // back to it short.
   CHECK(!plan_batch({ row_of({ std::string(65536, 'x') }) }).has_value());

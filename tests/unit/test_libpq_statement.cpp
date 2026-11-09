@@ -26,7 +26,7 @@ void test_libpq_statement_binds_nothing_before_a_prepare() {
   // does not exist is answered with nothing rather than a guess.
   libpq::connection conn;
   libpq::pq_statement stmt(conn);
-  sql_value const seven{std::in_place_type<std::int32_t>, 7};
+  sql_value const seven{ std::in_place_type<std::int32_t>, 7 };
   CHECK_THROWS(stmt.bind_parameter(0, seven), libpq::pq_error);
   CHECK_THROWS(stmt.bind_parameter(1, seven), libpq::pq_error);
 
@@ -54,8 +54,8 @@ void test_libpq_statement_refuses_a_column_before_a_result() {
   // a silent null.
   libpq::connection conn;
   libpq::pq_statement stmt(conn);
-  backend::column_buffer const buffer{
-    backend::buffer_type::chars, nullptr, 0, nullptr};
+  backend::column_buffer const buffer{ backend::buffer_type::chars, nullptr, 0,
+    nullptr };
   CHECK_THROWS(stmt.bind_column(0, buffer), libpq::pq_error);
   CHECK_THROWS(stmt.bind_column(1, buffer), libpq::pq_error);
   CHECK_THROWS(stmt.read_long_text(1, 0), libpq::pq_error);

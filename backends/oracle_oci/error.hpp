@@ -9,8 +9,8 @@
 
 #include <oci.h>
 
-#include <uniorm/backend/error.hpp>
 #include "export.hpp"
+#include <uniorm/backend/error.hpp>
 
 namespace uniorm::oracle_oci {
 

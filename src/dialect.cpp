@@ -21,8 +21,7 @@ std::string dialect::quote_identifier(std::string_view identifier) const {
   return quote_exact_identifier(fold_identifier(identifier));
 }
 
-std::string dialect::quote_exact_identifier(
-  std::string_view identifier) const {
+std::string dialect::quote_exact_identifier(std::string_view identifier) const {
   if (identifier.find('\0') != std::string_view::npos) {
     throw uniorm_error("identifier contains a NUL byte");
   }

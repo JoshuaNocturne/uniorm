@@ -24,8 +24,7 @@ struct pool_bootstrap {
   worker_pool& use() {
     std::lock_guard lock(mutex);
     if (!pool) {
-      std::size_t const threads =
-        intended > 0 ? intended : hardware_workers();
+      std::size_t const threads = intended > 0 ? intended : hardware_workers();
       pool = std::make_unique<worker_pool>(threads);
     }
     return *pool;
@@ -88,8 +87,7 @@ void worker_pool::run() {
     std::function<void()> work;
     {
       std::unique_lock lock(mutex_);
-      work_ready_.wait(lock,
-        [this] { return stopping_ || !queue_.empty(); });
+      work_ready_.wait(lock, [this] { return stopping_ || !queue_.empty(); });
       if (queue_.empty()) {
         return;
       }

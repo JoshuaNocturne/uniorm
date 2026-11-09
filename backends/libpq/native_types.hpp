@@ -249,14 +249,13 @@ inline std::string padded(std::uint64_t value, std::size_t width) {
 // that decides how a text is taken apart is the one that decides how it is
 // written, so a date carries no clock and a clock no day. A type the describe
 // left open keeps the whole shape, which every one of these takes.
-inline std::string text_of_timestamp(
-  timestamp const& value, unsigned native) {
+inline std::string text_of_timestamp(timestamp const& value, unsigned native) {
   auto const parts = uniorm::detail::break_timestamp(value);
   text_shape const shape = shape_of(native);
   std::string clock;
   if (shape.has_clock) {
     clock = padded(parts.hour, 2) + ':' + padded(parts.minute, 2) + ':' +
-      padded(parts.second, 2);
+            padded(parts.second, 2);
     // The server keeps microseconds, and a fraction it cannot hold is left out
     // rather than sent as a rounding of it.
     std::uint64_t const micros = parts.fraction_ns / 1000UL;
@@ -272,9 +271,9 @@ inline std::string text_of_timestamp(
   if (!shape.has_day) {
     return clock;
   }
-  std::string const date =
-    padded(static_cast<std::uint64_t>(parts.year), 4) + '-' +
-    padded(parts.month, 2) + '-' + padded(parts.day, 2);
+  std::string const date = padded(static_cast<std::uint64_t>(parts.year), 4) +
+                           '-' + padded(parts.month, 2) + '-' +
+                           padded(parts.day, 2);
   return shape.has_clock ? date + ' ' + clock : date;
 }
 

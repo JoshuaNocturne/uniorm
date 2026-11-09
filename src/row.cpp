@@ -51,8 +51,7 @@ void row::destroy() noexcept {
   }
 }
 
-row::row(row const& other)
-  : impl_(new impl(*other.impl_)) {}
+row::row(row const& other) : impl_(new impl(*other.impl_)) {}
 
 row::row(row&& other) noexcept : impl_(other.impl_) {
   other.impl_ = nullptr;

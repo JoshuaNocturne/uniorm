@@ -4,11 +4,11 @@
 #include <cctype>
 #include <memory>
 
+#include "statement_cache.hpp"
 #include "uniorm/backend/error.hpp"
 #include "uniorm/backend/registry.hpp"
-#include "uniorm/dialect.hpp"
 #include "uniorm/builder/builder.hpp"
-#include "statement_cache.hpp"
+#include "uniorm/dialect.hpp"
 #include "uniorm/transaction.hpp"
 
 namespace uniorm {
@@ -41,8 +41,8 @@ bool connection::is_open() const noexcept {
   return backend_ && backend_->is_open();
 }
 
-result_set connection::execute(std::string_view sql, params const& p,
-  std::size_t row_array_size) {
+result_set connection::execute(
+  std::string_view sql, params const& p, std::size_t row_array_size) {
   std::string key(sql);
   auto stmt = acquire_statement(key);
   stmt->bind_params(p);
@@ -70,8 +70,8 @@ std::unique_ptr<backend::statement_iface> connection::acquire_statement(
   });
 }
 
-void connection::release_statement(std::string const& key,
-  std::unique_ptr<backend::statement_iface> stmt) {
+void connection::release_statement(
+  std::string const& key, std::unique_ptr<backend::statement_iface> stmt) {
   stmt_cache_->release(key, std::move(stmt));
 }
 

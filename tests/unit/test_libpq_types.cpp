@@ -31,89 +31,89 @@ void test_libpq_declared_shape() {
 }
 
 void test_libpq_sql_type_from_native() {
-  CHECK(libpq::sql_type_from_native(libpq::pg_type::boolean) ==
-    sql_type::boolean);
+  CHECK(
+    libpq::sql_type_from_native(libpq::pg_type::boolean) == sql_type::boolean);
   CHECK(libpq::sql_type_from_native(libpq::pg_type::smallint) ==
-    sql_type::smallint);
-  CHECK(libpq::sql_type_from_native(libpq::pg_type::integer) ==
-    sql_type::integer);
-  CHECK(libpq::sql_type_from_native(libpq::pg_type::bigint) ==
-    sql_type::bigint);
+        sql_type::smallint);
+  CHECK(
+    libpq::sql_type_from_native(libpq::pg_type::integer) == sql_type::integer);
+  CHECK(
+    libpq::sql_type_from_native(libpq::pg_type::bigint) == sql_type::bigint);
   CHECK(libpq::sql_type_from_native(libpq::pg_type::real) == sql_type::real);
   CHECK(libpq::sql_type_from_native(libpq::pg_type::double_precision) ==
-    sql_type::double_precision);
-  CHECK(libpq::sql_type_from_native(libpq::pg_type::numeric) ==
-    sql_type::decimal);
+        sql_type::double_precision);
+  CHECK(
+    libpq::sql_type_from_native(libpq::pg_type::numeric) == sql_type::decimal);
 
   // The server's own identifier text is a string, and an object identifier is
   // a word wider than its integer column.
-  CHECK(libpq::sql_type_from_native(libpq::pg_type::name) ==
-    sql_type::longvarchar);
+  CHECK(
+    libpq::sql_type_from_native(libpq::pg_type::name) == sql_type::longvarchar);
   CHECK(libpq::sql_type_from_native(libpq::pg_type::oid) == sql_type::bigint);
 
   // char(1) arrives as bpchar; the single-byte "char" is a type of its own.
-  CHECK(libpq::sql_type_from_native(libpq::pg_type::bpchar) ==
-    sql_type::character);
+  CHECK(
+    libpq::sql_type_from_native(libpq::pg_type::bpchar) == sql_type::character);
   CHECK(libpq::sql_type_from_native(libpq::pg_type::character) ==
-    sql_type::character);
-  CHECK(libpq::sql_type_from_native(libpq::pg_type::varchar) ==
-    sql_type::varchar);
+        sql_type::character);
+  CHECK(
+    libpq::sql_type_from_native(libpq::pg_type::varchar) == sql_type::varchar);
 
   // A column of unbounded text, and the shapes the core has no better word for.
-  CHECK(libpq::sql_type_from_native(libpq::pg_type::text) ==
-    sql_type::longvarchar);
-  CHECK(libpq::sql_type_from_native(libpq::pg_type::json) ==
-    sql_type::longvarchar);
+  CHECK(
+    libpq::sql_type_from_native(libpq::pg_type::text) == sql_type::longvarchar);
+  CHECK(
+    libpq::sql_type_from_native(libpq::pg_type::json) == sql_type::longvarchar);
   CHECK(libpq::sql_type_from_native(libpq::pg_type::jsonb) ==
-    sql_type::longvarchar);
-  CHECK(libpq::sql_type_from_native(libpq::pg_type::xml) ==
-    sql_type::longvarchar);
-  CHECK(libpq::sql_type_from_native(libpq::pg_type::bytea) ==
-    sql_type::varbinary);
+        sql_type::longvarchar);
+  CHECK(
+    libpq::sql_type_from_native(libpq::pg_type::xml) == sql_type::longvarchar);
+  CHECK(
+    libpq::sql_type_from_native(libpq::pg_type::bytea) == sql_type::varbinary);
   CHECK(libpq::sql_type_from_native(libpq::pg_type::uuid) == sql_type::guid);
 
   CHECK(libpq::sql_type_from_native(libpq::pg_type::date) == sql_type::date);
   CHECK(libpq::sql_type_from_native(libpq::pg_type::time) == sql_type::time);
   CHECK(libpq::sql_type_from_native(libpq::pg_type::timetz) == sql_type::time);
   CHECK(libpq::sql_type_from_native(libpq::pg_type::timestamp) ==
-    sql_type::timestamp);
+        sql_type::timestamp);
   CHECK(libpq::sql_type_from_native(libpq::pg_type::timestamptz) ==
-    sql_type::timestamp);
+        sql_type::timestamp);
 
   // An interval has no neutral shape to be read into, and a type number this
   // library has never seen is answered rather than guessed at.
-  CHECK(libpq::sql_type_from_native(libpq::pg_type::interval) ==
-    sql_type::other);
+  CHECK(
+    libpq::sql_type_from_native(libpq::pg_type::interval) == sql_type::other);
   CHECK(libpq::sql_type_from_native(4143) == sql_type::other);
 }
 
 void test_libpq_display_width() {
   // An exact number reports its precision as the width a value is written in.
   CHECK(libpq::display_width(sql_type::decimal, libpq::pg_type::numeric,
-                              static_cast<int>((10 << 16) | 2) + 4) == 10);
-  CHECK(libpq::display_width(sql_type::decimal, libpq::pg_type::numeric, -1) ==
-    0);
+          static_cast<int>((10 << 16) | 2) + 4) == 10);
+  CHECK(
+    libpq::display_width(sql_type::decimal, libpq::pg_type::numeric, -1) == 0);
 
   // A declared character width is the count of characters, and an undeclared
   // one is no width at all: the caller's continuation read gets the value.
-  CHECK(libpq::display_width(
-    sql_type::varchar, libpq::pg_type::varchar, 34) == 30);
-  CHECK(libpq::display_width(
-    sql_type::character, libpq::pg_type::bpchar, 5) == 1);
-  CHECK(libpq::display_width(
-    sql_type::longvarchar, libpq::pg_type::text, -1) == 0);
+  CHECK(
+    libpq::display_width(sql_type::varchar, libpq::pg_type::varchar, 34) == 30);
+  CHECK(
+    libpq::display_width(sql_type::character, libpq::pg_type::bpchar, 5) == 1);
+  CHECK(
+    libpq::display_width(sql_type::longvarchar, libpq::pg_type::text, -1) == 0);
 
   // Bytes are counted in bytes, and only for the column that stores them.
-  CHECK(libpq::display_width(
-    sql_type::varbinary, libpq::pg_type::bytea, 104) == 100);
-  CHECK(libpq::display_width(
-    sql_type::varbinary, libpq::pg_type::name, -1) == 0);
+  CHECK(libpq::display_width(sql_type::varbinary, libpq::pg_type::bytea, 104) ==
+        100);
+  CHECK(
+    libpq::display_width(sql_type::varbinary, libpq::pg_type::name, -1) == 0);
 
   // A fixed-width number sizes its own buffer from its type, not from a width.
+  CHECK(
+    libpq::display_width(sql_type::bigint, libpq::pg_type::bigint, -1) == 0);
   CHECK(libpq::display_width(
-    sql_type::bigint, libpq::pg_type::bigint, -1) == 0);
-  CHECK(libpq::display_width(
-    sql_type::timestamp, libpq::pg_type::timestamp, -1) == 0);
+          sql_type::timestamp, libpq::pg_type::timestamp, -1) == 0);
 }
 
 void test_libpq_text_shape() {
@@ -139,8 +139,9 @@ void test_libpq_text_shape() {
   CHECK(whole.year == 2024 && whole.month == 1 && whole.day == 2);
   CHECK(whole.hour == 3 && whole.minute == 4 && whole.second == 5);
   CHECK(whole.fraction_ns == 123456000u);
-  CHECK(libpq::parts_of("2024-01-02T03:04:05", libpq::pg_type::timestamp)
-    .hour == 3);
+  CHECK(
+    libpq::parts_of("2024-01-02T03:04:05", libpq::pg_type::timestamp).hour ==
+    3);
 
   // A zone the server appends to a time with time zone is the session's own,
   // already applied, so the wall clock is what went in and the digits behind
@@ -152,9 +153,10 @@ void test_libpq_text_shape() {
 
   // The fraction is named in nanoseconds whichever width the server wrote.
   CHECK(libpq::parts_of("03:04:05.1", libpq::pg_type::time).fraction_ns ==
-    100000000u);
-  CHECK(libpq::parts_of("03:04:05.123456789",
-    libpq::pg_type::time).fraction_ns == 123456789u);
+        100000000u);
+  CHECK(
+    libpq::parts_of("03:04:05.123456789", libpq::pg_type::time).fraction_ns ==
+    123456789u);
 }
 
 void test_libpq_text_of_timestamp() {
@@ -163,14 +165,14 @@ void test_libpq_text_of_timestamp() {
   auto const whole =
     uniorm::detail::make_timestamp(2024, 1, 2, 3, 4, 5, 123456000UL);
   CHECK(libpq::text_of_timestamp(whole, libpq::pg_type::timestamp) ==
-    "2024-01-02 03:04:05.123456");
+        "2024-01-02 03:04:05.123456");
   CHECK(libpq::text_of_timestamp(whole, libpq::pg_type::timestamptz) ==
-    "2024-01-02 03:04:05.123456");
+        "2024-01-02 03:04:05.123456");
   CHECK(libpq::text_of_timestamp(whole, libpq::pg_type::date) == "2024-01-02");
-  CHECK(libpq::text_of_timestamp(whole, libpq::pg_type::time) ==
-    "03:04:05.123456");
+  CHECK(
+    libpq::text_of_timestamp(whole, libpq::pg_type::time) == "03:04:05.123456");
   CHECK(libpq::text_of_timestamp(whole, libpq::pg_type::timetz) ==
-    "03:04:05.123456");
+        "03:04:05.123456");
 
   // A type the describe left open keeps the whole shape, which is the one text
   // the server reads against anything it is compared to.
@@ -180,29 +182,28 @@ void test_libpq_text_of_timestamp() {
   auto const narrow = uniorm::detail::make_timestamp(2005, 1, 2, 9, 8, 7, 0UL);
   CHECK(libpq::text_of_timestamp(narrow, libpq::pg_type::date) == "2005-01-02");
   CHECK(libpq::text_of_timestamp(narrow, libpq::pg_type::timestamp) ==
-    "2005-01-02 09:08:07");
+        "2005-01-02 09:08:07");
 
   // The fraction is microseconds, written no longer than it needs to be, and a
   // fraction finer than the column keeps is left out rather than rounded.
-  auto const half = uniorm::detail::make_timestamp(2024, 1, 2, 3, 4, 5,
-    500000000UL);
+  auto const half =
+    uniorm::detail::make_timestamp(2024, 1, 2, 3, 4, 5, 500000000UL);
   CHECK(libpq::text_of_timestamp(half, libpq::pg_type::timestamp) ==
-    "2024-01-02 03:04:05.5");
-  auto const finest = uniorm::detail::make_timestamp(2024, 1, 2, 3, 4, 5,
-    123456789UL);
+        "2024-01-02 03:04:05.5");
+  auto const finest =
+    uniorm::detail::make_timestamp(2024, 1, 2, 3, 4, 5, 123456789UL);
   CHECK(libpq::text_of_timestamp(finest, libpq::pg_type::timestamp) ==
-    "2024-01-02 03:04:05.123456");
-  auto const below =
-    uniorm::detail::make_timestamp(2024, 1, 2, 3, 4, 5, 999UL);
+        "2024-01-02 03:04:05.123456");
+  auto const below = uniorm::detail::make_timestamp(2024, 1, 2, 3, 4, 5, 999UL);
   CHECK(libpq::text_of_timestamp(below, libpq::pg_type::timestamp) ==
-    "2024-01-02 03:04:05");
+        "2024-01-02 03:04:05");
 
   // What this backend writes is what it reads: the same value bound to a column
   // of the shape and asked of it again comes to the parts the column names.
   auto const whole_text =
     libpq::text_of_timestamp(whole, libpq::pg_type::timestamp);
-  auto const back = libpq::parts_of(whole_text.c_str(),
-    libpq::pg_type::timestamp);
+  auto const back =
+    libpq::parts_of(whole_text.c_str(), libpq::pg_type::timestamp);
   CHECK(back.year == 2024 && back.month == 1 && back.day == 2);
   CHECK(back.hour == 3 && back.minute == 4 && back.second == 5);
   CHECK(back.fraction_ns == 123456000u);

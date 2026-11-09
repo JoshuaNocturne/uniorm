@@ -51,7 +51,7 @@ public:
 
   backend::batch_writer_iface& prepare_batch() override {
     throw std::logic_error("a backend without the columnar batch was asked"
-      " for one");
+                           " for one");
   }
 
   void execute() override {
@@ -109,8 +109,8 @@ public:
   void commit() override {}
   void rollback() override {}
   backend::capabilities caps() const noexcept override {
-    return {/*columnar_batch=*/false,
-      /*array_rowcount_totals=*/state_->report_array_totals};
+    return { /*columnar_batch=*/false,
+      /*array_rowcount_totals=*/state_->report_array_totals };
   }
   std::string dbms_name() const override {
     return "batch";
@@ -131,9 +131,7 @@ private:
 void register_batch_backend(
   std::shared_ptr<batch_state> state, std::string_view scheme) {
   backend::registry::instance().register_backend(std::string(scheme),
-    [state] {
-      return std::make_unique<batch_connection>(state);
-    });
+    [state] { return std::make_unique<batch_connection>(state); });
 }
 
 // A pool of one such connection. The leased connection must outlive the pool it
@@ -151,9 +149,8 @@ std::vector<account> make_accounts(std::size_t count) {
   std::vector<account> rows;
   rows.reserve(count);
   for (std::size_t index = 0; index < count; ++index) {
-    rows.push_back(
-      account{ static_cast<std::int64_t>(index), "name" + std::to_string(
-        index) });
+    rows.push_back(account{
+      static_cast<std::int64_t>(index), "name" + std::to_string(index) });
   }
   return rows;
 }

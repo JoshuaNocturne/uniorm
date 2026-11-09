@@ -104,8 +104,7 @@ int generate_from(uniorm::schema_meta& md, uniorm::gen::gen_config const& cfg,
     uniorm::gen::check_config(cfg, model, listed);
   }
 
-  uniorm::gen::generated_output out =
-    uniorm::gen::generate_header(model, cfg);
+  uniorm::gen::generated_output out = uniorm::gen::generate_header(model, cfg);
   for (std::string const& w : out.warnings) {
     std::cerr << "warning: " << w << "\n";
   }
@@ -156,8 +155,8 @@ int main(int argc, char** argv) {
   read_flag(args, "--schema=", schema);
   read_flag(args, "--name=", name);
 
-  int sources = (!dsn.empty()) + (!connection_string.empty()) +
-    (!input_ddl.empty());
+  int sources =
+    (!dsn.empty()) + (!connection_string.empty()) + (!input_ddl.empty());
   if (sources != 1) {
     std::cerr << "exactly one of --dsn / --connection-string / --input-ddl "
                  "is required\n"
@@ -189,8 +188,7 @@ int main(int argc, char** argv) {
 
     if (!input_ddl.empty()) {
       std::vector<std::string> ddl_warnings;
-      uniorm::gen::ddl_meta md(
-        read_file(input_ddl, "DDL file"), &ddl_warnings);
+      uniorm::gen::ddl_meta md(read_file(input_ddl, "DDL file"), &ddl_warnings);
       for (std::string const& w : ddl_warnings) {
         std::cerr << "warning: " << w << "\n";
       }

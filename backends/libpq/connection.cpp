@@ -97,8 +97,7 @@ connection::~connection() {
 }
 
 connection::connection(connection&& other) noexcept
-  : conn_(std::exchange(other.conn_, nullptr)),
-    autocommit_(other.autocommit_),
+  : conn_(std::exchange(other.conn_, nullptr)), autocommit_(other.autocommit_),
     transaction_open_(other.transaction_open_) {}
 
 connection& connection::operator=(connection&& other) noexcept {
@@ -130,8 +129,8 @@ void connection::connect(std::string const& conninfo) {
   // a date written the other way carries the day where the month was, and an
   // escape-form byte string is no hex to decode. Pinned before the session is
   // taken on, so a refusal leaves no connection half-read behind.
-  detail::result_holder shaped{ PQexec(made,
-    "SET DateStyle = 'ISO, MDY'; SET bytea_output = 'hex'") };
+  detail::result_holder shaped{ PQexec(
+    made, "SET DateStyle = 'ISO, MDY'; SET bytea_output = 'hex'") };
   if (PQresultStatus(shaped.get()) != PGRES_COMMAND_OK) {
     std::vector<pq_error::diagnostic> const diags =
       collect_diagnostics(shaped.get());
@@ -141,7 +140,7 @@ void connection::connect(std::string const& conninfo) {
   close();
   conn_ = made;
   transaction_open_ = PQtransactionStatus(made) == PQTRANS_INTRANS ||
-    PQtransactionStatus(made) == PQTRANS_INERROR;
+                      PQtransactionStatus(made) == PQTRANS_INERROR;
 }
 
 void connection::open(std::string_view tail) {
@@ -196,8 +195,7 @@ void connection::rollback() {
     // The server is already where a roll back would put it: after a failure
     // it aborts the transaction itself, and asking again costs a round trip
     // for a statement that changes nothing.
-    if (conn_ != nullptr &&
-        PQtransactionStatus(conn_) == PQTRANS_INERROR) {
+    if (conn_ != nullptr && PQtransactionStatus(conn_) == PQTRANS_INERROR) {
       run_transaction_command("ROLLBACK", "roll back transaction");
     }
     return;

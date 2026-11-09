@@ -23,7 +23,7 @@ std::string digits(int count, char digit) {
 void test_literal_round_trip() {
   CHECK(dec("0").to_literal() == "0");
   CHECK(dec("0.1000").to_literal() == "0.1000");  // scale survives
-  CHECK(dec("001.5").to_literal() == "1.5");      // integer zeros do not
+  CHECK(dec("001.5").to_literal() == "1.5");  // integer zeros do not
   CHECK(dec("+12").to_literal() == "12");
   CHECK(dec(".5").to_literal() == "0.5");
   CHECK(dec("-0.000").to_literal() == "0.000");  // no negative zero
@@ -102,8 +102,8 @@ void test_reaches_a_row_value() {
   CHECK_THROWS(
     uniorm::value_cast<uniorm::decimal_t>(integral), uniorm::type_mismatch);
   uniorm::sql_value null;
-  CHECK(uniorm::value_cast<std::optional<uniorm::decimal_t>>(null) ==
-        std::nullopt);
+  CHECK(
+    uniorm::value_cast<std::optional<uniorm::decimal_t>>(null) == std::nullopt);
   CHECK(uniorm::value_cast<std::optional<uniorm::decimal_t>>(exact).value() ==
         dec("0.1000"));
 

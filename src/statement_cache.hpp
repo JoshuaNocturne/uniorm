@@ -19,8 +19,7 @@
 namespace uniorm::detail {
 
 struct statement_cache {
-  std::unordered_map<std::string,
-    std::unique_ptr<backend::statement_iface>>
+  std::unordered_map<std::string, std::unique_ptr<backend::statement_iface>>
     entries;
   std::list<std::string> lru;  // front = most recently returned
   std::size_t capacity = 64;
@@ -50,8 +49,8 @@ struct statement_cache {
   // cache is full; the least recently used entry is evicted to make room.
   // Note: we don't reset() here because the statement will be reset() on
   // the next acquire(), so resetting on release would be redundant.
-  void release(std::string const& sql,
-    std::unique_ptr<backend::statement_iface> stmt) {
+  void release(
+    std::string const& sql, std::unique_ptr<backend::statement_iface> stmt) {
     if (entries.count(sql) != 0) {
       return;
     }

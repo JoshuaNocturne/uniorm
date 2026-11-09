@@ -35,11 +35,10 @@ std::size_t const k_column_width = 64;
   char message[512] = {};
   sb4 code = 0;
   if (error == nullptr ||
-      OCIErrorGet(error, 1, nullptr, &code,
-        reinterpret_cast<OraText*>(message), sizeof(message),
-        OCI_HTYPE_ERROR) != OCI_SUCCESS) {
+      OCIErrorGet(error, 1, nullptr, &code, reinterpret_cast<OraText*>(message),
+        sizeof(message), OCI_HTYPE_ERROR) != OCI_SUCCESS) {
     perf::fail("raw OCI " + context + ": status " +
-      std::to_string(static_cast<int>(status)));
+               std::to_string(static_cast<int>(status)));
   }
   char label[32] = {};
   std::snprintf(label, sizeof(label), "ORA-%05u", static_cast<unsigned>(code));
@@ -65,8 +64,8 @@ ub4 text_length(std::string const& value) {
 // one byte on one side of the comparison costs it on the other.
 void charset_ids(ub2& declared, ub2& national) {
   OCIEnv* throwaway = nullptr;
-  if (OCIEnvCreate(&throwaway, OCI_THREADED, nullptr, nullptr, nullptr,
-        nullptr, 0, nullptr) != OCI_SUCCESS) {
+  if (OCIEnvCreate(&throwaway, OCI_THREADED, nullptr, nullptr, nullptr, nullptr,
+        0, nullptr) != OCI_SUCCESS) {
     perf::fail("raw OCI create an environment to look up charset ids");
   }
   auto const id = [throwaway](char const* name) {
@@ -86,15 +85,15 @@ void charset_ids(ub2& declared, ub2& national) {
 void number_from_integer(
   OCIError* error, std::int64_t whole, OCINumber& number) {
   sb8 value = static_cast<sb8>(whole);
-  check(OCINumberFromInt(error, &value, sizeof(value), OCI_NUMBER_SIGNED,
-           &number),
+  check(
+    OCINumberFromInt(error, &value, sizeof(value), OCI_NUMBER_SIGNED, &number),
     error, "stage an integer as a NUMBER");
 }
 
 std::int64_t number_to_integer(OCIError* error, OCINumber const& number) {
   sb8 whole = 0;
-  check(OCINumberToInt(error, &number, sizeof(whole), OCI_NUMBER_SIGNED,
-           &whole),
+  check(
+    OCINumberToInt(error, &number, sizeof(whole), OCI_NUMBER_SIGNED, &whole),
     error, "read a NUMBER as an integer");
   return static_cast<std::int64_t>(whole);
 }
@@ -109,16 +108,15 @@ struct native_session {
     ub2 national = 0;
     charset_ids(declared, national);
     check(OCIEnvNlsCreate(&env, OCI_THREADED | OCI_OBJECT, nullptr, nullptr,
-             nullptr, nullptr, 0, nullptr, declared, national),
+            nullptr, nullptr, 0, nullptr, declared, national),
       nullptr, "create the environment");
-    check(OCIHandleAlloc(env, reinterpret_cast<void**>(&error),
-             OCI_HTYPE_ERROR, 0, nullptr),
+    check(OCIHandleAlloc(
+            env, reinterpret_cast<void**>(&error), OCI_HTYPE_ERROR, 0, nullptr),
       nullptr, "allocate the diagnostics handle");
     sword const status = OCILogon2(env, error, &service, ora_text(face.user),
       text_length(face.user), ora_text(face.password),
       text_length(face.password), ora_text(face.target),
-      text_length(face.target),
-      face.user.empty() ? OCI_CRED_EXT : OCI_DEFAULT);
+      text_length(face.target), face.user.empty() ? OCI_CRED_EXT : OCI_DEFAULT);
     if (status != OCI_SUCCESS) {
       native_fail("log on to " + face.target, error, status);
     }
@@ -162,8 +160,8 @@ struct text_stage {
   std::size_t rows = 0;
 
   explicit text_stage(std::size_t count)
-    : bytes(count * k_column_width), nulls(count), lengths(count),
-      rows(count) {}
+    : bytes(count * k_column_width), nulls(count), lengths(count), rows(count) {
+  }
 
   char* slot(std::size_t row) {
     return &bytes[row * k_column_width];
@@ -200,12 +198,12 @@ struct column_stages {
   }
 
 private:
-  void copy_text(std::size_t slot, std::string const& value,
-    text_stage& stage, native_session& session) {
+  void copy_text(std::size_t slot, std::string const& value, text_stage& stage,
+    native_session& session) {
     if (value.size() > k_column_width) {
       perf::fail("raw OCI stage a " + std::to_string(value.size()) +
-        "-byte value in a " + std::to_string(k_column_width) +
-        "-byte column");
+                 "-byte value in a " + std::to_string(k_column_width) +
+                 "-byte column");
     }
     std::memcpy(stage.slot(slot), value.data(), value.size());
     stage.nulls[slot] = 0;
@@ -222,10 +220,10 @@ struct native_statement {
   native_statement(native_session& owner, std::string const& sql)
     : session(owner) {
     check(OCIHandleAlloc(owner.env, reinterpret_cast<void**>(&stmt),
-             OCI_HTYPE_STMT, 0, nullptr),
+            OCI_HTYPE_STMT, 0, nullptr),
       owner.error, "allocate a statement");
     check(OCIStmtPrepare(stmt, owner.error, ora_text(sql), text_length(sql),
-             OCI_NTV_SYNTAX, OCI_DEFAULT),
+            OCI_NTV_SYNTAX, OCI_DEFAULT),
       owner.error, "prepare " + sql);
   }
 
@@ -254,76 +252,74 @@ struct native_statement {
   // stage hold whatever the execute is told to send. No array shape is
   // declared here: the rows go over as iterations of one execute, which is the
   // one this client and server pair takes.
-  void bind_numbers(std::size_t position, number_stage& stage,
-    std::string const& what) {
+  void bind_numbers(
+    std::size_t position, number_stage& stage, std::string const& what) {
     OCIBind* handle = nullptr;
-    check(OCIBindByPos(stmt, &handle, session.error,
-             static_cast<ub4>(position), stage.values.data(),
-             sizeof(OCINumber), SQLT_VNU, stage.nulls.data(), nullptr,
-             nullptr, 0, nullptr, OCI_DEFAULT),
+    check(OCIBindByPos(stmt, &handle, session.error, static_cast<ub4>(position),
+            stage.values.data(), sizeof(OCINumber), SQLT_VNU,
+            stage.nulls.data(), nullptr, nullptr, 0, nullptr, OCI_DEFAULT),
       session.error, what);
     binds.push_back(handle);
   }
 
-  void bind_text(std::size_t position, text_stage& stage,
-    std::string const& what) {
+  void bind_text(
+    std::size_t position, text_stage& stage, std::string const& what) {
     OCIBind* handle = nullptr;
-    check(OCIBindByPos(stmt, &handle, session.error,
-             static_cast<ub4>(position), stage.bytes.data(),
-             static_cast<sb4>(k_column_width), SQLT_CHR, stage.nulls.data(),
-             stage.lengths.data(), nullptr, 0, nullptr, OCI_DEFAULT),
+    check(OCIBindByPos(stmt, &handle, session.error, static_cast<ub4>(position),
+            stage.bytes.data(), static_cast<sb4>(k_column_width), SQLT_CHR,
+            stage.nulls.data(), stage.lengths.data(), nullptr, 0, nullptr,
+            OCI_DEFAULT),
       session.error, what);
     binds.push_back(handle);
   }
 
   // One row's parameter, bound again for the next: the length it carries is
   // the row's own, so a reused statement takes a fresh bind per row.
-  void bind_one_number(std::size_t position, OCINumber& number,
-    std::string const& what) {
+  void bind_one_number(
+    std::size_t position, OCINumber& number, std::string const& what) {
     OCIBind* handle = nullptr;
-    check(OCIBindByPos(stmt, &handle, session.error,
-             static_cast<ub4>(position), &number, sizeof(OCINumber), SQLT_VNU,
-             nullptr, nullptr, nullptr, 0, nullptr, OCI_DEFAULT),
+    check(OCIBindByPos(stmt, &handle, session.error, static_cast<ub4>(position),
+            &number, sizeof(OCINumber), SQLT_VNU, nullptr, nullptr, nullptr, 0,
+            nullptr, OCI_DEFAULT),
       session.error, what);
     binds.push_back(handle);
   }
 
-  void bind_one_text(std::size_t position, text_stage& stage,
-    std::string const& what) {
+  void bind_one_text(
+    std::size_t position, text_stage& stage, std::string const& what) {
     OCIBind* handle = nullptr;
-    check(OCIBindByPos(stmt, &handle, session.error,
-             static_cast<ub4>(position), stage.slot(0),
-             static_cast<sb4>(stage.lengths[0]), SQLT_CHR, &stage.nulls[0],
-             nullptr, nullptr, 0, nullptr, OCI_DEFAULT),
+    check(OCIBindByPos(stmt, &handle, session.error, static_cast<ub4>(position),
+            stage.slot(0), static_cast<sb4>(stage.lengths[0]), SQLT_CHR,
+            &stage.nulls[0], nullptr, nullptr, 0, nullptr, OCI_DEFAULT),
       session.error, what);
     binds.push_back(handle);
   }
 
-  void define_numbers(std::size_t position, number_stage& stage,
-    std::string const& what) {
+  void define_numbers(
+    std::size_t position, number_stage& stage, std::string const& what) {
     OCIDefine* handle = nullptr;
-    check(OCIDefineByPos(stmt, &handle, session.error,
-             static_cast<ub4>(position), stage.values.data(),
-             sizeof(OCINumber), SQLT_VNU, stage.nulls.data(),
-             stage.lengths.data(), nullptr, OCI_DEFAULT),
+    check(
+      OCIDefineByPos(stmt, &handle, session.error, static_cast<ub4>(position),
+        stage.values.data(), sizeof(OCINumber), SQLT_VNU, stage.nulls.data(),
+        stage.lengths.data(), nullptr, OCI_DEFAULT),
       session.error, what);
     defines.push_back(handle);
-    check(OCIDefineArrayOfStruct(handle, session.error, sizeof(OCINumber),
-             sizeof(sb2), 0, 0),
+    check(OCIDefineArrayOfStruct(
+            handle, session.error, sizeof(OCINumber), sizeof(sb2), 0, 0),
       session.error, "array-define " + what);
   }
 
-  void define_text(std::size_t position, text_stage& stage,
-    std::string const& what) {
+  void define_text(
+    std::size_t position, text_stage& stage, std::string const& what) {
     OCIDefine* handle = nullptr;
-    check(OCIDefineByPos(stmt, &handle, session.error,
-             static_cast<ub4>(position), stage.bytes.data(),
-             static_cast<sb4>(k_column_width), SQLT_CHR, stage.nulls.data(),
-             stage.lengths.data(), nullptr, OCI_DEFAULT),
+    check(
+      OCIDefineByPos(stmt, &handle, session.error, static_cast<ub4>(position),
+        stage.bytes.data(), static_cast<sb4>(k_column_width), SQLT_CHR,
+        stage.nulls.data(), stage.lengths.data(), nullptr, OCI_DEFAULT),
       session.error, what);
     defines.push_back(handle);
     check(OCIDefineArrayOfStruct(handle, session.error,
-             static_cast<ub4>(k_column_width), sizeof(sb2), sizeof(ub2), 0),
+            static_cast<ub4>(k_column_width), sizeof(sb2), sizeof(ub2), 0),
       session.error, "array-define " + what);
   }
 
@@ -332,14 +328,14 @@ struct native_statement {
   void set_prefetch(std::size_t rows, std::string const& what) {
     ub4 count = static_cast<ub4>(rows);
     check(OCIAttrSet(stmt, OCI_HTYPE_STMT, &count, sizeof(count),
-             OCI_ATTR_PREFETCH_ROWS, session.error),
+            OCI_ATTR_PREFETCH_ROWS, session.error),
       session.error, what);
   }
 
-  std::size_t execute(ub4 iterations, std::string const& what,
-    ub4 mode = OCI_DEFAULT) {
+  std::size_t execute(
+    ub4 iterations, std::string const& what, ub4 mode = OCI_DEFAULT) {
     check(OCIStmtExecute(session.service, stmt, session.error, iterations, 0,
-             nullptr, nullptr, mode),
+            nullptr, nullptr, mode),
       session.error, what);
     return attribute(OCI_ATTR_ROW_COUNT, what);
   }
@@ -356,8 +352,8 @@ struct native_statement {
 private:
   std::size_t attribute(ub4 id, std::string const& what) {
     ub4 count = 0;
-    if (OCIAttrGet(stmt, OCI_HTYPE_STMT, &count, nullptr, id, session.error)
-        != OCI_SUCCESS) {
+    if (OCIAttrGet(stmt, OCI_HTYPE_STMT, &count, nullptr, id, session.error) !=
+        OCI_SUCCESS) {
       native_fail("read " + what, session.error, OCI_ERROR);
     }
     return static_cast<std::size_t>(count);
@@ -366,8 +362,8 @@ private:
 
 // One autocommit statement: OCI has no autocommit attribute to set, so the
 // mode on the execute is what commits the row.
-void run_update(native_session& session, std::string const& sql,
-  std::string const& what) {
+void run_update(
+  native_session& session, std::string const& sql, std::string const& what) {
   native_statement statement(session, sql);
   statement.execute(1, what, OCI_COMMIT_ON_SUCCESS);
 }
@@ -395,23 +391,23 @@ bool array_dml_supported(native_session& session, std::string const& table) {
   std::string const sql = "DELETE FROM " + table + " WHERE id = :1";
   OCIStmt* stmt = nullptr;
   check(OCIHandleAlloc(session.env, reinterpret_cast<void**>(&stmt),
-             OCI_HTYPE_STMT, 0, nullptr),
+          OCI_HTYPE_STMT, 0, nullptr),
     session.error, "allocate the array probe");
   check(OCIStmtPrepare(stmt, session.error, ora_text(sql), text_length(sql),
-             OCI_NTV_SYNTAX, OCI_DEFAULT),
+          OCI_NTV_SYNTAX, OCI_DEFAULT),
     session.error, "prepare the array probe");
   number_stage two(2);
   number_from_integer(session.error, -1, two.values[0]);
   number_from_integer(session.error, -1, two.values[1]);
   OCIBind* bind = nullptr;
   check(OCIBindByPos(stmt, &bind, session.error, 1, two.values.data(),
-           sizeof(OCINumber), SQLT_VNU, two.nulls.data(), nullptr, nullptr,
-           0, nullptr, OCI_DEFAULT),
+          sizeof(OCINumber), SQLT_VNU, two.nulls.data(), nullptr, nullptr, 0,
+          nullptr, OCI_DEFAULT),
     session.error, "bind the array probe");
-  sword const status = OCIStmtExecute(session.service, stmt, session.error, 2,
-    0, nullptr, nullptr, OCI_DEFAULT);
-  bool const supported = status == OCI_SUCCESS ||
-    status == OCI_SUCCESS_WITH_INFO;
+  sword const status = OCIStmtExecute(
+    session.service, stmt, session.error, 2, 0, nullptr, nullptr, OCI_DEFAULT);
+  bool const supported =
+    status == OCI_SUCCESS || status == OCI_SUCCESS_WITH_INFO;
   if (!supported) {
     char message[256] = {};
     sb4 code = 0;
@@ -442,8 +438,8 @@ void write_rows(native_session& session, std::string const& insert_sql,
     params.stage(0, entry, 0, session);
     ins.bind_one_number(1, params.ids.values[0], "bind the id to write back");
     ins.bind_one_text(2, params.names, "bind the name to write back");
-    ins.bind_one_number(3, params.scores.values[0],
-      "bind the score to write back");
+    ins.bind_one_number(
+      3, params.scores.values[0], "bind the score to write back");
     ins.bind_one_text(4, params.notes, "bind the note to write back");
     ins.execute(1, "write a row back");
   }
@@ -486,8 +482,8 @@ std::vector<perf::bench_result> run_raw_benchmarks(
   perf::leg_face const& face, std::size_t rows) {
   std::vector<perf::bench_result> results;
   std::string const table = perf::table_name();
-  std::string const insert_sql = "INSERT INTO " + table +
-    " (id, name, score, note) VALUES (:1, :2, :3, :4)";
+  std::string const insert_sql =
+    "INSERT INTO " + table + " (id, name, score, note) VALUES (:1, :2, :3, :4)";
   std::printf("\n[raw oracle oci baseline]\n");
   std::printf("%-34s %12s %14s\n", "benchmark", "time", "throughput");
 
@@ -507,8 +503,8 @@ std::vector<perf::bench_result> run_raw_benchmarks(
     perf::report("insert (batch)", rows,
       perf::best_of(
         [&] {
-          run_update(session, "DELETE FROM " + table,
-            "clear for the raw insert");
+          run_update(
+            session, "DELETE FROM " + table, "clear for the raw insert");
         },
         [&] {
           inserted = 0;
@@ -519,11 +515,12 @@ std::vector<perf::bench_result> run_raw_benchmarks(
           }
           session.commit("commit the raw insert");
         },
-        k_runs), &results);
+        k_runs),
+      &results);
   }
   if (inserted != rows) {
     perf::fail("raw insert wrote " + std::to_string(inserted) + " of " +
-      std::to_string(rows) + " rows");
+               std::to_string(rows) + " rows");
   }
   if (count_rows(session, table) != static_cast<std::int64_t>(rows)) {
     perf::fail("the table does not hold the rows the raw insert wrote");
@@ -539,8 +536,8 @@ std::vector<perf::bench_result> run_raw_benchmarks(
     perf::report("insert (array rows)", rows,
       perf::best_of(
         [&] {
-          run_update(session, "DELETE FROM " + table,
-            "clear for the array insert");
+          run_update(
+            session, "DELETE FROM " + table, "clear for the array insert");
         },
         [&] {
           batched = 0;
@@ -550,22 +547,23 @@ std::vector<perf::bench_result> run_raw_benchmarks(
               params.stage(index, source[first + index], 0, session);
             }
             bind_batch(ins, params);
-            batched += ins.execute(static_cast<ub4>(count),
-              "execute the array insert");
+            batched +=
+              ins.execute(static_cast<ub4>(count), "execute the array insert");
           }
           session.commit("commit the array insert");
         },
-        1), &results);
+        1),
+      &results);
     if (batched != rows) {
-      perf::fail("the array insert wrote " + std::to_string(batched) +
-        " of " + std::to_string(rows) + " rows");
+      perf::fail("the array insert wrote " + std::to_string(batched) + " of " +
+                 std::to_string(rows) + " rows");
     }
   }
 
   std::size_t updated = 0;
   {
-    native_statement upd(session,
-      "UPDATE " + table + " SET score = :1 WHERE id = :2");
+    native_statement upd(
+      session, "UPDATE " + table + " SET score = :1 WHERE id = :2");
     column_stages params(1);
     perf::report("update (batch)", rows,
       perf::best_of(
@@ -574,24 +572,24 @@ std::vector<perf::bench_result> run_raw_benchmarks(
           for (auto const& entry : source) {
             upd.clear_binds();
             params.stage(0, entry, 1, session);
-            upd.bind_one_number(1, params.scores.values[0],
-              "bind the updated score");
-            upd.bind_one_number(2, params.ids.values[0],
-              "bind the updated id");
+            upd.bind_one_number(
+              1, params.scores.values[0], "bind the updated score");
+            upd.bind_one_number(2, params.ids.values[0], "bind the updated id");
             updated += upd.execute(1, "execute the row update");
           }
           session.commit("commit the raw update");
         },
-        k_runs), &results);
+        k_runs),
+      &results);
   }
   if (updated != rows) {
     perf::fail("raw update reached " + std::to_string(updated) + " of " +
-      std::to_string(rows) + " rows");
+               std::to_string(rows) + " rows");
   }
 
   if (arrays_ok) {
-    native_statement upd(session,
-      "UPDATE " + table + " SET score = :1 WHERE id = :2");
+    native_statement upd(
+      session, "UPDATE " + table + " SET score = :1 WHERE id = :2");
     column_stages params(k_batch);
     std::size_t batch_updated = 0;
     perf::report("update (array rows)", rows,
@@ -606,16 +604,16 @@ std::vector<perf::bench_result> run_raw_benchmarks(
             upd.clear_binds();
             upd.bind_numbers(1, params.scores, "the batch score to update");
             upd.bind_numbers(2, params.ids, "the batch id to update");
-            batch_updated += upd.execute(static_cast<ub4>(count),
-              "execute the array update");
+            batch_updated +=
+              upd.execute(static_cast<ub4>(count), "execute the array update");
           }
           session.commit("commit the array update");
         },
-        1), &results);
+        1),
+      &results);
     if (batch_updated != rows) {
-      perf::fail("the array update reached " +
-        std::to_string(batch_updated) + " of " + std::to_string(rows) +
-        " rows");
+      perf::fail("the array update reached " + std::to_string(batch_updated) +
+                 " of " + std::to_string(rows) + " rows");
     }
   }
 
@@ -650,7 +648,7 @@ std::vector<perf::bench_result> run_raw_benchmarks(
   }
   if (deleted != delete_count) {
     perf::fail("raw delete removed " + std::to_string(deleted) + " of " +
-      std::to_string(delete_count) + " rows");
+               std::to_string(delete_count) + " rows");
   }
 
   write_rows(session, insert_sql, even);
@@ -663,23 +661,22 @@ std::vector<perf::bench_result> run_raw_benchmarks(
         [&] {
           batch_deleted = 0;
           for (std::size_t first = 0; first < delete_count; first += k_batch) {
-            std::size_t const count =
-              std::min(k_batch, delete_count - first);
+            std::size_t const count = std::min(k_batch, delete_count - first);
             for (std::size_t index = 0; index < count; ++index) {
               params.stage(index, even[first + index], 0, session);
             }
             del.clear_binds();
             del.bind_numbers(1, params.ids, "the batch id to delete");
-            batch_deleted += del.execute(static_cast<ub4>(count),
-              "execute the array delete");
+            batch_deleted +=
+              del.execute(static_cast<ub4>(count), "execute the array delete");
           }
           session.commit("commit the array delete");
         },
-        1), &results);
+        1),
+      &results);
     if (batch_deleted != delete_count) {
-      perf::fail("the array delete removed " +
-        std::to_string(batch_deleted) + " of " +
-        std::to_string(delete_count) + " rows");
+      perf::fail("the array delete removed " + std::to_string(batch_deleted) +
+                 " of " + std::to_string(delete_count) + " rows");
     }
     // The rows that delete took out go back here, inside the same guard: an
     // array delete that never ran has left nothing to put back, and writing
@@ -691,8 +688,7 @@ std::vector<perf::bench_result> run_raw_benchmarks(
     perf::fail("the table does not hold the rows the reads expect");
   }
 
-  std::string const select_all =
-    "SELECT id, name, score, note FROM " + table;
+  std::string const select_all = "SELECT id, name, score, note FROM " + table;
 
   // Block fetch through the server's own staging, nothing assembled out of
   // it: what the transport alone costs.
@@ -723,11 +719,12 @@ std::vector<perf::bench_result> run_raw_benchmarks(
             }
           }
         },
-        k_runs), &results);
+        k_runs),
+      &results);
   }
   if (block_total != rows) {
     perf::fail("raw block fetch returned " + std::to_string(block_total) +
-      " of " + std::to_string(rows) + " rows");
+               " of " + std::to_string(rows) + " rows");
   }
 
   // The same blocks, with the entities assembled out of them -- the fair
@@ -757,15 +754,15 @@ std::vector<perf::bench_result> run_raw_benchmarks(
             }
             for (std::size_t index = 0; index < count; ++index) {
               Bench row;
-              row.id = number_to_integer(
-                session.error, fetched.ids.values[index]);
-              row.name.assign(fetched.names.slot(index),
-                fetched.names.lengths[index]);
-              row.score = static_cast<std::int32_t>(number_to_integer(
-                session.error, fetched.scores.values[index]));
+              row.id =
+                number_to_integer(session.error, fetched.ids.values[index]);
+              row.name.assign(
+                fetched.names.slot(index), fetched.names.lengths[index]);
+              row.score = static_cast<std::int32_t>(
+                number_to_integer(session.error, fetched.scores.values[index]));
               if (fetched.notes.nulls[index] != -1) {
-                row.note = std::string(fetched.notes.slot(index),
-                  fetched.notes.lengths[index]);
+                row.note = std::string(
+                  fetched.notes.slot(index), fetched.notes.lengths[index]);
               }
               entities.push_back(std::move(row));
             }
@@ -775,16 +772,17 @@ std::vector<perf::bench_result> run_raw_benchmarks(
           }
           assembled = entities.size();
         },
-        k_runs), &results);
+        k_runs),
+      &results);
     check_assembled(entities);
   }
   if (assembled != rows) {
-    perf::fail("raw assemble returned " + std::to_string(assembled) +
-      " of " + std::to_string(rows) + " rows");
+    perf::fail("raw assemble returned " + std::to_string(assembled) + " of " +
+               std::to_string(rows) + " rows");
   }
 
   std::string const one_row = select_all + " OFFSET 0 ROWS FETCH NEXT 1 "
-    "ROWS ONLY";
+                                           "ROWS ONLY";
   {
     native_statement query(session, one_row);
     column_stages fetched(1);
@@ -807,17 +805,18 @@ std::vector<perf::bench_result> run_raw_benchmarks(
           row.id = number_to_integer(session.error, fetched.ids.values[0]);
           row.name.assign(fetched.names.slot(0), fetched.names.lengths[0]);
           if (fetched.notes.nulls[0] != -1) {
-            row.note = std::string(fetched.notes.slot(0),
-              fetched.notes.lengths[0]);
+            row.note =
+              std::string(fetched.notes.slot(0), fetched.notes.lengths[0]);
           }
           // Which row a select list with no order answers with is the
           // server's, so the check is that the one it picked is itself.
           if (row.name != "row-" + std::to_string(row.id)) {
             perf::fail("raw one() answered with " + row.name + " for id " +
-              std::to_string(row.id));
+                       std::to_string(row.id));
           }
         },
-        k_runs), &results);
+        k_runs),
+      &results);
   }
 
   {
@@ -837,7 +836,8 @@ std::vector<perf::bench_result> run_raw_benchmarks(
             perf::fail("raw count() answered a different table");
           }
         },
-        k_runs), &results);
+        k_runs),
+      &results);
   }
   return results;
 }

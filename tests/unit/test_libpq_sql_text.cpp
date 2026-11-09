@@ -16,7 +16,7 @@ namespace {
 std::pair<std::string, std::size_t> rewrite(std::string_view sql) {
   std::size_t count = 0;
   std::string out = libpq::rewrite_placeholders(sql, count);
-  return {std::move(out), count};
+  return { std::move(out), count };
 }
 
 // What a batch of `rows` would be sent as: the rewrite, its fold, and the fold
@@ -154,10 +154,10 @@ void test_libpq_placeholder_rejects_unterminated() {
   // A statement that runs out inside a construct has no reading, and guessing
   // one would bind parameters the caller never wrote.
   std::size_t count = 0;
-  CHECK_THROWS(libpq::rewrite_placeholders("select 'abc", count),
-    backend::backend_error);
-  CHECK_THROWS(libpq::rewrite_placeholders("select \"abc", count),
-    backend::backend_error);
+  CHECK_THROWS(
+    libpq::rewrite_placeholders("select 'abc", count), backend::backend_error);
+  CHECK_THROWS(
+    libpq::rewrite_placeholders("select \"abc", count), backend::backend_error);
   CHECK_THROWS(libpq::rewrite_placeholders("select /* abc", count),
     backend::backend_error);
   CHECK_THROWS(libpq::rewrite_placeholders("select /* /* abc */", count),
@@ -174,24 +174,24 @@ void test_libpq_fold_repeats_a_row_group() {
   // One row's group, written as many times as the batch has rows, with the
   // parameters numbered on from the last group's.
   CHECK(folded("insert into t (a, b) values (?, ?)", 3) ==
-    "insert into t (a, b) values ($1, $2), ($3, $4), ($5, $6)");
+        "insert into t (a, b) values ($1, $2), ($3, $4), ($5, $6)");
 
   // The column list is not needed, and neither is the space before the group.
   CHECK(folded("insert into t values (?, ?)", 2) ==
-    "insert into t values ($1, $2), ($3, $4)");
+        "insert into t values ($1, $2), ($3, $4)");
   CHECK(folded("INSERT INTO t VALUES(?,?)", 2) ==
-    "INSERT INTO t VALUES($1, $2), ($3, $4)");
+        "INSERT INTO t VALUES($1, $2), ($3, $4)");
 
   // Whatever the statement carries after its group belongs to the statement,
   // not to a row, so it stays where it was written.
   CHECK(folded("INSERT INTO t (a) VALUES (?) ON CONFLICT (a) DO NOTHING", 2) ==
-    "INSERT INTO t (a) VALUES ($1), ($2) ON CONFLICT (a) DO NOTHING");
+        "INSERT INTO t (a) VALUES ($1), ($2) ON CONFLICT (a) DO NOTHING");
   CHECK(folded("insert into t (a) values (?) returning id", 2) ==
-    "insert into t (a) values ($1), ($2) returning id");
+        "insert into t (a) values ($1), ($2) returning id");
 
   // One row is a group of one, and no rows is nothing to send.
   CHECK(folded("insert into t (a) values (?)", 1) ==
-    "insert into t (a) values ($1)");
+        "insert into t (a) values ($1)");
   CHECK(folded("insert into t (a) values (?)", 0).empty());
 
   CHECK(fold_columns("insert into t (a, b, c) values (?, ?, ?)") == 3);
@@ -214,7 +214,9 @@ void test_libpq_fold_declines_what_is_not_one_row() {
 
   // A binding outside the group is one no row owns.
   CHECK(folded("insert into t (a, b) values (?, ?) "
-               "on conflict (a) do update set b = ?", 2).empty());
+               "on conflict (a) do update set b = ?",
+    2)
+      .empty());
 
   // An entry that is not a parameter would be repeated with every row, which
   // is a value the caller never named.
@@ -234,12 +236,12 @@ void test_libpq_fold_declines_what_is_not_one_row() {
 void test_libpq_fold_skips_what_a_statement_hides() {
   // A quoted name is not the keyword, and does not hide the real one.
   CHECK(folded("insert into \"values\" (a) values (?)", 2) ==
-    "insert into \"values\" (a) values ($1), ($2)");
+        "insert into \"values\" (a) values ($1), ($2)");
 
   // A VALUES written inside a comment or a literal is that construct's own
   // text.
   CHECK(folded("insert into t -- values (?, ?)\n (a) values (?)", 2) ==
-    "insert into t -- values (?, ?)\n (a) values ($1), ($2)");
+        "insert into t -- values (?, ?)\n (a) values ($1), ($2)");
   CHECK(folded("insert into t (a) values ('values (?)') ", 2).empty());
   CHECK(folded("insert into t (a) values ('values (?)'), (?)", 2).empty());
 }

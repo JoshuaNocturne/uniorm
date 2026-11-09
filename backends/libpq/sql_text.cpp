@@ -172,7 +172,7 @@ std::size_t skip_ignored(std::string_view sql, std::size_t index) {
 
 std::size_t skip_space(std::string_view sql, std::size_t index) {
   while (index < sql.size() &&
-      std::isspace(static_cast<unsigned char>(sql[index])) != 0) {
+         std::isspace(static_cast<unsigned char>(sql[index])) != 0) {
     ++index;
   }
   return index;
@@ -213,7 +213,7 @@ std::size_t parameter_number_at(
   std::size_t scan = index + 1;
   std::size_t digits = 0;
   while (scan < sql.size() &&
-      std::isdigit(static_cast<unsigned char>(sql[scan])) != 0) {
+         std::isdigit(static_cast<unsigned char>(sql[scan])) != 0) {
     number = number * 10 + static_cast<std::size_t>(sql[scan] - '0');
     ++scan;
     ++digits;
@@ -305,8 +305,7 @@ std::string rewrite_placeholders(
     if (character == '$') {
       std::size_t const delimiter = dollar_delimiter(sql, index);
       if (delimiter > 0) {
-        copy_span(out, sql, index,
-          skip_dollar_quoted(sql, index, delimiter));
+        copy_span(out, sql, index, skip_dollar_quoted(sql, index, delimiter));
         continue;
       }
     }

@@ -10,8 +10,8 @@
 
 #include <libpq-fe.h>
 
-#include <uniorm/backend/error.hpp>
 #include "export.hpp"
+#include <uniorm/backend/error.hpp>
 
 namespace uniorm::libpq {
 

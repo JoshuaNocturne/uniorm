@@ -5,8 +5,7 @@
 
 namespace uniorm::oracle_oci {
 
-oci_error::oci_error(
-  std::string const& context, std::vector<diagnostic> diags)
+oci_error::oci_error(std::string const& context, std::vector<diagnostic> diags)
   : backend::backend_error("oracle", context, std::move(diags)) {}
 
 namespace {
@@ -51,8 +50,8 @@ std::vector<oci_error::diagnostic> collect_diagnostics(OCIError* error) {
   return result;
 }
 
-void throw_if_error(sword status, OCIError* error,
-  std::string const& context, sword tolerated) {
+void throw_if_error(
+  sword status, OCIError* error, std::string const& context, sword tolerated) {
   if (status == OCI_SUCCESS || status == OCI_SUCCESS_WITH_INFO) {
     return;
   }

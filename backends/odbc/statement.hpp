@@ -6,8 +6,8 @@
 #include <string_view>
 
 #include "connection.hpp"
-#include "handles.hpp"
 #include "error.hpp"
+#include "handles.hpp"
 
 namespace uniorm::odbc {
 
@@ -32,7 +32,9 @@ public:
 
   // Block fetch support: set the number of rows to fetch per SQLFetch call.
   void set_row_array_size(SQLULEN size);
-  SQLULEN rows_fetched() const noexcept { return rows_fetched_; }
+  SQLULEN rows_fetched() const noexcept {
+    return rows_fetched_;
+  }
 
   // Batch insert support: set the number of parameter sets per SQLExecute.
   void set_paramset_size(SQLULEN size);

@@ -3,6 +3,8 @@
 // Convenience header: includes the full uniorm public API.
 // Users can include this single header instead of picking individual ones.
 
+#include <uniorm/builder/builder.hpp>
+#include <uniorm/builder/expression.hpp>
 #include <uniorm/connection.hpp>
 #include <uniorm/connection_spec.hpp>
 #include <uniorm/converter.hpp>
@@ -13,8 +15,6 @@
 #include <uniorm/orm.hpp>
 #include <uniorm/params.hpp>
 #include <uniorm/pool.hpp>
-#include <uniorm/builder/builder.hpp>
-#include <uniorm/builder/expression.hpp>
 #include <uniorm/result_set.hpp>
 #include <uniorm/row.hpp>
 #include <uniorm/schema.hpp>

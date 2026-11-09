@@ -82,8 +82,8 @@ char const* table_name() {
   return "uniorm_perf_bench";
 }
 
-void report(char const* name, std::size_t rows,
-  perf_clock::duration elapsed, std::vector<bench_result>* collect) {
+void report(char const* name, std::size_t rows, perf_clock::duration elapsed,
+  std::vector<bench_result>* collect) {
   double const ms = std::chrono::duration<double, std::milli>(elapsed).count();
   double const krows_per_s = static_cast<double>(rows) / ms;  // rows/ms
   std::printf("%-34s %10.2f ms %12.1f krows/s\n", name, ms, krows_per_s);
@@ -94,12 +94,12 @@ void report(char const* name, std::size_t rows,
 
 void print_comparison_table(std::vector<bench_result> const& orm_results,
   std::vector<bench_result> const& raw_results) {
-  std::printf("\n%-28s %10s %12s %10s %12s %6s\n",
-    "benchmark", "ORM (ms)", "ORM (k/s)", "Raw (ms)", "Raw (k/s)", "Ratio");
-  std::printf("%-28s %10s %12s %10s %12s %6s\n",
-    std::string(28, '-').c_str(), std::string(10, '-').c_str(),
-    std::string(12, '-').c_str(), std::string(10, '-').c_str(),
-    std::string(12, '-').c_str(), std::string(6, '-').c_str());
+  std::printf("\n%-28s %10s %12s %10s %12s %6s\n", "benchmark", "ORM (ms)",
+    "ORM (k/s)", "Raw (ms)", "Raw (k/s)", "Ratio");
+  std::printf("%-28s %10s %12s %10s %12s %6s\n", std::string(28, '-').c_str(),
+    std::string(10, '-').c_str(), std::string(12, '-').c_str(),
+    std::string(10, '-').c_str(), std::string(12, '-').c_str(),
+    std::string(6, '-').c_str());
 
   for (auto const& entry : orm_results) {
     auto const paired = std::find_if(raw_results.begin(), raw_results.end(),
@@ -110,8 +110,8 @@ void print_comparison_table(std::vector<bench_result> const& orm_results,
     }
     double const orm_krows = static_cast<double>(entry.rows) / entry.ms;
     if (paired == raw_results.end()) {
-      std::printf("%-28s %8.2f ms %10.1f k/s %10s %12s %6s\n",
-        name.c_str(), entry.ms, orm_krows, "-", "-", "-");
+      std::printf("%-28s %8.2f ms %10.1f k/s %10s %12s %6s\n", name.c_str(),
+        entry.ms, orm_krows, "-", "-", "-");
       continue;
     }
     double const raw_krows = static_cast<double>(paired->rows) / paired->ms;
@@ -133,8 +133,8 @@ void print_comparison_table(std::vector<bench_result> const& orm_results,
       name = name.substr(0, 25) + "...";
     }
     double const raw_krows = static_cast<double>(entry.rows) / entry.ms;
-    std::printf("%-28s %10s %12s %8.2f ms %10.1f k/s %6s\n",
-      name.c_str(), "-", "-", entry.ms, raw_krows, "-");
+    std::printf("%-28s %10s %12s %8.2f ms %10.1f k/s %6s\n", name.c_str(), "-",
+      "-", entry.ms, raw_krows, "-");
   }
 }
 
@@ -181,7 +181,8 @@ bool open_leg(std::string const& scheme, leg_face& face, std::size_t& rows) {
   if (target_env == nullptr || !*target_env || user_env == nullptr ||
       !*user_env || password_env == nullptr || !*password_env) {
     std::printf("skip: set UNIORM_IT_DSN / UNIORM_IT_USER / UNIORM_IT_PWD to "
-      "run the %s perf leg\n", scheme.c_str());
+                "run the %s perf leg\n",
+      scheme.c_str());
     return false;
   }
   face.scheme = scheme;
@@ -214,8 +215,8 @@ bool open_leg(std::string const& scheme, leg_face& face, std::size_t& rows) {
       probe.dbms_name().c_str());
     face.server_dialect = dialect::detect(probe.dbms_name());
   } catch (std::exception const& error) {
-    std::printf("skip: cannot connect to '%s': %s\n", face.target.c_str(),
-      error.what());
+    std::printf(
+      "skip: cannot connect to '%s': %s\n", face.target.c_str(), error.what());
     return false;
   }
   rows = row_count();
@@ -224,9 +225,9 @@ bool open_leg(std::string const& scheme, leg_face& face, std::size_t& rows) {
 
 std::size_t row_count() {
   char const* rows_env = std::getenv("UNIORM_PERF_ROWS");
-  std::size_t const count =
-    (rows_env != nullptr && *rows_env) ? std::strtoul(rows_env, nullptr, 10)
-                                       : 10000;
+  std::size_t const count = (rows_env != nullptr && *rows_env)
+                              ? std::strtoul(rows_env, nullptr, 10)
+                              : 10000;
   return (count == 0 || count > 1'000'000) ? 10000 : count;
 }
 
@@ -242,11 +243,14 @@ std::vector<bench_result> run_orm_benchmarks(
   connection conn(face.connect_string);
 
   conn.execute_update(std::string("DROP TABLE IF EXISTS ") + table_name());
-  conn.execute_update(std::string("CREATE TABLE ") + table_name() +
-    " (id " + face.id_type + " NOT NULL PRIMARY KEY,"
-    " name VARCHAR(64) NOT NULL,"
-    " score " + face.score_type + " NOT NULL,"
-    " note VARCHAR(64) NULL)");
+  conn.execute_update(std::string("CREATE TABLE ") + table_name() + " (id " +
+                      face.id_type +
+                      " NOT NULL PRIMARY KEY,"
+                      " name VARCHAR(64) NOT NULL,"
+                      " score " +
+                      face.score_type +
+                      " NOT NULL,"
+                      " note VARCHAR(64) NULL)");
 
   orm registry = build_registry(face.connect_string);
   orm conv_registry = build_conv_registry(face.connect_string);
@@ -276,8 +280,9 @@ std::vector<bench_result> run_orm_benchmarks(
     }
     auto start = perf_clock::now();
     fresh.update(updated);
-    double const ms = std::chrono::duration<double, std::milli>(
-      perf_clock::now() - start).count();
+    double const ms =
+      std::chrono::duration<double, std::milli>(perf_clock::now() - start)
+        .count();
     std::printf("update (fresh orm, no prior cache)  %8.2f ms %12.1f krows/s\n",
       ms, static_cast<double>(rows) / ms);
   }
@@ -298,7 +303,7 @@ std::vector<bench_result> run_orm_benchmarks(
   }
   if (inserted != rows) {
     fail("inserted " + std::to_string(inserted) + " of " +
-      std::to_string(rows) + " rows");
+         std::to_string(rows) + " rows");
   }
 
   std::size_t updated = 0;
@@ -325,8 +330,8 @@ std::vector<bench_result> run_orm_benchmarks(
     report("update (batch)", rows, best, &results);
   }
   if (updated != rows) {
-    fail("updated " + std::to_string(updated) + " of " +
-      std::to_string(rows) + " rows");
+    fail("updated " + std::to_string(updated) + " of " + std::to_string(rows) +
+         " rows");
   }
 
   std::vector<Bench> even = make_even_rows(rows);
@@ -348,7 +353,7 @@ std::vector<bench_result> run_orm_benchmarks(
   }
   if (deleted != even.size()) {
     fail("deleted " + std::to_string(deleted) + " of " +
-      std::to_string(even.size()) + " rows");
+         std::to_string(even.size()) + " rows");
   }
   registry.insert(even);
 
@@ -357,28 +362,34 @@ std::vector<bench_result> run_orm_benchmarks(
 
   std::size_t entity_rows = 0;
   report("query entity all() (direct bind)", rows,
-    best_of([&] {
-      entity_rows = registry.query<Bench>().all().size();
-    }, k_runs), &results);
+    best_of(
+      [&] { entity_rows = registry.query<Bench>().all().size(); }, k_runs),
+    &results);
   if (entity_rows != rows) {
     fail("entity query returned " + std::to_string(entity_rows) + " rows");
   }
 
   std::size_t projected = 0;
   report("query projection (with string)", rows,
-    best_of([&] {
-      projected = registry.query<projection_row>(select_all).size();
-    }, k_runs), &results);
+    best_of(
+      [&] { projected = registry.query<projection_row>(select_all).size(); },
+      k_runs),
+    &results);
   if (projected != rows) {
     fail("projection returned " + std::to_string(projected) + " rows");
   }
 
   std::size_t simple_rows = 0;
   report("query projection (POD only)", rows,
-    best_of([&] {
-      simple_rows = registry.query<simple_row>(
-        std::string("SELECT id, score FROM ") + table_name()).size();
-    }, k_runs), &results);
+    best_of(
+      [&] {
+        simple_rows = registry
+                        .query<simple_row>(
+                          std::string("SELECT id, score FROM ") + table_name())
+                        .size();
+      },
+      k_runs),
+    &results);
   if (simple_rows != rows) {
     fail("POD projection returned " + std::to_string(simple_rows) + " rows");
   }
@@ -386,25 +397,31 @@ std::vector<bench_result> run_orm_benchmarks(
   std::string const id_label = fold_label(face, "id");
   std::size_t dynamic_rows = 0;
   report("query dynamic rows (row/sql_value)", rows,
-    best_of([&] {
-      result_set stream = conn.execute(select_all);
-      dynamic_rows = 0;
-      while (stream.next()) {
-        row current = stream.current();
-        current.get<std::int64_t>(id_label);
-        ++dynamic_rows;
-      }
-    }, k_runs), &results);
+    best_of(
+      [&] {
+        result_set stream = conn.execute(select_all);
+        dynamic_rows = 0;
+        while (stream.next()) {
+          row current = stream.current();
+          current.get<std::int64_t>(id_label);
+          ++dynamic_rows;
+        }
+      },
+      k_runs),
+    &results);
   if (dynamic_rows != rows) {
     fail("dynamic query returned " + std::to_string(dynamic_rows) + " rows");
   }
 
   report("query one() (direct bind)", 1,
-    best_of([&] {
-      if (!registry.query<Bench>().limit(1).one()) {
-        fail("one() answered with no row");
-      }
-    }, k_runs), &results);
+    best_of(
+      [&] {
+        if (!registry.query<Bench>().limit(1).one()) {
+          fail("one() answered with no row");
+        }
+      },
+      k_runs),
+    &results);
 
   std::int64_t counted = 0;
   report("query count()", 1,
@@ -433,36 +450,40 @@ std::vector<bench_result> run_orm_benchmarks(
   }
   if (conv_inserted != rows) {
     fail("converter insert wrote " + std::to_string(conv_inserted) + " of " +
-      std::to_string(rows) + " rows");
+         std::to_string(rows) + " rows");
   }
 
   std::size_t conv_read = 0;
   report("query entity all (converter field)", rows,
-    best_of([&] {
-      conv_read = conv_registry.query<BenchConv>().all().size();
-    }, k_runs), &results);
+    best_of([&] { conv_read = conv_registry.query<BenchConv>().all().size(); },
+      k_runs),
+    &results);
   if (conv_read != rows) {
-    fail("converter entity query returned " + std::to_string(conv_read) +
-      " rows");
+    fail(
+      "converter entity query returned " + std::to_string(conv_read) + " rows");
   }
   // Untimed, and a read of its own: a decode that quietly produced nothing
   // would still have counted these rows above.
   for (auto const& entry : conv_registry.query<BenchConv>().all()) {
     bool const written = entry.id % 4 != 0;
-    if (!entry.note != !written || (entry.note &&
-        entry.note->text != "note-" + std::to_string(entry.id))) {
+    if (!entry.note != !written ||
+        (entry.note &&
+          entry.note->text != "note-" + std::to_string(entry.id))) {
       fail("converter decode wrong at id " + std::to_string(entry.id));
     }
   }
 
   std::size_t conv_projected = 0;
   report("query projection (converter field)", rows,
-    best_of([&] {
-      conv_projected = registry.query<conv_projection>(select_all).size();
-    }, k_runs), &results);
+    best_of(
+      [&] {
+        conv_projected = registry.query<conv_projection>(select_all).size();
+      },
+      k_runs),
+    &results);
   if (conv_projected != rows) {
     fail("converter projection returned " + std::to_string(conv_projected) +
-      " rows");
+         " rows");
   }
   return results;
 }

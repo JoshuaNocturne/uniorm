@@ -143,8 +143,9 @@ Narrow as_width(std::int64_t value, std::size_t column, char const* text) {
   constexpr std::int64_t highest = std::numeric_limits<Narrow>::max();
   if (value < lowest || value > highest) {
     throw pq_error("read result column " + std::to_string(column) + " as a " +
-      std::to_string(sizeof(Narrow) * 8) + "-bit integer: '" +
-      std::string(text) + "'", {});
+                     std::to_string(sizeof(Narrow) * 8) + "-bit integer: '" +
+                     std::string(text) + "'",
+      {});
   }
   return static_cast<Narrow>(value);
 }
@@ -170,9 +171,8 @@ pq_statement::~pq_statement() {
   // drops an entry must not leave a parse behind in the session. A refusal
   // here says the session is gone, which is the same outcome.
   if (prepared_) {
-    detail::result_holder dropped{
-      PQexec(conn_.native(), ("DEALLOCATE " + statement_name_).c_str())
-    };
+    detail::result_holder dropped{ PQexec(
+      conn_.native(), ("DEALLOCATE " + statement_name_).c_str()) };
   }
 }
 
@@ -194,15 +194,13 @@ void pq_statement::make_ready() {
   if (prepared_) {
     // The server refuses to prepare over a name it already holds, and the
     // cache can hand this statement a second text.
-    detail::result_holder dropped{
-      PQexec(session(), ("DEALLOCATE " + statement_name_).c_str())
-    };
+    detail::result_holder dropped{ PQexec(
+      session(), ("DEALLOCATE " + statement_name_).c_str()) };
     prepared_ = false;
   }
   param_types_.clear();
-  detail::result_holder made{ PQprepare(session(),
-    statement_name_.c_str(), rewritten_.c_str(),
-    static_cast<int>(placeholder_count_), nullptr) };
+  detail::result_holder made{ PQprepare(session(), statement_name_.c_str(),
+    rewritten_.c_str(), static_cast<int>(placeholder_count_), nullptr) };
   throw_if_failed(made.get(), "prepare a statement", { PGRES_COMMAND_OK });
   prepared_ = true;
   read_parameter_types();
@@ -212,9 +210,8 @@ void pq_statement::read_parameter_types() {
   // A describe of a prepared statement answers the types the server inferred
   // for its parameters, and those decide how each value is spelled: a date
   // takes different words than a timestamp, and a byte string takes hex.
-  detail::result_holder shape{
-    PQdescribePrepared(session(), statement_name_.c_str())
-  };
+  detail::result_holder shape{ PQdescribePrepared(
+    session(), statement_name_.c_str()) };
   throw_if_failed(shape.get(), "read the parameters of a prepared statement",
     { PGRES_COMMAND_OK });
   param_types_.clear();
@@ -225,11 +222,11 @@ void pq_statement::read_parameter_types() {
   }
 }
 
-void pq_statement::bind_parameter(
-  std::size_t index, sql_value const& value) {
+void pq_statement::bind_parameter(std::size_t index, sql_value const& value) {
   if (index == 0 || index > placeholder_count_) {
     throw pq_error("bind parameter " + std::to_string(index) +
-        " of a statement that declares " + std::to_string(placeholder_count_),
+                     " of a statement that declares " +
+                     std::to_string(placeholder_count_),
       {});
   }
   values_[index - 1] = value;
@@ -241,15 +238,16 @@ void pq_statement::bind_column(
   // With no result the select list has no length, so every column the caller
   // names is past it.
   if (index == 0 || index > slots_.size()) {
-    throw pq_error("result column " + std::to_string(index) +
-      " is past the select list", {});
+    throw pq_error(
+      "result column " + std::to_string(index) + " is past the select list",
+      {});
   }
   // The core binds its fields in whatever order it mapped them. A column
   // handed over twice would be written twice into buffers of different widths.
   column_slot& slot = slots_[index - 1];
   if (slot.bound) {
-    throw pq_error("bind result column " + std::to_string(index) +
-      " a second time", {});
+    throw pq_error(
+      "bind result column " + std::to_string(index) + " a second time", {});
   }
   slot.target = buffer;
   slot.position = index;
@@ -290,7 +288,8 @@ void pq_statement::render(std::vector<sql_value> const& values) {
   for (std::size_t index = 0; index < values.size(); ++index) {
     sql_value const& value = values[index];
     sent_types_.push_back(index < param_types_.size()
-      ? param_types_[index % param_types_.size()] : 0);
+                            ? param_types_[index % param_types_.size()]
+                            : 0);
     if (is_null(value)) {
       param_pointers_.push_back(nullptr);
       continue;
@@ -452,10 +451,9 @@ void pq_statement::apply(detail::result_holder&& next) {
 }
 
 void pq_statement::declare_shape() {
-  int const fields =
-    result_.get() == nullptr ? 0 : PQnfields(result_.get());
-  slots_.assign(static_cast<std::size_t>(fields < 0 ? 0 : fields),
-    column_slot{});
+  int const fields = result_.get() == nullptr ? 0 : PQnfields(result_.get());
+  slots_.assign(
+    static_cast<std::size_t>(fields < 0 ? 0 : fields), column_slot{});
 }
 
 std::size_t pq_statement::affected_of(PGresult* answer) const {
@@ -473,8 +471,7 @@ bool pq_statement::fetch() {
     rows_fetched_ = 0;
     return false;
   }
-  std::size_t const total =
-    static_cast<std::size_t>(PQntuples(result_.get()));
+  std::size_t const total = static_cast<std::size_t>(PQntuples(result_.get()));
   if (cursor_ >= total) {
     rows_fetched_ = 0;
     return false;
@@ -535,8 +532,7 @@ void pq_statement::fill_cell(column_slot& slot, std::size_t row) {
   case backend::buffer_type::timestamp_parts:
   case backend::buffer_type::date_parts:
   case backend::buffer_type::time_parts:
-    put_timestamp(
-      slot, row, text, PQftype(answer, field));
+    put_timestamp(slot, row, text, PQftype(answer, field));
     return;
   }
 }
@@ -552,18 +548,18 @@ void pq_statement::put_text(
   std::size_t const taken = (std::min)(length, limit);
   std::memcpy(byte_at(slot, row), data, taken);
   slot.target.indicator[row] = taken < length
-    ? static_cast<std::int64_t>(limit) + 1
-    : static_cast<std::int64_t>(length);
+                                 ? static_cast<std::int64_t>(limit) + 1
+                                 : static_cast<std::int64_t>(length);
 }
 
-void pq_statement::put_bytes(column_slot& slot, std::size_t row,
-  char const* data, std::size_t length) {
+void pq_statement::put_bytes(
+  column_slot& slot, std::size_t row, char const* data, std::size_t length) {
   std::size_t const capacity = slot.target.capacity;
   std::size_t const taken = (std::min)(length, capacity);
   std::memcpy(byte_at(slot, row), data, taken);
   slot.target.indicator[row] = taken < length
-    ? static_cast<std::int64_t>(capacity) + 1
-    : static_cast<std::int64_t>(length);
+                                 ? static_cast<std::int64_t>(capacity) + 1
+                                 : static_cast<std::int64_t>(length);
 }
 
 void pq_statement::put_integer(
@@ -601,8 +597,8 @@ void pq_statement::put_double(
   *reinterpret_cast<double*>(destination) = value;
 }
 
-void pq_statement::put_timestamp(column_slot& slot, std::size_t row,
-  char const* text, unsigned native) const {
+void pq_statement::put_timestamp(
+  column_slot& slot, std::size_t row, char const* text, unsigned native) const {
   auto const parts = parts_of(text, native);
   char* const destination = byte_at(slot, row);
   if (slot.target.type == backend::buffer_type::date_parts) {
@@ -648,8 +644,7 @@ column_slot& pq_statement::slot_for(std::size_t column) {
       return slot;
     }
   }
-  throw pq_error(
-    "read a value of result column " + std::to_string(column), {});
+  throw pq_error("read a value of result column " + std::to_string(column), {});
 }
 
 std::string pq_statement::read_long_text(std::size_t column, std::size_t row) {
@@ -664,8 +659,8 @@ std::vector<std::byte> pq_statement::read_long_bytes(
   slot_for(column);
   std::size_t length = 0;
   char const* const text = cell(column, row, length);
-  bool const hex_form = PQftype(
-    result_.get(), static_cast<int>(column) - 1) == pg_type::bytea;
+  bool const hex_form =
+    PQftype(result_.get(), static_cast<int>(column) - 1) == pg_type::bytea;
   return bytes_of(text, length, hex_form);
 }
 
@@ -690,7 +685,8 @@ std::vector<column_info> pq_statement::column_meta() const {
     info.type = sql_type_from_native(native);
     info.display_size = display_width(info.type, native, modifier);
     info.scale = native == pg_type::numeric
-      ? static_cast<std::size_t>(declared_scale(modifier)) : 0;
+                   ? static_cast<std::size_t>(declared_scale(modifier))
+                   : 0;
     // A result says nothing about the column behind it, and a value the server
     // never sent is the only case a NULL test would have caught: the read of
     // each row carries its own.

@@ -21,8 +21,7 @@ meta::table_ref ref_of(table_model const& table) {
   return meta::table_ref{ table.catalog, table.schema, table.name };
 }
 
-std::vector<table_model> list_tables(
-  meta& md, read_options const& opts) {
+std::vector<table_model> list_tables(meta& md, read_options const& opts) {
   std::vector<table_model> all;
   for (auto const& row : md.tables(opts.catalog, opts.schema)) {
     table_model m;
@@ -87,8 +86,8 @@ std::vector<std::string> read_primary_keys(meta& md, table_model& table) {
       continue;
     }
     std::string folded = fold_lower(pk);
-    auto alt = std::find_if(table.columns.begin(), table.columns.end(),
-      [&](column_model const& c) {
+    auto alt = std::find_if(
+      table.columns.begin(), table.columns.end(), [&](column_model const& c) {
         return fold_lower(c.shape.name) == folded;
       });
     std::string name = pk;
@@ -104,8 +103,7 @@ void read_foreign_keys(meta& md, table_model& table) {
   // One row per column pair, in key order within each referenced table, so
   // grouping by that table in encounter order rebuilds the constraints.
   for (auto const& row : md.foreign_keys(ref_of(table))) {
-    auto it = std::find_if(table.foreign_keys.begin(),
-      table.foreign_keys.end(),
+    auto it = std::find_if(table.foreign_keys.begin(), table.foreign_keys.end(),
       [&](fk_model const& m) { return m.pk_table == row.referenced_table; });
     if (it == table.foreign_keys.end()) {
       table.foreign_keys.push_back(fk_model{ row.referenced_table, {} });
@@ -146,8 +144,8 @@ void warn_pattern(std::string_view flag, std::string_view value,
 
 }  // namespace
 
-schema_model read_schema(schema_meta& md,
-  read_options const& opts, std::vector<std::string>* warnings) {
+schema_model read_schema(schema_meta& md, read_options const& opts,
+  std::vector<std::string>* warnings) {
   schema_model model;
   warn_pattern("--catalog", opts.catalog, warnings);
   warn_pattern("--schema", opts.schema, warnings);

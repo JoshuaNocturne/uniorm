@@ -7,11 +7,11 @@
 
 #include "orm_mapping.hpp"
 #include "uniorm/backend/backend.hpp"
-#include <uniorm/connection.hpp>
-#include "uniorm/dialect.hpp"
 #include "uniorm/builder/builder.hpp"
+#include "uniorm/dialect.hpp"
 #include "uniorm/result_set.hpp"
 #include "uniorm/transaction.hpp"
+#include <uniorm/connection.hpp>
 
 namespace uniorm {
 
@@ -55,8 +55,8 @@ orm& orm::operator=(orm&&) noexcept = default;
 
 void orm::connect(std::string_view connection_string) {
   clear_identifier_resolution();
-  pooled_conn_ =
-    connection_pool_registry::instance().acquire(std::string(connection_string));
+  pooled_conn_ = connection_pool_registry::instance().acquire(
+    std::string(connection_string));
   adopt_connection(native_connection(), auto_commit_, identifiers_);
 }
 
@@ -110,17 +110,17 @@ void orm::resolve_identifiers(
       catalog_name.find('\0') != std::string_view::npos ||
       schema_name.find('\0') != std::string_view::npos) {
     throw mapping_error("identifier resolution requires an explicit catalog "
-      "and names without NUL bytes");
+                        "and names without NUL bytes");
   }
   auto& metadata = connection.schema();
   if (qualification == dialect::qualification::schema) {
     if (schema_name.empty() || catalog_name != metadata.database_name()) {
       throw mapping_error("PostgreSQL identifier resolution requires the "
-        "current database and an explicit schema");
+                          "current database and an explicit schema");
     }
   } else if (!schema_name.empty()) {
     throw mapping_error("MySQL identifier resolution requires a database "
-      "and an empty schema");
+                        "and an empty schema");
   }
   detail::identifier_catalog catalog(metadata, catalog_name, schema_name);
   using pending_resolution =
@@ -130,8 +130,8 @@ void orm::resolve_identifiers(
   for (auto& [type, entity] : entities_) {
     pending.emplace_back(&entity, catalog.resolve(entity));
   }
-  static_assert(std::is_nothrow_swappable_v<
-    std::optional<identifier_resolution>>);
+  static_assert(
+    std::is_nothrow_swappable_v<std::optional<identifier_resolution>>);
   for (auto& [entity, resolution] : pending) {
     entity->resolved.swap(resolution);
   }
@@ -249,8 +249,8 @@ std::size_t remove_builder::execute() {
   dialect const& d = orm_->native_connection().sql_dialect();
   std::vector<sql_value> values;
   std::string where = render_where(wheres_, values);
-  std::string sql = "DELETE FROM " + d.quote_identifier(table_) +
-                    " WHERE " + where;
+  std::string sql =
+    "DELETE FROM " + d.quote_identifier(table_) + " WHERE " + where;
   return orm_->execute_update(sql, params(std::move(values)));
 }
 
@@ -338,8 +338,7 @@ std::optional<dialect::identifier_case> orm::identifier_case() const noexcept {
   return identifiers_;
 }
 
-void orm::identifier_case(
-  std::optional<dialect::identifier_case> policy) {
+void orm::identifier_case(std::optional<dialect::identifier_case> policy) {
   if (pooled_conn_ && pooled_conn_->get().is_open()) {
     pooled_conn_->get().identifier_case(policy);
   }
@@ -370,7 +369,8 @@ std::string build_insert_sql(
   return sql;
 }
 
-std::size_t element_size_for(backend::buffer_type type, std::size_t max_var_size) {
+std::size_t element_size_for(
+  backend::buffer_type type, std::size_t max_var_size) {
   switch (type) {
   case backend::buffer_type::bit:
     return sizeof(unsigned char);
@@ -407,8 +407,7 @@ std::vector<std::size_t> all_columns(entity_meta const& m) {
 }
 
 std::vector<std::size_t> concat_columns(
-  std::vector<std::size_t> const& head,
-  std::vector<std::size_t> const& tail) {
+  std::vector<std::size_t> const& head, std::vector<std::size_t> const& tail) {
   std::vector<std::size_t> out;
   out.reserve(head.size() + tail.size());
   out.insert(out.end(), head.begin(), head.end());
@@ -443,19 +442,18 @@ std::vector<sql_value> extract_row(entity_meta const& m, void const* entity,
 
 // One statement text per operation, so the rowwise and columnar channels of
 // the same write also share a statement-cache key.
-std::string update_statement(entity_meta const& entity,
-  dialect const& dialect, std::vector<std::size_t> const& set_col_indices,
+std::string update_statement(entity_meta const& entity, dialect const& dialect,
+  std::vector<std::size_t> const& set_col_indices,
   std::vector<std::size_t> const& where_col_indices) {
   return "UPDATE " + entity.table_sql(dialect) + " SET " +
-    placeholder_group(entity, set_col_indices, dialect, ", ") + " WHERE " +
-    placeholder_group(entity, where_col_indices, dialect, " AND ");
+         placeholder_group(entity, set_col_indices, dialect, ", ") + " WHERE " +
+         placeholder_group(entity, where_col_indices, dialect, " AND ");
 }
 
-std::string delete_statement(entity_meta const& entity,
-  dialect const& dialect,
+std::string delete_statement(entity_meta const& entity, dialect const& dialect,
   std::vector<std::size_t> const& where_col_indices) {
   return "DELETE FROM " + entity.table_sql(dialect) + " WHERE " +
-    placeholder_group(entity, where_col_indices, dialect, " AND ");
+         placeholder_group(entity, where_col_indices, dialect, " AND ");
 }
 
 // What a batch adds up per execute(): the rows it bound, or what the driver
@@ -469,8 +467,8 @@ std::size_t update_single_row(connection& conn, entity_meta const& m,
   std::vector<std::size_t> const& set_col_indices,
   std::vector<std::size_t> const& where_col_indices, void const* entity) {
   dialect const& d = conn.sql_dialect();
-  std::vector<sql_value> values = extract_row(
-    m, entity, concat_columns(set_col_indices, where_col_indices));
+  std::vector<sql_value> values =
+    extract_row(m, entity, concat_columns(set_col_indices, where_col_indices));
   return conn.execute_update(
     update_statement(m, d, set_col_indices, where_col_indices),
     params(std::move(values)));
@@ -490,8 +488,7 @@ std::size_t update_rowwise(connection& conn, entity_meta const& m,
   std::vector<std::size_t> const& where_col_indices, void const* rows,
   std::size_t row_stride, std::size_t row_count, std::size_t batch_size) {
   dialect const& d = conn.sql_dialect();
-  std::string sql =
-    update_statement(m, d, set_col_indices, where_col_indices);
+  std::string sql = update_statement(m, d, set_col_indices, where_col_indices);
   std::vector<std::size_t> const param_cols =
     concat_columns(set_col_indices, where_col_indices);
 
@@ -504,8 +501,8 @@ std::size_t update_rowwise(connection& conn, entity_meta const& m,
     std::vector<params> batch;
     batch.reserve(count);
     for (std::size_t r = 0; r < count; ++r) {
-      batch.emplace_back(extract_row(
-        m, row_at(rows, row_stride, start + r), param_cols));
+      batch.emplace_back(
+        extract_row(m, row_at(rows, row_stride, start + r), param_cols));
     }
     stmt->set_paramset_size(count);
     stmt->bind_batch_params(batch);
@@ -533,8 +530,8 @@ std::size_t insert_rowwise(connection& conn, entity_meta const& m,
     std::vector<params> batch;
     batch.reserve(count);
     for (std::size_t r = 0; r < count; ++r) {
-      batch.emplace_back(extract_row(
-        m, row_at(rows, row_stride, start + r), param_cols));
+      batch.emplace_back(
+        extract_row(m, row_at(rows, row_stride, start + r), param_cols));
     }
     stmt->bind_batch_params(batch);
     stmt->set_paramset_size(count);
@@ -564,8 +561,8 @@ std::size_t delete_rowwise(connection& conn, entity_meta const& m,
     std::vector<params> batch;
     batch.reserve(count);
     for (std::size_t r = 0; r < count; ++r) {
-      batch.emplace_back(extract_row(
-        m, row_at(rows, row_stride, start + r), where_col_indices));
+      batch.emplace_back(
+        extract_row(m, row_at(rows, row_stride, start + r), where_col_indices));
     }
     stmt->set_paramset_size(count);
     stmt->bind_batch_params(batch);
@@ -598,7 +595,8 @@ std::size_t columnar_batch_write(connection& conn, entity_meta const& m,
   bool has_var = false;
   for (std::size_t p = 0; p < num_params; ++p) {
     auto bt = m.columns[param_to_col[p]].buffer_type;
-    if (bt == backend::buffer_type::chars || bt == backend::buffer_type::bytes) {
+    if (bt == backend::buffer_type::chars ||
+        bt == backend::buffer_type::bytes) {
       has_var = true;
       break;
     }
@@ -609,8 +607,8 @@ std::size_t columnar_batch_write(connection& conn, entity_meta const& m,
       if (col.buffer_type == backend::buffer_type::chars ||
           col.buffer_type == backend::buffer_type::bytes) {
         for (std::size_t r = 0; r < row_count; ++r) {
-          max_sizes[p] = std::max(max_sizes[p],
-            col.get_string_size(row_at(rows, row_stride, r)));
+          max_sizes[p] = std::max(
+            max_sizes[p], col.get_string_size(row_at(rows, row_stride, r)));
         }
       }
     }
@@ -668,8 +666,7 @@ std::size_t columnar_batch_write(connection& conn, entity_meta const& m,
       stmt->set_paramset_size(count);
     }
     stmt->execute();
-    written +=
-      tally == row_tally::bound_rows ? count : stmt->affected_rows();
+    written += tally == row_tally::bound_rows ? count : stmt->affected_rows();
   }
 
   conn.release_statement(key, std::move(stmt));
@@ -711,9 +708,9 @@ std::size_t orm::insert_impl(connection& conn, entity_meta const& m,
   std::size_t inserted;
   if (conn.caps().columnar_batch) {
     dialect const& d = conn.sql_dialect();
-    inserted = columnar_batch_write(conn, m, build_insert_sql(d, m),
-      all_columns(m), rows, row_stride, row_count, chunk,
-      row_tally::bound_rows);
+    inserted =
+      columnar_batch_write(conn, m, build_insert_sql(d, m), all_columns(m),
+        rows, row_stride, row_count, chunk, row_tally::bound_rows);
   } else {
     inserted = insert_rowwise(conn, m, rows, row_stride, row_count, chunk);
   }
@@ -766,8 +763,8 @@ std::size_t orm::update_batch_impl(connection& conn, entity_meta const& m,
       concat_columns(set_cols, where_cols), rows, row_stride, row_count, chunk,
       row_tally::affected_rows);
   } else {
-    updated = update_rowwise(conn, m, set_cols, where_cols, rows, row_stride,
-      row_count, chunk);
+    updated = update_rowwise(
+      conn, m, set_cols, where_cols, rows, row_stride, row_count, chunk);
   }
 
   if (txn) {
@@ -801,9 +798,8 @@ std::size_t orm::delete_batch_impl(connection& conn, entity_meta const& m,
   std::size_t deleted;
   if (conn.caps().columnar_batch) {
     dialect const& d = conn.sql_dialect();
-    deleted = columnar_batch_write(conn, m,
-      delete_statement(m, d, where_cols), where_cols, rows, row_stride,
-      row_count, chunk, row_tally::affected_rows);
+    deleted = columnar_batch_write(conn, m, delete_statement(m, d, where_cols),
+      where_cols, rows, row_stride, row_count, chunk, row_tally::affected_rows);
   } else {
     deleted =
       delete_rowwise(conn, m, where_cols, rows, row_stride, row_count, chunk);

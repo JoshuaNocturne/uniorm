@@ -98,47 +98,46 @@ struct result_set::impl {
       case slot_kind::boolean:
         s.bit_vals.resize(row_array_size_);
         s.indicators.resize(row_array_size_);
-        buffer = {backend::buffer_type::bit, s.bit_vals.data(),
-          sizeof(unsigned char), s.indicators.data()};
+        buffer = { backend::buffer_type::bit, s.bit_vals.data(),
+          sizeof(unsigned char), s.indicators.data() };
         break;
       case slot_kind::integer:
         s.int_vals.resize(row_array_size_);
         s.indicators.resize(row_array_size_);
-        buffer = {backend::buffer_type::int64, s.int_vals.data(),
-          sizeof(std::int64_t), s.indicators.data()};
+        buffer = { backend::buffer_type::int64, s.int_vals.data(),
+          sizeof(std::int64_t), s.indicators.data() };
         break;
       case slot_kind::floating:
         s.dbl_vals.resize(row_array_size_);
         s.indicators.resize(row_array_size_);
-        buffer = {backend::buffer_type::float64, s.dbl_vals.data(),
-          sizeof(double), s.indicators.data()};
+        buffer = { backend::buffer_type::float64, s.dbl_vals.data(),
+          sizeof(double), s.indicators.data() };
         break;
       case slot_kind::bytes: {
-        std::size_t capacity =
-          std::max<std::size_t>(meta[i].display_size, 32);
+        std::size_t capacity = std::max<std::size_t>(meta[i].display_size, 32);
         s.bin_buf.resize(row_array_size_ * capacity);
         s.indicators.resize(row_array_size_);
-        buffer = {backend::buffer_type::bytes, s.bin_buf.data(),
-          capacity, s.indicators.data()};
+        buffer = { backend::buffer_type::bytes, s.bin_buf.data(), capacity,
+          s.indicators.data() };
         break;
       }
       case slot_kind::ts:
         s.ts_vals.resize(row_array_size_);
         s.indicators.resize(row_array_size_);
-        buffer = {backend::buffer_type::timestamp_parts, s.ts_vals.data(),
-          sizeof(backend::timestamp_parts), s.indicators.data()};
+        buffer = { backend::buffer_type::timestamp_parts, s.ts_vals.data(),
+          sizeof(backend::timestamp_parts), s.indicators.data() };
         break;
       case slot_kind::dt:
         s.date_vals.resize(row_array_size_);
         s.indicators.resize(row_array_size_);
-        buffer = {backend::buffer_type::date_parts, s.date_vals.data(),
-          sizeof(backend::date_parts), s.indicators.data()};
+        buffer = { backend::buffer_type::date_parts, s.date_vals.data(),
+          sizeof(backend::date_parts), s.indicators.data() };
         break;
       case slot_kind::tm:
         s.time_vals.resize(row_array_size_);
         s.indicators.resize(row_array_size_);
-        buffer = {backend::buffer_type::time_parts, s.time_vals.data(),
-          sizeof(backend::time_parts), s.indicators.data()};
+        buffer = { backend::buffer_type::time_parts, s.time_vals.data(),
+          sizeof(backend::time_parts), s.indicators.data() };
         break;
       case slot_kind::text:
       default: {
@@ -150,8 +149,8 @@ struct result_set::impl {
         }
         s.text_buf.resize(row_array_size_ * capacity);
         s.indicators.resize(row_array_size_);
-        buffer = {backend::buffer_type::chars, s.text_buf.data(),
-          capacity, s.indicators.data()};
+        buffer = { backend::buffer_type::chars, s.text_buf.data(), capacity,
+          s.indicators.data() };
         break;
       }
       }
@@ -191,8 +190,7 @@ struct result_set::impl {
       std::size_t capacity = s.bin_buf.size() / row_array_size_;
       std::size_t offset = row_index * capacity;
       std::int64_t ind = s.indicators[row_index];
-      bool truncated =
-        ind < 0 || ind > static_cast<std::int64_t>(capacity);
+      bool truncated = ind < 0 || ind > static_cast<std::int64_t>(capacity);
       if (truncated) {
         return stmt->read_long_bytes(i + 1, row_index);
       }
@@ -227,8 +225,8 @@ result_set result_set::from_statement(
   std::unique_ptr<backend::statement_iface> stmt,
   std::function<void(std::unique_ptr<backend::statement_iface>)> release,
   std::size_t row_array_size) {
-  return result_set(
-    std::make_unique<impl>(std::move(stmt), std::move(release), row_array_size));
+  return result_set(std::make_unique<impl>(
+    std::move(stmt), std::move(release), row_array_size));
 }
 
 bool result_set::next() {

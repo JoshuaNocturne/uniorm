@@ -24,14 +24,16 @@ public:
   std::vector<table_def> defs;
   std::vector<table_ref> asked;
 
-  std::string database_name() override { return "fake"; }
+  std::string database_name() override {
+    return "fake";
+  }
 
   std::vector<table_row> tables(
     std::string_view catalog, std::string_view schema) override {
     std::vector<table_row> rows;
     for (table_def const& d : defs) {
-      rows.push_back(table_row{
-        std::string(catalog), std::string(schema), d.name });
+      rows.push_back(
+        table_row{ std::string(catalog), std::string(schema), d.name });
     }
     return rows;
   }
@@ -77,8 +79,8 @@ private:
   }
 };
 
-bool mentions(std::vector<std::string> const& warnings,
-  std::string const& needle) {
+bool mentions(
+  std::vector<std::string> const& warnings, std::string const& needle) {
   for (std::string const& w : warnings) {
     if (w.find(needle) != std::string::npos) {
       return true;

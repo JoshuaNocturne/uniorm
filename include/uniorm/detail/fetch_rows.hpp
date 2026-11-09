@@ -32,7 +32,8 @@ std::vector<T> fetch_rows(connection& conn, std::string_view sql,
   binding.set_row_array_size(row_array_size);
   binding.bind(*stmt);
   std::vector<T> out;
-  if (std::size_t est = stmt->result_row_estimate()) out.reserve(est);
+  if (std::size_t est = stmt->result_row_estimate())
+    out.reserve(est);
   while (stmt->fetch()) {
     std::size_t rows_fetched = stmt->rows_fetched();
     std::size_t old_size = out.size();
@@ -53,9 +54,8 @@ std::vector<T> fetch_rows(connection& conn, std::string_view sql,
 // The same read stopped at the first row: a one-row array, and the value moved
 // out of the binding instead of into vector storage.
 template <class T, class Binding>
-std::optional<T> fetch_one(
-  connection& conn, std::string_view sql, params const& bound,
-  Binding& binding) {
+std::optional<T> fetch_one(connection& conn, std::string_view sql,
+  params const& bound, Binding& binding) {
   std::string key(sql);
   auto stmt = conn.acquire_statement(key);
   stmt->bind_params(bound);

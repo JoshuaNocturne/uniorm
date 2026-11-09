@@ -34,11 +34,12 @@ std::size_t const k_batch = 1000;
   perf::fail("raw libpq " + context + ": " + detail);
 }
 
-void expect(PGresult* result, ExecStatusType wanted,
-  std::string const& what) {
+void expect(PGresult* result, ExecStatusType wanted, std::string const& what) {
   if (result == nullptr || PQresultStatus(result) != wanted) {
-    native_fail(what + " answered " + PQresStatus(result == nullptr
-      ? PGRES_FATAL_ERROR : PQresultStatus(result)), result);
+    native_fail(what + " answered " +
+                  PQresStatus(result == nullptr ? PGRES_FATAL_ERROR
+                                                : PQresultStatus(result)),
+      result);
   }
 }
 
@@ -85,16 +86,15 @@ struct native_statement {
   native_statement(native_session& owner, std::string const& label,
     std::string const& sql, int params)
     : session(owner), name("uniorm_perf_raw_" + label) {
-    PGresult* made = PQprepare(session.made, name.c_str(), sql.c_str(),
-      params, nullptr);
+    PGresult* made =
+      PQprepare(session.made, name.c_str(), sql.c_str(), params, nullptr);
     expect(made, PGRES_COMMAND_OK, "prepare " + label);
     PQclear(made);
   }
 
   ~native_statement() {
     if (PQstatus(session.made) == CONNECTION_OK) {
-      PGresult* dropped =
-        PQexec(session.made, ("DEALLOCATE " + name).c_str());
+      PGresult* dropped = PQexec(session.made, ("DEALLOCATE " + name).c_str());
       PQclear(dropped);
     }
   }
@@ -102,8 +102,8 @@ struct native_statement {
   // Text parameters in the order the statement numbers them; a null pointer
   // in the list is the null the server is asked to store.
   PGresult* run(char const* const* values, int count) {
-    PGresult* answer = PQexecPrepared(session.made, name.c_str(), count,
-      values, nullptr, nullptr, 0);
+    PGresult* answer = PQexecPrepared(
+      session.made, name.c_str(), count, values, nullptr, nullptr, 0);
     if (PQresultStatus(answer) != PGRES_COMMAND_OK &&
         PQresultStatus(answer) != PGRES_TUPLES_OK) {
       native_fail("execute " + name, answer);
@@ -150,9 +150,9 @@ std::string quoted(std::string const& text) {
 }
 
 std::string row_literal(Bench const& source) {
-  return "(" + std::to_string(source.id) + ", " + quoted(source.name) +
-    ", " + std::to_string(source.score) + ", " +
-    (source.note ? quoted(*source.note) : std::string("NULL")) + ")";
+  return "(" + std::to_string(source.id) + ", " + quoted(source.name) + ", " +
+         std::to_string(source.score) + ", " +
+         (source.note ? quoted(*source.note) : std::string("NULL")) + ")";
 }
 
 }  // namespace
@@ -176,8 +176,10 @@ std::vector<perf::bench_result> run_raw_benchmarks(
   std::size_t inserted = 0;
   {
     native_statement ins(session, "insert",
-      "INSERT INTO " + table + " (id, name, score, note) VALUES "
-      "($1, $2, $3, $4)", 4);
+      "INSERT INTO " + table +
+        " (id, name, score, note) VALUES "
+        "($1, $2, $3, $4)",
+      4);
     perf::report("insert (batch)", rows,
       perf::best_of(
         [&] {
@@ -193,14 +195,15 @@ std::vector<perf::bench_result> run_raw_benchmarks(
           }
           session.run("COMMIT", "commit the raw insert transaction");
         },
-        k_runs), &results);
+        k_runs),
+      &results);
   }
   if (inserted != rows) {
     perf::fail("raw insert wrote " + std::to_string(inserted) + " of " +
-      std::to_string(rows) + " rows");
+               std::to_string(rows) + " rows");
   }
   if (session.scalar("SELECT count(*) FROM " + table,
-      "count after the raw insert") != static_cast<std::int64_t>(rows)) {
+        "count after the raw insert") != static_cast<std::int64_t>(rows)) {
     perf::fail("the table does not hold the rows the raw insert wrote");
   }
 
@@ -230,10 +233,11 @@ std::vector<perf::bench_result> run_raw_benchmarks(
           }
           session.run("COMMIT", "commit the list insert");
         },
-        1), &results);
+        1),
+      &results);
     if (listed != rows) {
       perf::fail("the list insert wrote " + std::to_string(listed) + " of " +
-        std::to_string(rows) + " rows");
+                 std::to_string(rows) + " rows");
     }
   }
 
@@ -255,21 +259,24 @@ std::vector<perf::bench_result> run_raw_benchmarks(
           }
           session.run("COMMIT", "commit the raw update transaction");
         },
-        k_runs), &results);
+        k_runs),
+      &results);
   }
   if (updated != rows) {
     perf::fail("raw update reached " + std::to_string(updated) + " of " +
-      std::to_string(rows) + " rows");
+               std::to_string(rows) + " rows");
   }
 
   std::size_t const delete_count = even.size();
   std::size_t deleted = 0;
   {
-    native_statement del(session, "delete",
-      "DELETE FROM " + table + " WHERE id = $1", 1);
+    native_statement del(
+      session, "delete", "DELETE FROM " + table + " WHERE id = $1", 1);
     native_statement restore(session, "restore",
-      "INSERT INTO " + table + " (id, name, score, note) VALUES "
-      "($1, $2, $3, $4)", 4);
+      "INSERT INTO " + table +
+        " (id, name, score, note) VALUES "
+        "($1, $2, $3, $4)",
+      4);
     // The rows a pass removes go back between passes, untimed, so each pass is
     // asked to delete the same number of them rather than nothing at all.
     auto put_back = [&] {
@@ -303,11 +310,10 @@ std::vector<perf::bench_result> run_raw_benchmarks(
   }
   if (deleted != delete_count) {
     perf::fail("raw delete removed " + std::to_string(deleted) + " of " +
-      std::to_string(delete_count) + " rows");
+               std::to_string(delete_count) + " rows");
   }
 
-  std::string const select_all =
-    "SELECT id, name, score, note FROM " + table;
+  std::string const select_all = "SELECT id, name, score, note FROM " + table;
 
   // The whole answer arrives at once, so the two read cases differ only in
   // what this side does with it: touch every field, or build a row out of one.
@@ -323,8 +329,7 @@ std::vector<perf::bench_result> run_raw_benchmarks(
           for (int position = 0; position < PQntuples(answer); ++position) {
             for (int column = 0; column < PQnfields(answer); ++column) {
               if (!PQgetisnull(answer, position, column)) {
-                touched +=
-                  std::strlen(PQgetvalue(answer, position, column));
+                touched += std::strlen(PQgetvalue(answer, position, column));
               }
             }
           }
@@ -333,7 +338,8 @@ std::vector<perf::bench_result> run_raw_benchmarks(
           }
           PQclear(answer);
         },
-        k_runs), &results);
+        k_runs),
+      &results);
   }
   if (fetched_rows != rows) {
     perf::fail("raw fetch returned " + std::to_string(fetched_rows) + " rows");
@@ -364,7 +370,8 @@ std::vector<perf::bench_result> run_raw_benchmarks(
           PQclear(answer);
           assembled = entities.size();
         },
-        k_runs), &results);
+        k_runs),
+      &results);
   }
   if (assembled != rows) {
     perf::fail("raw assemble returned " + std::to_string(assembled) + " rows");
@@ -382,12 +389,13 @@ std::vector<perf::bench_result> run_raw_benchmarks(
           }
           PQclear(answer);
         },
-        k_runs), &results);
+        k_runs),
+      &results);
   }
 
   {
-    native_statement total(session, "count", "SELECT count(*) FROM " + table,
-      0);
+    native_statement total(
+      session, "count", "SELECT count(*) FROM " + table, 0);
     perf::report("query count()", 1,
       perf::best_of(
         [&] {
@@ -398,7 +406,8 @@ std::vector<perf::bench_result> run_raw_benchmarks(
           }
           PQclear(answer);
         },
-        k_runs), &results);
+        k_runs),
+      &results);
   }
   return results;
 }

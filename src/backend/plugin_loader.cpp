@@ -34,19 +34,19 @@ std::string last_error_message() {
     return "(no error)";
   }
   char* buffer = nullptr;
-  DWORD length = FormatMessageA(
-    FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
-      FORMAT_MESSAGE_IGNORE_INSERTS,
-    nullptr, error, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-    reinterpret_cast<LPSTR>(&buffer), 0, nullptr);
+  DWORD length =
+    FormatMessageA(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
+                     FORMAT_MESSAGE_IGNORE_INSERTS,
+      nullptr, error, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+      reinterpret_cast<LPSTR>(&buffer), 0, nullptr);
   if (length == 0 || buffer == nullptr) {
     return "(no message)";
   }
   std::string message(buffer, length);
   LocalFree(buffer);
-  while (!message.empty() &&
-         (message.back() == '\r' || message.back() == '\n' ||
-          message.back() == ' ')) {
+  while (
+    !message.empty() && (message.back() == '\r' || message.back() == '\n' ||
+                          message.back() == ' ')) {
     message.pop_back();
   }
   return message;
@@ -140,8 +140,7 @@ bool try_load_plugin(std::string_view scheme, std::string& error_note) {
   void* reg_raw = dlsym(handle, plugin_register_symbol);
   if (reg_raw == nullptr) {
     const char* err = dlerror();
-    error_note = "dlsym(" + path + ", " + plugin_register_symbol +
-                 ") failed: ";
+    error_note = "dlsym(" + path + ", " + plugin_register_symbol + ") failed: ";
     error_note += err ? err : "(no message)";
     dlclose(handle);
     return false;

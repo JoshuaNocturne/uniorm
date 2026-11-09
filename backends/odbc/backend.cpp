@@ -17,18 +17,17 @@
 #include <uniorm/backend/plugin.hpp>
 #include <uniorm/backend/registry.hpp>
 
-#include "uniorm/detail/time.hpp"
 #include "environment.hpp"
 #include "error.hpp"
 #include "native_types.hpp"
+#include "uniorm/detail/time.hpp"
 
 namespace uniorm::odbc {
 
 namespace {
 
 static_assert(sizeof(std::int64_t) == sizeof(SQLLEN));
-static_assert(
-  sizeof(backend::timestamp_parts) == sizeof(SQL_TIMESTAMP_STRUCT));
+static_assert(sizeof(backend::timestamp_parts) == sizeof(SQL_TIMESTAMP_STRUCT));
 static_assert(sizeof(backend::date_parts) == sizeof(SQL_DATE_STRUCT));
 static_assert(sizeof(backend::time_parts) == sizeof(SQL_TIME_STRUCT));
 
@@ -221,8 +220,8 @@ void backend_statement::bind_parameter(
     slot.ts.second = static_cast<SQLUSMALLINT>(parts.second);
     slot.ts.fraction = static_cast<SQLUINTEGER>(parts.fraction_ns);
     slot.indicator = sizeof(slot.ts);
-    stmt_.bind_parameter(odbc_index, SQL_C_TYPE_TIMESTAMP,
-      SQL_TYPE_TIMESTAMP, &slot.ts, sizeof(slot.ts), &slot.indicator, 19, 0);
+    stmt_.bind_parameter(odbc_index, SQL_C_TYPE_TIMESTAMP, SQL_TYPE_TIMESTAMP,
+      &slot.ts, sizeof(slot.ts), &slot.indicator, 19, 0);
   }
 }
 
@@ -572,10 +571,10 @@ std::vector<column_info> backend_statement::column_meta() const {
     SQLULEN display_size = 0;
     SQLSMALLINT decimals = 0;
     SQLSMALLINT nullable = 0;
-    SQLRETURN rc = SQLDescribeCol(stmt_.native(),
-      static_cast<SQLUSMALLINT>(i + 1), name_buf,
-      static_cast<SQLSMALLINT>(sizeof(name_buf)), &name_len, &odbc_type,
-      &display_size, &decimals, &nullable);
+    SQLRETURN rc =
+      SQLDescribeCol(stmt_.native(), static_cast<SQLUSMALLINT>(i + 1), name_buf,
+        static_cast<SQLSMALLINT>(sizeof(name_buf)), &name_len, &odbc_type,
+        &display_size, &decimals, &nullable);
     odbc::throw_if_error(
       rc, SQL_HANDLE_STMT, stmt_.native(), "describe result column");
 
@@ -664,10 +663,10 @@ void backend_connection::open(std::string_view connection_string) {
   // of one of them; both MySQL-wire connectors report the array's total.
   char name[64] = {};
   SQLSMALLINT length = 0;
-  if (SQL_SUCCEEDED(SQLGetInfo(conn_.native(), SQL_DRIVER_NAME, name,
-        sizeof(name), &length)) &&
-    std::string_view(name, static_cast<std::size_t>(length)).find("psqlodbc") !=
-      std::string_view::npos) {
+  if (SQL_SUCCEEDED(SQLGetInfo(
+        conn_.native(), SQL_DRIVER_NAME, name, sizeof(name), &length)) &&
+      std::string_view(name, static_cast<std::size_t>(length))
+          .find("psqlodbc") != std::string_view::npos) {
     array_rowcount_totals_ = false;
   }
 }
@@ -699,16 +698,15 @@ void backend_connection::rollback() {
 }
 
 backend::capabilities backend_connection::caps() const noexcept {
-  return {/*columnar_batch=*/true,
-    /*array_rowcount_totals=*/array_rowcount_totals_};
+  return { /*columnar_batch=*/true,
+    /*array_rowcount_totals=*/array_rowcount_totals_ };
 }
 
 std::string backend_connection::dbms_name() const {
   char buffer[128] = {};
   SQLSMALLINT length = 0;
   SQLRETURN rc =
-    SQLGetInfo(conn_.native(), SQL_DBMS_NAME, buffer, sizeof(buffer),
-      &length);
+    SQLGetInfo(conn_.native(), SQL_DBMS_NAME, buffer, sizeof(buffer), &length);
   odbc::throw_if_error(
     rc, SQL_HANDLE_DBC, conn_.native(), "SQLGetInfo(SQL_DBMS_NAME)");
   return std::string(buffer, static_cast<std::size_t>(length));
@@ -737,7 +735,6 @@ extern "C" UNIORM_ODBC_API uint32_t uniorm_plugin_abi_version() {
 
 extern "C" UNIORM_ODBC_API void uniorm_plugin_register(
   uniorm::backend::registry& reg) {
-  reg.register_backend("odbc", [] {
-    return std::make_unique<uniorm::odbc::backend_connection>();
-  });
+  reg.register_backend("odbc",
+    [] { return std::make_unique<uniorm::odbc::backend_connection>(); });
 }

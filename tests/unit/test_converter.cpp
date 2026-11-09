@@ -94,11 +94,11 @@ public:
   using buffer = backend::column_buffer;
 
   explicit fake_statement(std::vector<column_info> meta)
-    : meta_(std::move(meta)),
-      long_text_(meta_.size()) {}
+    : meta_(std::move(meta)), long_text_(meta_.size()) {}
 
   void bind_column(std::size_t column, buffer const& bound) override {
-    if (column == 0 || bound_.size() < column) bound_.resize(column);
+    if (column == 0 || bound_.size() < column)
+      bound_.resize(column);
     bound_[column - 1] = bound;
   }
 
@@ -285,9 +285,9 @@ void test_converter() {
 
   // Query predicates share the same encoding.
   std::vector<sql_value> bound;
-  auto sql = eq(&record::state, status::shipped)
-               .to_sql([](member_key const&) { return std::string("state"); },
-                 bound);
+  auto sql =
+    eq(&record::state, status::shipped)
+      .to_sql([](member_key const&) { return std::string("state"); }, bound);
   CHECK(sql == "state = ?");
   CHECK(bound.size() == 1);
   CHECK(std::get<std::string>(bound[0]) == "shipped");
@@ -436,9 +436,9 @@ void test_converter_column() {
   CHECK(std::get<std::string>(m.columns[1].read(&paid)) == "paid");
   CHECK(std::holds_alternative<std::monostate>(m.columns[2].read(&paid)));
 
-  row source({"id", "state", "note"},
+  row source({ "id", "state", "note" },
     { sql_value(std::int64_t{ 5 }), sql_value(std::string("shipped")),
-        sql_value(std::monostate{}) });
+      sql_value(std::monostate{}) });
   order decoded{};
   m.populate(&decoded, source);
   CHECK(decoded.id == 5);
@@ -460,8 +460,7 @@ void test_converter_column() {
   CHECK(std::string(buffer.begin() + 16, buffer.begin() + 23) == "shipped");
   CHECK(indicators[0] == -7);  // the other row was not written
 
-  CHECK(m.columns[2].write_to_param_buffer(
-          &paid, 0, buffer.data(), 16, indicators.data()) ==
-    backend::buffer_type::chars);
+  CHECK(m.columns[2].write_to_param_buffer(&paid, 0, buffer.data(), 16,
+          indicators.data()) == backend::buffer_type::chars);
   CHECK(indicators[0] == backend::null_indicator);
 }

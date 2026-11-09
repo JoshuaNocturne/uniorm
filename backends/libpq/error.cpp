@@ -14,8 +14,8 @@ char const* field_of(PGresult const* result, char field) {
 
 void add_message(std::vector<pq_error::diagnostic>& out, std::string state,
   std::string_view message) {
-  while (!message.empty() &&
-         (message.back() == '\n' || message.back() == '\r')) {
+  while (
+    !message.empty() && (message.back() == '\n' || message.back() == '\r')) {
     message.remove_suffix(1);
   }
   if (message.empty()) {
@@ -58,8 +58,7 @@ char const* status_name(ExecStatusType status) {
 pq_error::pq_error(std::string const& context, std::vector<diagnostic> diags)
   : backend_error("postgresql", context, std::move(diags)) {}
 
-std::vector<pq_error::diagnostic> collect_diagnostics(
-  PGresult const* result) {
+std::vector<pq_error::diagnostic> collect_diagnostics(PGresult const* result) {
   std::vector<pq_error::diagnostic> out;
   if (result == nullptr) {
     return out;

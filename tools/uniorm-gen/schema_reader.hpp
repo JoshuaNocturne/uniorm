@@ -3,8 +3,8 @@
 #include <string>
 #include <vector>
 
-#include <uniorm/schema.hpp>
 #include "schema_model.hpp"
+#include <uniorm/schema.hpp>
 
 namespace uniorm::gen {
 
@@ -20,7 +20,7 @@ struct read_options {
 // them is decided here. Catalog oddities (a table that came back without
 // columns, a primary key naming no column) are appended to *warnings when it is
 // non-null. Throws uniorm_error when a named table is missing.
-schema_model read_schema(schema_meta& md,
-  read_options const& opts, std::vector<std::string>* warnings = nullptr);
+schema_model read_schema(schema_meta& md, read_options const& opts,
+  std::vector<std::string>* warnings = nullptr);
 
 }  // namespace uniorm::gen

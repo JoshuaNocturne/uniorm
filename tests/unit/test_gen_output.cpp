@@ -31,9 +31,8 @@ void test_naming() {
   CHECK(fold_upper("numeric") == "NUMERIC");
 }
 
-column_model make_column(std::string name, sql_type type,
-  std::string type_name, bool nullable, bool pk, std::int32_t size = 0,
-  std::int16_t decimals = 0) {
+column_model make_column(std::string name, sql_type type, std::string type_name,
+  bool nullable, bool pk, std::int32_t size = 0, std::int16_t decimals = 0) {
   column_model c;
   c.shape.name = std::move(name);
   c.shape.type = type;
@@ -59,8 +58,8 @@ schema_model make_fixture() {
     make_column("status", sql_type::varchar, "VARCHAR", true, false, 32));
   order.columns.push_back(
     make_column("created", sql_type::timestamp, "TIMESTAMP", false, false));
-  order.columns.push_back(make_column(
-    "payload", sql_type::varbinary, "VARBINARY", true, false, 256));
+  order.columns.push_back(
+    make_column("payload", sql_type::varbinary, "VARBINARY", true, false, 256));
   fk_model fk;
   fk.pk_table = "t_user";
   fk.columns.emplace_back("user_id", "id");
@@ -135,8 +134,7 @@ void test_generate_converter() {
   // header insists on the specialization that makes the mapping compile.
   CHECK(contains(text, "std::optional<order_status> status;"));
   CHECK(contains(text, ".column(\"status\", &TOrder::status)"));
-  CHECK(contains(
-    text, "static_assert(uniorm::has_converter<order_status>,"));
+  CHECK(contains(text, "static_assert(uniorm::has_converter<order_status>,"));
   CHECK(out.warnings.empty());
 }
 
@@ -165,8 +163,7 @@ void test_generate_errors() {
     generate_header(make_fixture(), narrow);
     CHECK(false);
   } catch (config_error const& e) {
-    CHECK(std::string(e.what()).find("cannot be bound") !=
-      std::string::npos);
+    CHECK(std::string(e.what()).find("cannot be bound") != std::string::npos);
   }
 }
 
@@ -218,13 +215,13 @@ void test_generate_class_name_collision() {
   try {
     generate_header(model, gen_config{});
   } catch (config_error const& e) {
-    CHECK(std::string(e.what()) ==
+    CHECK(
+      std::string(e.what()) ==
       "tables collide on one class name: 'UserAccounts' names user_accounts, "
       "user_accounts_. Set class in one of their [tables.*] sections.");
   }
 
-  gen_config cfg =
-    parse_config("[tables.user_accounts]\nclass = \"Legacy\"\n");
+  gen_config cfg = parse_config("[tables.user_accounts]\nclass = \"Legacy\"\n");
   generated_output out = generate_header(model, cfg);
   CHECK(contains(out.text, "struct Legacy {"));
   CHECK(contains(out.text, "struct UserAccounts {"));
@@ -247,7 +244,8 @@ void test_generate_case_only_collision() {
   try {
     generate_header(model, gen_config{});
   } catch (config_error const& e) {
-    CHECK(std::string(e.what()) ==
+    CHECK(
+      std::string(e.what()) ==
       "tables collide on one class name: 'Users' names users, USERS. users, "
       "USERS differ by case alone, which no [tables.*] section can split: ask "
       "for one of them with --tables.");
@@ -276,14 +274,12 @@ void test_check_config() {
     parse_config("[tables.t_report.columns.anything]\ncpp_type = \"double\"\n"),
     model, catalog);
 
-  CHECK_THROWS(
-    check_config(parse_config("[tables.t_orders]\nskip = true\n"), model,
-      catalog),
+  CHECK_THROWS(check_config(parse_config("[tables.t_orders]\nskip = true\n"),
+                 model, catalog),
     config_error);
-  CHECK_THROWS(
-    check_config(parse_config("[tables.t_order.columns.status2]\n"
-                              "cpp_type = \"double\"\n"),
-      model, catalog),
+  CHECK_THROWS(check_config(parse_config("[tables.t_order.columns.status2]\n"
+                                         "cpp_type = \"double\"\n"),
+                 model, catalog),
     config_error);
 
   try {

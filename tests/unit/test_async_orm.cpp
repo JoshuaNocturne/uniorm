@@ -56,8 +56,7 @@ struct async_state {
 class async_statement : public backend::statement_iface {
 public:
   explicit async_statement(std::shared_ptr<async_state> state)
-    : state_(std::move(state))
-  {}
+    : state_(std::move(state)) {}
 
   void prepare(std::string_view sql) override {
     sql_ = std::string(sql);
@@ -151,8 +150,7 @@ private:
 class async_connection : public backend::connection_iface {
 public:
   explicit async_connection(std::shared_ptr<async_state> state)
-    : state_(std::move(state))
-  {}
+    : state_(std::move(state)) {}
 
   void open(std::string_view) override {
     open_ = true;
@@ -195,13 +193,11 @@ private:
   bool open_ = false;
 };
 
-pool_options register_async_backend(
-  std::shared_ptr<async_state> const& state) {
+pool_options register_async_backend(std::shared_ptr<async_state> const& state) {
   static std::size_t next_backend = 0;
   std::string const scheme = "asyncfake" + std::to_string(next_backend++);
-  backend::registry::instance().register_backend(scheme, [state] {
-    return std::make_unique<async_connection>(state);
-  });
+  backend::registry::instance().register_backend(
+    scheme, [state] { return std::make_unique<async_connection>(state); });
   pool_options options;
   options.target = scheme + "://test;DSN=" + scheme;
   options.size = 1;
@@ -462,12 +458,13 @@ void test_a_builder_terminal_reads_through_the_session() {
 
   // A hand-written statement reads through the same mapping.
   fixture.state->executed.clear();
-  auto const written = session
-    .query<contact>("SELECT id, name FROM contacts", params("x")).block();
+  auto const written =
+    session.query<contact>("SELECT id, name FROM contacts", params("x"))
+      .block();
   CHECK(written.size() == 1);
   CHECK(written.at(0).id == "8");
   CHECK(fixture.state->executed ==
-    std::vector<std::string>{ "SELECT id, name FROM contacts" });
+        std::vector<std::string>{ "SELECT id, name FROM contacts" });
 }
 
 // The catalog side keeps no asynchronous door on purpose: a coroutine that
@@ -656,7 +653,7 @@ void test_connect_and_the_transaction_knob_run_as_operations() {
   session.connect(recipe(fixture.options)).block();
   CHECK(session.execute_update("UPDATE after connect").block() == 1);
   CHECK(fixture.state->executed ==
-    std::vector<std::string>{ "UPDATE after connect" });
+        std::vector<std::string>{ "UPDATE after connect" });
   fixture.state->log.clear();
   session.auto_commit(false).block();
   session.commit().block();
@@ -742,8 +739,8 @@ void test_the_fallback_rollback_waits_for_the_session_to_go_quiet() {
     auto tx = session.begin().block();
     session.execute_update("UPDATE in flight").start(quiet);
   }
-  std::vector<std::string> const expected{ "autocommit off",
-    "UPDATE in flight", "rollback", "autocommit on" };
+  std::vector<std::string> const expected{ "autocommit off", "UPDATE in flight",
+    "rollback", "autocommit on" };
   CHECK(fixture.state->log == expected);
 }
 
@@ -842,8 +839,8 @@ void test_a_throwing_handler_leaves_the_session_usable() {
   // Both turns came back, so the session still takes the next request.
   session.run_on(run);
   CHECK(session.execute_update("UPDATE after both").block() == 1);
-  CHECK(fixture.state->executed ==
-    std::vector<std::string>{ "UPDATE after both" });
+  CHECK(
+    fixture.state->executed == std::vector<std::string>{ "UPDATE after both" });
 }
 
 // The callback face answers with the rows the task face would have returned,
@@ -861,8 +858,8 @@ void test_a_callback_answers_with_the_rows_it_read() {
   // Poisoned first, so a callback that never ran cannot look like a failure-
   // free answer.
   std::exception_ptr bad = std::make_exception_ptr(std::logic_error("unset"));
-  session.query<contact>(select,
-    [&](std::vector<contact> rows, std::exception_ptr failure) {
+  session.query<contact>(
+    select, [&](std::vector<contact> rows, std::exception_ptr failure) {
       found = std::move(rows);
       bad = failure;
     });
@@ -955,17 +952,16 @@ void test_a_full_queue_refuses_a_callback_request_too() {
   session.query<contact>("SELECT id, name FROM contacts",
     [&](std::vector<contact>, std::exception_ptr) { answered = true; });
   CHECK(session.pending() == 1);
-  CHECK_THROWS(session.query<contact>("SELECT id, name FROM contacts",
-                [&](std::vector<contact>, std::exception_ptr) {
-                  answered = true;
-                }),
+  CHECK_THROWS(
+    session.query<contact>("SELECT id, name FROM contacts",
+      [&](std::vector<contact>, std::exception_ptr) { answered = true; }),
     uniorm::submit_overflow);
   CHECK(session.pending() == 1);
 
   pump.run_all();
   CHECK(answered);
   CHECK(fixture.state->executed ==
-    std::vector<std::string>{ "SELECT id, name FROM contacts" });
+        std::vector<std::string>{ "SELECT id, name FROM contacts" });
 }
 
 // Nobody catches what the caller's own callback throws: the turn is freed all
@@ -983,8 +979,7 @@ void test_a_callback_that_throws_leaves_the_session_usable() {
       throw std::runtime_error("the callback threw");
     });
   CHECK(session.pending() == 0);
-  auto following =
-    session.execute_update("UPDATE after a throwing callback");
+  auto following = session.execute_update("UPDATE after a throwing callback");
   CHECK(following.block() == 1);
 }
 
@@ -999,8 +994,7 @@ void test_an_empty_callback_is_refused_at_the_call() {
   map_contacts(session);
 
   std::function<void(std::vector<contact>, std::exception_ptr)> absent;
-  CHECK_THROWS(session.query<contact>(
-                 "SELECT id, name FROM contacts", absent),
+  CHECK_THROWS(session.query<contact>("SELECT id, name FROM contacts", absent),
     uniorm::uniorm_error);
   CHECK(session.pending() == 0);
   CHECK(fixture.state->executed.empty());
@@ -1047,8 +1041,8 @@ void test_a_chain_takes_a_refused_turn_at_its_await() {
   pump.run_all();
   session.wait_all_operations();
   CHECK(session.pending() == 0);
-  CHECK(fixture.state->executed ==
-    std::vector<std::string>{ "UPDATE in flight" });
+  CHECK(
+    fixture.state->executed == std::vector<std::string>{ "UPDATE in flight" });
 }
 
 // The answer is inside the body, so with no run_on the destructor waits on a
@@ -1075,9 +1069,7 @@ void test_the_destructor_waits_for_a_callback_to_be_answered() {
   // finish until the test says so, which is the state ~orm has to wait out.
   parked.acquire();
   CHECK(!answered.load());
-  std::thread closer([raw = session.release()] {
-    delete raw;
-  });
+  std::thread closer([raw = session.release()] { delete raw; });
   go.release();
   closer.join();
   CHECK(answered.load());
@@ -1110,9 +1102,7 @@ void test_the_barrier_covers_every_accepted_request() {
 
   // Released from another thread: the barrier may well start while the
   // callback is still in there, and it cannot come back before the answer.
-  std::thread opener([&go] {
-    go.release();
-  });
+  std::thread opener([&go] { go.release(); });
   session.wait_all_operations();
   opener.join();
   CHECK(answered.load());
@@ -1140,13 +1130,12 @@ void test_the_barrier_does_not_wait_on_a_refused_request() {
   bool accepted_answered = false;
   bool refused_answered = false;
   session.query<contact>("SELECT id, name FROM contacts",
-    [&](std::vector<contact>, std::exception_ptr) {
-      accepted_answered = true;
-    });
+    [&](
+      std::vector<contact>, std::exception_ptr) { accepted_answered = true; });
   CHECK_THROWS(session.query<contact>("SELECT id, name FROM contacts",
-                [&](std::vector<contact>, std::exception_ptr) {
-                  refused_answered = true;
-                }),
+                 [&](std::vector<contact>, std::exception_ptr) {
+                   refused_answered = true;
+                 }),
     uniorm::submit_overflow);
 
   pump.run_all();

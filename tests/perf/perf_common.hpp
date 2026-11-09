@@ -123,14 +123,14 @@ std::vector<BenchConv> make_conv_rows(std::size_t count);
 
 // What this run's server and plugin spell differently.
 struct leg_face {
-  std::string scheme;          // the plugin this leg loads
+  std::string scheme;  // the plugin this leg loads
   std::string connect_string;  // what a connection is handed
-  std::string target;          // the target alone, in this scheme's grammar
+  std::string target;  // the target alone, in this scheme's grammar
   std::string user;
   std::string password;
-  std::string id_type;         // this server's 64-bit integral column
-  std::string score_type;      // and its 32-bit one
-  dialect server_dialect;      // detected from the banner this run read
+  std::string id_type;  // this server's 64-bit integral column
+  std::string score_type;  // and its 32-bit one
+  dialect server_dialect;  // detected from the banner this run read
 };
 
 // The label a dynamic read asks for: this server's own spelling of a name

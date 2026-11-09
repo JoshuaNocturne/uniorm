@@ -108,8 +108,7 @@ public:
   // catalog at (catalog, schema). `validate()` reads the catalog but never
   // resolves; a mapping without a preceding call keeps the connection's
   // spelling policy. Re-running overwrites, and clear restores the policy.
-  void resolve_identifiers(
-    std::string_view catalog, std::string_view schema);
+  void resolve_identifiers(std::string_view catalog, std::string_view schema);
   void clear_identifier_resolution() noexcept;
 
   // Resolved names take precedence over the connection's spelling policy.
@@ -154,7 +153,7 @@ public:
         native_connection(), sql, bound, row_array_size_, reading);
     } else {
       throw mapping_error("query needs a registered entity or an aggregate: " +
-        std::string(typeid(T).name()));
+                          std::string(typeid(T).name()));
     }
   }
 
@@ -230,8 +229,8 @@ public:
   // Single entity remove with explicit where fields
   template <class Entity>
     requires(!std::is_convertible_v<Entity const&, std::string_view>)
-  std::size_t remove(Entity const& entity,
-    std::vector<std::string> const& where_fields) {
+  std::size_t remove(
+    Entity const& entity, std::vector<std::string> const& where_fields) {
     ensure_connected();
     return delete_single_impl(
       native_connection(), meta<Entity>(), &entity, where_fields);

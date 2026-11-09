@@ -17,8 +17,7 @@ namespace detail {
 // answer is a status word.
 class UNIORM_LIBPQ_API result_holder {
 public:
-  explicit result_holder(PGresult* owned = nullptr) noexcept
-    : owned_(owned) {}
+  explicit result_holder(PGresult* owned = nullptr) noexcept : owned_(owned) {}
   ~result_holder() {
     clear();
   }

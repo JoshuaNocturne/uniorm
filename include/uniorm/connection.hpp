@@ -49,8 +49,8 @@ public:
   bool is_open() const noexcept;
 
   // --- Simple execution ---
-  result_set execute(std::string_view sql, params const& p = {},
-    std::size_t row_array_size = 1);
+  result_set execute(
+    std::string_view sql, params const& p = {}, std::size_t row_array_size = 1);
   std::size_t execute_update(std::string_view sql, params const& p = {});
 
   // --- Transaction control ---
@@ -70,8 +70,8 @@ public:
     std::string const& sql);
 
   // Return a statement to the cache under the given key.
-  void release_statement(std::string const& key,
-    std::unique_ptr<backend::statement_iface> stmt);
+  void release_statement(
+    std::string const& key, std::unique_ptr<backend::statement_iface> stmt);
 
   // --- Metadata ---
   std::string dbms_name() const;

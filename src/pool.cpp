@@ -220,9 +220,9 @@ pooled_connection connection_pool::acquire() {
       ++impl_->created;
       lock.unlock();
       try {
-        connection conn = std::visit(
-          [](auto const& what) { return connection(what); },
-          impl_->options.target);
+        connection conn =
+          std::visit([](auto const& what) { return connection(what); },
+            impl_->options.target);
         return pooled_connection(this, std::move(conn));
       } catch (...) {
         {
@@ -325,7 +325,8 @@ std::string to_lower(std::string_view s) {
 
 std::string trim(std::string_view s) {
   auto start = s.find_first_not_of(" \t\r\n");
-  if (start == std::string_view::npos) return "";
+  if (start == std::string_view::npos)
+    return "";
   auto end = s.find_last_not_of(" \t\r\n");
   return std::string(s.substr(start, end - start + 1));
 }
@@ -341,12 +342,13 @@ std::string connection_pool_registry::make_key(
   while (pos < sv.size()) {
     auto semi = sv.find(';', pos);
     auto token = (semi == std::string_view::npos) ? sv.substr(pos)
-                                                   : sv.substr(pos, semi - pos);
+                                                  : sv.substr(pos, semi - pos);
     auto eq = token.find('=');
     if (eq != std::string_view::npos) {
       auto key = to_lower(trim(token.substr(0, eq)));
       auto value = trim(token.substr(eq + 1));
-      if (key == "dsn") dsn = value;
+      if (key == "dsn")
+        dsn = value;
       else if (key == "uid" || key == "user" || key == "username")
         uid = value;
     }
@@ -361,8 +363,8 @@ std::string connection_pool_registry::make_key(connection_spec const& spec) {
   // shared by everyone who reaches the same place as the same user. A spec's
   // key matches no string's, because settling whether they name one database
   // would take a dialect's vocabulary.
-  return "spec=" + spec.scheme + "|target=" + spec.target + "|user=" +
-    spec.user;
+  return "spec=" + spec.scheme + "|target=" + spec.target +
+         "|user=" + spec.user;
 }
 
 connection_pool_registry& connection_pool_registry::instance() {

@@ -19,6 +19,20 @@ std::pair<std::string, std::size_t> rewrite(std::string_view sql) {
   return {std::move(out), count};
 }
 
+// What a batch of `rows` would be sent as: the rewrite, its fold, and the fold
+// written out. An empty text comes back where the statement has no row group
+// to repeat.
+std::string folded(std::string_view sql, std::size_t rows) {
+  auto const [rewritten, count] = rewrite(sql);
+  return libpq::expand_values_fold(
+    libpq::find_values_fold(rewritten, count), rows);
+}
+
+std::size_t fold_columns(std::string_view sql) {
+  auto const [rewritten, count] = rewrite(sql);
+  return libpq::find_values_fold(rewritten, count).columns;
+}
+
 }  // namespace
 
 void test_libpq_placeholder_rewrite() {
@@ -154,4 +168,78 @@ void test_libpq_placeholder_rejects_unterminated() {
     backend::backend_error);
   CHECK_THROWS(libpq::rewrite_placeholders("select E'abc\\", count),
     backend::backend_error);
+}
+
+void test_libpq_fold_repeats_a_row_group() {
+  // One row's group, written as many times as the batch has rows, with the
+  // parameters numbered on from the last group's.
+  CHECK(folded("insert into t (a, b) values (?, ?)", 3) ==
+    "insert into t (a, b) values ($1, $2), ($3, $4), ($5, $6)");
+
+  // The column list is not needed, and neither is the space before the group.
+  CHECK(folded("insert into t values (?, ?)", 2) ==
+    "insert into t values ($1, $2), ($3, $4)");
+  CHECK(folded("INSERT INTO t VALUES(?,?)", 2) ==
+    "INSERT INTO t VALUES($1, $2), ($3, $4)");
+
+  // Whatever the statement carries after its group belongs to the statement,
+  // not to a row, so it stays where it was written.
+  CHECK(folded("INSERT INTO t (a) VALUES (?) ON CONFLICT (a) DO NOTHING", 2) ==
+    "INSERT INTO t (a) VALUES ($1), ($2) ON CONFLICT (a) DO NOTHING");
+  CHECK(folded("insert into t (a) values (?) returning id", 2) ==
+    "insert into t (a) values ($1), ($2) returning id");
+
+  // One row is a group of one, and no rows is nothing to send.
+  CHECK(folded("insert into t (a) values (?)", 1) ==
+    "insert into t (a) values ($1)");
+  CHECK(folded("insert into t (a) values (?)", 0).empty());
+
+  CHECK(fold_columns("insert into t (a, b, c) values (?, ?, ?)") == 3);
+}
+
+void test_libpq_fold_declines_what_is_not_one_row() {
+  // An UPDATE and a DELETE bind their values to a predicate, not to a row.
+  CHECK(folded("update t set a = ? where b = ?", 3).empty());
+  CHECK(folded("delete from t where a = ?", 3).empty());
+
+  // A select that carries a VALUES of its own writes no row of the caller's,
+  // however it is spelled.
+  CHECK(folded("select * from (values (?), (?)) v", 2).empty());
+  CHECK(folded("with x as (select ?) insert into t (a) values (?)", 2).empty());
+
+  // Two groups is a text that already writes more than the row it was bound
+  // for, and the fold has no way to say where the caller's rows end.
+  CHECK(folded("insert into t (a, b) values (?, ?), (?, ?)", 2).empty());
+  CHECK(folded("insert into t (a) values (?) , (?)", 2).empty());
+
+  // A binding outside the group is one no row owns.
+  CHECK(folded("insert into t (a, b) values (?, ?) "
+               "on conflict (a) do update set b = ?", 2).empty());
+
+  // An entry that is not a parameter would be repeated with every row, which
+  // is a value the caller never named.
+  CHECK(folded("insert into t (a, b) values (?, now())", 2).empty());
+  CHECK(folded("insert into t (a) values (coalesce(?, 0))", 2).empty());
+  CHECK(folded("insert into t (a) values (1)", 2).empty());
+  CHECK(folded("insert into t default values", 2).empty());
+
+  // A position written by number is indistinguishable, in the rewritten text,
+  // from one the rewrite made; the count the rewrite declared is what says the
+  // group holds only the caller's own markers.
+  auto const numbered = rewrite("insert into t (a, b) values ($1, ?)");
+  CHECK(numbered.second == 1);
+  CHECK(libpq::find_values_fold(numbered.first, numbered.second).columns == 0);
+}
+
+void test_libpq_fold_skips_what_a_statement_hides() {
+  // A quoted name is not the keyword, and does not hide the real one.
+  CHECK(folded("insert into \"values\" (a) values (?)", 2) ==
+    "insert into \"values\" (a) values ($1), ($2)");
+
+  // A VALUES written inside a comment or a literal is that construct's own
+  // text.
+  CHECK(folded("insert into t -- values (?, ?)\n (a) values (?)", 2) ==
+    "insert into t -- values (?, ?)\n (a) values ($1), ($2)");
+  CHECK(folded("insert into t (a) values ('values (?)') ", 2).empty());
+  CHECK(folded("insert into t (a) values ('values (?)'), (?)", 2).empty());
 }

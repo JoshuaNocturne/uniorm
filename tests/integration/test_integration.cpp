@@ -1635,6 +1635,28 @@ void test_a_dropped_parse_is_made_again(orm& db) {
   }
   CHECK(read == 3);
   CHECK(db.statement_cache_hits() > 0);
+
+  // A folded batch is one statement's text with the row group written out
+  // several times over, sent without a name: everything the session holds by
+  // name can be dropped from outside and the batch still writes its rows.
+  std::vector<User> group;
+  for (std::int64_t offset = 0; offset < 40; ++offset) {
+    User row;
+    row.id = 9300 + offset;
+    row.name = "g" + std::to_string(offset);
+    row.age = std::optional<std::int32_t>(static_cast<std::int32_t>(offset));
+    row.balance = 0.5 * static_cast<double>(offset);
+    group.push_back(std::move(row));
+  }
+  CHECK(db.insert(group) == group.size());
+  CHECK(db.remove(group) == group.size());
+  db.execute_update("DEALLOCATE ALL");
+  CHECK(db.insert(group) == group.size());
+  CHECK(db.query<User>()
+          .where(ge(&User::id, 9300))
+          .count() == group.size());
+  db.execute_update(
+    "DELETE FROM uniorm_it_user WHERE id BETWEEN 9300 AND 9399");
 }
 
 void test_error_reporting(orm& db) {

@@ -1693,6 +1693,20 @@ bool idle_empties(connection_pool const& pool) {
   return false;
 }
 
+// The counter moves only when the one scheduler thread reaches this pool, and
+// a pass costs a round trip per pool ahead of it, so the turn can be late by
+// more than any fixed sleep would allow on a remote server. Two seconds is
+// forty beats of the interval above, not a wait for a slower answer.
+bool heartbeats_ran(connection_pool const& pool) {
+  for (int attempt = 0; attempt < 400; ++attempt) {
+    if (pool.heartbeats_executed() >= 1) {
+      return true;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  return false;
+}
+
 void test_pool_maintenance(std::string const& conn_string) {
   using namespace std::chrono_literals;
   {
@@ -1761,9 +1775,8 @@ void test_pool_maintenance(std::string const& conn_string) {
       pooled_connection cb = b.acquire();
       CHECK(bool(ca) && bool(cb));
     }
-    std::this_thread::sleep_for(300ms);
-    CHECK(a.heartbeats_executed() >= 1);
-    CHECK(b.heartbeats_executed() >= 1);
+    CHECK(heartbeats_ran(a));
+    CHECK(heartbeats_ran(b));
     CHECK(a.idle_count() == 1);
     CHECK(b.idle_count() == 1);
   }

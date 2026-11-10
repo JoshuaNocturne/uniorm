@@ -2,6 +2,10 @@
 
 #include <cstddef>
 #include <cstring>
+#include <string>
+#include <vector>
+
+#include <uniorm/log.hpp>
 
 namespace uniorm::oracle_oci {
 
@@ -50,9 +54,24 @@ std::vector<oci_error::diagnostic> collect_diagnostics(OCIError* error) {
   return result;
 }
 
+std::string diagnostic_text(OCIError* error) {
+  std::string text;
+  for (auto const& record : collect_diagnostics(error)) {
+    text += ": [" + record.state + "] (" + std::to_string(record.native_code) +
+            ") " + record.message;
+  }
+  return text;
+}
+
 void throw_if_error(
   sword status, OCIError* error, std::string const& context, sword tolerated) {
-  if (status == OCI_SUCCESS || status == OCI_SUCCESS_WITH_INFO) {
+  if (status == OCI_SUCCESS_WITH_INFO) {
+    uniorm::detail::log(uniorm::log_level::info, "oci.diagnostics", [&] {
+      return context + " answered with a warning" + diagnostic_text(error);
+    });
+    return;
+  }
+  if (status == OCI_SUCCESS) {
     return;
   }
   if (status == tolerated) {

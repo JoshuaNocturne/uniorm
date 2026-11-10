@@ -3,6 +3,7 @@
 #include <utility>
 
 #include <uniorm/backend/error.hpp>
+#include <uniorm/log.hpp>
 
 namespace uniorm::oracle_oci {
 
@@ -28,7 +29,14 @@ connection::~connection() {
   if (service_ != nullptr) {
     // Best effort: a session that will not log off cleanly still dies with
     // this object, and a destructor that throws would end the process.
-    OCILogoff(service_, error_.get());
+    sword const status = OCILogoff(service_, error_.get());
+    if (status != OCI_SUCCESS) {
+      uniorm::detail::log(uniorm::log_level::warn, "oci.connection", [&] {
+        return "a session left with a refused log off, so the server may still "
+               "hold it" +
+               diagnostic_text(error_.get());
+      });
+    }
     service_ = nullptr;
   }
 }
@@ -43,7 +51,14 @@ connection::connection(connection&& other) noexcept
 connection& connection::operator=(connection&& other) noexcept {
   if (this != &other) {
     if (service_ != nullptr) {
-      OCILogoff(service_, error_.get());
+      sword const status = OCILogoff(service_, error_.get());
+      if (status != OCI_SUCCESS) {
+        uniorm::detail::log(uniorm::log_level::warn, "oci.connection", [&] {
+          return "the session a moved-to connection replaced left with a "
+                 "refused log off" +
+                 diagnostic_text(error_.get());
+        });
+      }
     }
     env_ = other.env_;
     error_ = std::move(other.error_);

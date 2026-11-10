@@ -2,6 +2,8 @@
 
 #include <cstdint>
 
+#include <uniorm/log.hpp>
+
 namespace uniorm::odbc {
 
 namespace {
@@ -16,6 +18,11 @@ environment::environment() : handle_(nullptr, "environment") {
   SQLRETURN rc = SQLSetEnvAttr(
     native(), SQL_ATTR_ODBC_VERSION, attr_value(SQL_OV_ODBC3_80), 0);
   if (rc == SQL_ERROR) {
+    uniorm::detail::log(uniorm::log_level::warn, "odbc.environment", [&] {
+      return "the driver refused the ODBC 3.80 version, so everything runs at "
+             "3.0 instead" +
+             diagnostic_text(SQL_HANDLE_ENV, native());
+    });
     rc = SQLSetEnvAttr(
       native(), SQL_ATTR_ODBC_VERSION, attr_value(SQL_OV_ODBC3), 0);
   }

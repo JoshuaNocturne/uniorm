@@ -14,6 +14,7 @@
 
 #include <uniorm/backend/error.hpp>
 #include <uniorm/detail/time.hpp>
+#include <uniorm/log.hpp>
 
 #include "error.hpp"
 #include "native_types.hpp"
@@ -499,14 +500,26 @@ void oci_statement::describe() {
     column.byte_size = byte_size;
 
     sb4 precision = 0;
-    OCIAttrGet(parameter, OCI_DTYPE_PARAM, &precision, nullptr,
-      OCI_ATTR_PRECISION, conn_.error());
+    sword const precision_status = OCIAttrGet(parameter, OCI_DTYPE_PARAM,
+      &precision, nullptr, OCI_ATTR_PRECISION, conn_.error());
     column.precision = precision;
 
     sb4 scale = 0;
-    OCIAttrGet(parameter, OCI_DTYPE_PARAM, &scale, nullptr, OCI_ATTR_SCALE,
-      conn_.error());
+    sword const scale_status = OCIAttrGet(parameter, OCI_DTYPE_PARAM, &scale,
+      nullptr, OCI_ATTR_SCALE, conn_.error());
     column.scale = scale;
+
+    // These two answer nothing for a type whose shape they decide, and the
+    // reading that follows settles on decimal whatever the server meant.
+    if (exact_numeric(column.dty) &&
+        (precision_status != OCI_SUCCESS || scale_status != OCI_SUCCESS)) {
+      uniorm::detail::log(uniorm::log_level::debug, "oci.statement", [&] {
+        return "the describe of column " + std::to_string(position) +
+               " left its precision and scale unsaid, so it is read as a "
+               "decimal" +
+               diagnostic_text(conn_.error());
+      });
+    }
 
     // A select-list item describes no nullability of its own through OCI, and
     // the safe guess is the one that costs nothing: the core reads a column as
@@ -731,6 +744,11 @@ void oci_statement::run_batch() {
           try {
             conn_.commit();
           } catch (...) {
+            uniorm::detail::log(uniorm::log_level::warn, "oci.statement", [&] {
+              return "the rows a folded batch ran before it failed could not "
+                     "be committed, so whether the server kept " +
+                     std::to_string(affected_) + " of them is unknown";
+            });
           }
         }
       }
@@ -766,6 +784,11 @@ void oci_statement::run_batch() {
       try {
         conn_.commit();
       } catch (...) {
+        uniorm::detail::log(uniorm::log_level::warn, "oci.statement", [&] {
+          return "the " + std::to_string(ran) +
+                 " rows a batch ran before it failed could not be committed, "
+                 "so whether the server kept them is unknown";
+        });
       }
     }
     throw;

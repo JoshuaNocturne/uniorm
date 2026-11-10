@@ -1,5 +1,10 @@
 #include "error.hpp"
 
+#include <string>
+#include <vector>
+
+#include <uniorm/log.hpp>
+
 namespace uniorm::odbc {
 
 odbc_error::odbc_error(
@@ -29,9 +34,25 @@ std::vector<odbc_error::diagnostic> collect_diagnostics(
   return result;
 }
 
+std::string diagnostic_text(SQLSMALLINT handle_type, SQLHANDLE handle) {
+  std::string text;
+  for (auto const& record : collect_diagnostics(handle_type, handle)) {
+    text += ": [" + record.state + "] (" + std::to_string(record.native_code) +
+            ") " + record.message;
+  }
+  return text;
+}
+
 void throw_if_error(SQLRETURN rc, SQLSMALLINT handle_type, SQLHANDLE handle,
   std::string const& context, bool tolerate_no_data) {
-  if (rc == SQL_SUCCESS || rc == SQL_SUCCESS_WITH_INFO) {
+  if (rc == SQL_SUCCESS_WITH_INFO) {
+    uniorm::detail::log(uniorm::log_level::info, "odbc.diagnostics", [&] {
+      return context + " answered with a warning" +
+             diagnostic_text(handle_type, handle);
+    });
+    return;
+  }
+  if (rc == SQL_SUCCESS) {
     return;
   }
   if (tolerate_no_data && rc == SQL_NO_DATA) {

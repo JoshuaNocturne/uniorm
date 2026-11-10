@@ -16,6 +16,23 @@
 
 namespace uniorm::oracle_oci {
 
+// The codes whose neutral type is decided by the described precision and
+// scale rather than by the code alone. A describe that leaves those two
+// unread says nothing about which of these shapes the column has.
+inline bool exact_numeric(ub2 dty) {
+  switch (dty) {
+  case SQLT_INT:
+  case SQLT_NUM:
+  case SQLT_VNU:
+  case SQLT_UIN:
+  case SQLT_SLS:
+  case SQLT_PDN:
+    return true;
+  default:
+    return false;
+  }
+}
+
 // NUMBER is one Oracle code for every exact numeric the core distinguishes,
 // so the neutral type comes from the described precision and scale: an
 // integer that fits 9 digits is an integer, one that fits 18 is a bigint,

@@ -3,6 +3,8 @@
 #include <cstdint>
 #include <utility>
 
+#include <uniorm/log.hpp>
+
 namespace uniorm::odbc {
 
 namespace {
@@ -22,7 +24,14 @@ connection::connection(environment& env)
 
 connection::~connection() {
   if (open_) {
-    SQLDisconnect(native());
+    SQLRETURN rc = SQLDisconnect(native());
+    if (!SQL_SUCCEEDED(rc)) {
+      uniorm::detail::log(uniorm::log_level::warn, "odbc.connection", [&] {
+        return "a connection left with a refused disconnect, so the driver may "
+               "still hold the session" +
+               diagnostic_text(SQL_HANDLE_DBC, native());
+      });
+    }
   }
 }
 
@@ -33,7 +42,14 @@ connection::connection(connection&& other) noexcept
 connection& connection::operator=(connection&& other) noexcept {
   if (this != &other) {
     if (open_) {
-      SQLDisconnect(native());
+      SQLRETURN rc = SQLDisconnect(native());
+      if (!SQL_SUCCEEDED(rc)) {
+        uniorm::detail::log(uniorm::log_level::warn, "odbc.connection", [&] {
+          return "the connection a moved-to one replaced left with a refused "
+                 "disconnect" +
+                 diagnostic_text(SQL_HANDLE_DBC, native());
+        });
+      }
     }
     handle_ = std::move(other.handle_);
     open_ = std::exchange(other.open_, false);

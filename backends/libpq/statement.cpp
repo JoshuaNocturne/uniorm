@@ -12,6 +12,7 @@
 #include <variant>
 
 #include <uniorm/backend/error.hpp>
+#include <uniorm/log.hpp>
 
 #include "error.hpp"
 #include "native_types.hpp"
@@ -173,6 +174,18 @@ pq_statement::~pq_statement() {
   if (prepared_) {
     detail::result_holder dropped{ PQexec(
       conn_.native(), ("DEALLOCATE " + statement_name_).c_str()) };
+    if (dropped.get() != nullptr &&
+        PQresultStatus(dropped.get()) != PGRES_COMMAND_OK) {
+      uniorm::detail::log(uniorm::log_level::warn, "libpq.statement", [&] {
+        std::string text = "the session kept the parse " + statement_name_ +
+                           " a statement let go of, and nobody was told";
+        if (char const* const reason = PQresultErrorMessage(dropped.get());
+          reason != nullptr) {
+          text += ": " + std::string(reason);
+        }
+        return text;
+      });
+    }
   }
 }
 
@@ -353,6 +366,10 @@ detail::result_holder pq_statement::run_ready() {
     // keep the server connection it was made on, or a DEALLOCATE from outside.
     // Making it again is the only reading of that answer. A folded group takes
     // no name, so it never hears this.
+    uniorm::detail::log(uniorm::log_level::warn, "libpq.statement", [&] {
+      return "the session no longer held the parse " + statement_name_ +
+             ", so it was made again";
+    });
     make_ready();
     render(values_);
     next = detail::result_holder{ run() };

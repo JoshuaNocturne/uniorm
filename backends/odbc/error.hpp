@@ -31,6 +31,12 @@ public:
 UNIORM_ODBC_API std::vector<odbc_error::diagnostic> collect_diagnostics(
   SQLSMALLINT handle_type, SQLHANDLE handle);
 
+// The records one handle carries, spelled one after another as
+// ": [state] (code) message". A handle with none gives no text, so a caller
+// can append the answer to a sentence of its own and read the same either way.
+UNIORM_ODBC_API std::string diagnostic_text(
+  SQLSMALLINT handle_type, SQLHANDLE handle);
+
 // Check an ODBC return code; on failure (anything but SQL_SUCCESS /
 // SQL_SUCCESS_WITH_INFO / the explicitly tolerated codes) collect diagnostics
 // and throw odbc_error. SQL_NO_DATA is tolerated where expected by passing

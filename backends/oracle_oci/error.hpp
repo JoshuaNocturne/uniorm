@@ -29,6 +29,11 @@ public:
 UNIORM_ORACLE_OCI_API std::vector<oci_error::diagnostic> collect_diagnostics(
   OCIError* error);
 
+// The records one handle carries, spelled one after another as
+// ": [state] (code) message". A handle with none gives no text, so a caller
+// can append the answer to a sentence of its own and read the same either way.
+UNIORM_ORACLE_OCI_API std::string diagnostic_text(OCIError* error);
+
 // Check an OCI return code; anything short of success or success-with-info
 // collects the handle's records and throws oci_error. `tolerated` names the one
 // further code this call reads as normal rather than failed: 0 (OCI_SUCCESS)

@@ -16,6 +16,7 @@ void test_identifier_resolution();
 void test_binding_order();
 void test_backend_registry();
 void test_pool();
+void test_log();
 void test_async_task();
 void test_async_orm();
 #ifdef UNIORM_TEST_GEN
@@ -57,6 +58,8 @@ int main() {
   test_backend_registry();
   std::printf("Running test_pool...\n");
   test_pool();
+  std::printf("Running test_log...\n");
+  test_log();
   std::printf("Running test_async_task...\n");
   test_async_task();
   std::printf("Running test_async_orm...\n");

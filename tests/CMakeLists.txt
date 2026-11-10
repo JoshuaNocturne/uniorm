@@ -14,6 +14,7 @@ add_executable(uniorm_unit_tests
     unit/test_binding_order.cpp
     unit/test_backend_registry.cpp
     unit/test_pool.cpp
+    unit/test_log.cpp
     unit/test_async_task.cpp
     unit/test_async_orm.cpp
 )

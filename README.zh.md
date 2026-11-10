@@ -18,6 +18,10 @@ API 本身不点任何一家的客户端名。自带三家：默认构建的 ODB
   `backend::capability_not_supported` 到达
 - **内部统一 UTF-8**：字符串一律以窄字节递交（ODBC 那家是 `SQL_C_CHAR`）；
   与服务端编码的转换留在 backend 里，不在本库
+- **可选的日志钩子**（`log.hpp`）：应用设一个 sink，库把自己咽下而没有抛出的失败
+  递成记录（`level` / `site` / `message`）——驱动的 `SQL_SUCCESS_WITH_INFO` 诊断、
+  析构里失败的回滚、被心跳判死而退役的池连接、libpq 会话丢了的那份 parse、服务端
+  不肯放手的会话。没装 sink 时一个字都不产生，绑定值也永远不进记录
 - **预编译 + 绑定变量**：用户值一律走 backend 的绑定调用（ODBC 那家是
   `SQLBindParameter`），杜绝拼接注入
 - **透明的语句缓存**：按 SQL 文本的 LRU 缓存，重复执行免 prepare（观测：
@@ -409,6 +413,26 @@ db.query<User>("SELECT id, name FROM users WHERE id > ?",
 是 `~orm()` 一定会等到自己欠的每个回调，所以按引用捕获局部变量是合法的。这一层
 只覆盖四个 CRUD 名字：builder 的三个终端、`connect`、`begin` 仍是 task 形。
 
+### 日志
+
+```cpp
+#include <uniorm/log.hpp>
+
+uniorm::set_log_sink([](uniorm::log_record const& record) {
+  my_log(static_cast<int>(record.level), std::string(record.site),
+    std::string(record.message));
+});
+uniorm::set_log_level(uniorm::log_level::debug);  // 默认是 info
+```
+
+库里不带日志设施，也不链接任何日志库：它只把一个 sink 收进去，把自己咽下的失败
+递成记录——驱动的告警、析构里没做完的回滚、没人接的 worker 闭包、被服务端拒掉的登出
+与 `DEALLOCATE`——去哪儿由接收方决定。没装 sink 之前什么都不产生——拼装消息的钱不花，
+驱动侧那次额外的诊断读取也不做。记录报出自己的 `site`（`core.pool`、`core.async`、
+`odbc.diagnostics`、`oci.statement`、`libpq.statement`……）和一句话的事实，绑定值一个
+字都不进。sink 会在事发的那条线程上被调用，析构也算，所以要能并发；它抛出的异常被
+丢弃，已经以异常交给调用方的失败不再补一条记录。`uniorm::set_log_sink({})` 把它关掉。
+
 ### 代码生成（uniorm-gen）
 
 ```sh
@@ -457,7 +481,9 @@ ctest --test-dir build --output-on-failure
 
 - **unit_tests**：纯内存测试，基于 fake backend 与 fake 目录运行，且不链接任何
   backend 库，公共 API 一旦泄漏驱动类型即编译失败。它还收纳生成器的配置与
-  输出用例
+  输出用例，以及日志钩子自己那一组：记录送达、门限挡住拼装、没装 sink 时的静默、
+  sink 抛异常不伤调用方，再加两个真接线点——`transaction` 析构，与归还时重置失败的
+  池连接
 - **odbc_unit_tests**：私有 ODBC 句柄层、它的错误转换，以及目录行按名字再筛
   那条判据（仅驱动管理器，无需 DSN）
 - **oracle_oci_unit_tests**：Oracle backend 自己那一层——占位符改写、它的类型表，

@@ -335,7 +335,7 @@ class statement {                      // SQLHSTMT，move-only
 输出产品名，交由 `dialect::detect(std::string_view)` 解释（见 §4.8），
 保持 ODBC 封装层不依赖高层类型。
 
-错误处理策略：所有 ODBC 调用检查返回码，非成功（`SQL_SUCCESS` / `SQL_SUCCESS_WITH_INFO` 之外）即提取 `SQLGetDiagRec` 全部记录后抛 `odbc_error`。`SQL_SUCCESS_WITH_INFO` 记录为诊断信息但不抛异常，可通过可选回调或日志钩子暴露。
+错误处理策略：所有 ODBC 调用检查返回码，非成功（`SQL_SUCCESS` / `SQL_SUCCESS_WITH_INFO` 之外）即提取 `SQLGetDiagRec` 全部记录后抛 `odbc_error`。`SQL_SUCCESS_WITH_INFO` 不抛异常，它的诊断记录原样交给日志钩子（§7.1）；没装钩子时连 `SQLGetDiagRec` 也不调。
 
 关键实现细节：
 
@@ -1984,6 +1984,60 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
 `backend_name()` 与 SQLSTATE 诊断记录，不需要私有头，适配器也不再需要二次翻译。
 集成测试 `test_error_reporting` 钉住这条跨层契约。
 
+### 7.1 日志接口（外部设置）
+
+库内没有日志设施，也不链接任何日志库：对外只有一份可随时替换的接收口
+（`include/uniorm/log.hpp`）。
+
+```cpp
+enum class log_level { error, warn, info, debug, trace };
+struct log_record { log_level level; std::string_view site; std::string_view message; };
+using log_sink = std::function<void(log_record const&)>;
+
+void set_log_sink(log_sink sink);          // 空 sink 即关闭；起始状态就是关闭
+void set_log_level(log_level threshold);   // 低于门限的不拼装也不送达；起始 info
+log_level log_level_threshold();
+bool log_enabled(log_level level);
+```
+
+- **默认一个字都不产生**：没有 sink 时发射点只是一次 relaxed load，字符串不拼、
+  驱动侧的额外读取也不做，所以接线点可以放在返回码检查这种每次调用都走一遍的位置。
+- **`site` 是 `<area>.<part>`**：`core.transaction`、`core.pool`、`core.async`、
+  `odbc.diagnostics`、`oci.diagnostics`、`libpq.statement`。过滤、加前缀、决定去处都是
+  接收方的事，库不格式化、不戳时间、不管输出落在哪儿。
+- **级别按谁该管分**：`error` 是调用方的操作死在那儿；`warn` 是库自己咽下并绕开的失败；
+  `info` 是生产上值得一看的状态变化；`debug` 是一条语句的机械过程；`trace` 到行与列。
+- **记录里没有数据**：sink 收到的是库对自己所作所为的一句话，绑定值与参数一个字都不进，
+  SQLSTATE 与驱动原文可以进。
+- **sink 从工作发生的那个线程被调用，析构里也算**，所以要能并发；sink 抛出的异常被丢弃，
+  因为它要报告的那个失败比 sink 的失态更重要。sink 里再调 `set_log_sink` 不死锁：发射点
+  取一份 `shared_ptr` 副本、放开锁之后再调用，所以另一线程换掉 sink 也不会把正在跑的
+  那个拆掉。
+- **backend 走同一份**：plugin 链接 `uniorm::uniorm`，发射点 `uniorm::detail::log` 是导出
+  符号，因此 ODBC、Oracle 与 libpq 的接线点都不需要另开一条回调通路。发射点两种写法：
+  已有文本直接传，要现拼的传一个可调用体（靠 `requires` 区分这两个重载），拼装只发生在
+  门限之后。
+
+接线点选在信息原本直接消失的地方，按这个失败被谁咽下来分：
+
+- 驱动回 `SQL_SUCCESS_WITH_INFO` / `OCI_SUCCESS_WITH_INFO`：诊断记录（§4.1）由每家的
+  `throw_if_error` 发成一条 `info`，没装 sink 时连 `SQLGetDiagRec`/`OCIErrorGet` 也不调。
+- 析构、被移动覆盖或关闭时咽下的回滚失败：`core.transaction`、`core.async` 的两处析构。
+- 池里咽下的失败：心跳失败退役连接、归还时重置失败直接关连接（`core.pool`）。
+- async 里没人接的失败：worker 抛出的闭包、脱离调用的操作其失败处理器自己再抛出
+  （`core.async`）。
+- 收尾被拒：ODBC 与 OCI 在析构或被移动覆盖时 `SQLDisconnect` / `OCILogoff` 被拒，会话
+  可能还挂在服务端；libpq 语句死亡时 `DEALLOCATE` 被拒，那份 parse 留在会话里没人认领。
+- 环境比自己低一档：驱动不接受 `SQL_OV_ODBC3_80`，协商回 3.0 后继续跑。
+- 服务端把自己忘了：libpq 会话不再持有那份 parse 而重新 prepare（§5）；OCI 批处理半途
+  失败后替已跑的那几行补的提交又被拒，那几行落没落库从此没人知道。
+- 描述没说完的形状：Oracle 描述一个精确数值列时 `OCI_ATTR_PRECISION` / `OCI_ATTR_SCALE`
+  读不出来，`number_shape` 就按 decimal 收（`oci.statement`，`debug`——这是唯一的 `debug`
+  站点，正常客户端读得到这两项，所以它只在描述真的没答上来时响）。
+
+已经以异常交给调用方的失败不再补记录；日志设施自己那几处 `catch` 也不补，对记录再记
+记录是自我递归。
+
 ## 8. 测试策略
 
 除末条安装冒烟是 `cmake -P` 脚本外，下列用例都是编译进 CTest 的 C++ 程序。
@@ -2024,6 +2078,12 @@ gen::config_error : uniorm_error                   // uniorm-gen 的 TOML/类型
   scheme / target / user，换 password 仍是同一池，而同处同人的串写法另开一池；
   `orm` 也能从串换乘四件套（先交回借到的那条，两边各是一池）；被淘汰后补上的
   连接仍按四件套配方打开——池留的是配方，不是替它拼好的串）、
+  `test_log`（一份假 sink 收记录：`level` / `site` / `message` 三字原样到达；门限挡住
+  拼装——被挡住的那次连 lambda 都不执行，用计数器钉住；空 sink 与未装 sink 都静默；
+  sink 抛异常不影响调用方；再加两个真站点：回滚必抛的 backend 上 leaving-live 的
+  `transaction` 析构，断言那条 `warn` 的 site 是 `core.transaction` 且异常原文在
+  `message` 里；同一 backend 上手动模式下归还的池连接，重置失败被咽下并退役，断言
+  site 是 `core.pool`）、
   `test_async_task`（一个手泵 executor 钉住 `task` / `executor` 本身：没被
   drive 就不 submit、`block()` 与被 `co_await` 各 drive 一次、未 drive 的
   task 析构不留副作用、结果与异常都穿过挂起点、`block()` 重放同一个

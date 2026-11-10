@@ -20,6 +20,13 @@ The full API reference is [docs/design.md](docs/design.md).
 - **UTF-8 internally** — strings travel as narrow bytes (`SQL_C_CHAR` on
   ODBC); conversion from whatever encoding the server speaks stays in the
   backend
+- **An optional log hook** (`log.hpp`) — the application sets one sink and the
+  library hands it records (`level`, `site`, `message`) for what it absorbs
+  instead of throwing: a driver's `SQL_SUCCESS_WITH_INFO` diagnostics, a
+  rollback that failed in a destructor, a pool connection retired by a failed
+  heartbeat, a libpq session that lost a parse, a session the server would not
+  let go. Nothing is produced until a sink is set, and a bound value never
+  reaches one
 - **Prepared statements + bind variables** — user values always go through the
   backend's bind call (`SQLBindParameter` on ODBC), never string
   interpolation
@@ -444,6 +451,31 @@ that is why `~orm()` waits for every callback it owes, which makes capturing
 locals by reference legal. Covers the four CRUD names only; the builder
 terminals, `connect` and `begin` stay task-shaped.
 
+### Logging
+
+```cpp
+#include <uniorm/log.hpp>
+
+uniorm::set_log_sink([](uniorm::log_record const& record) {
+  my_log(static_cast<int>(record.level), std::string(record.site),
+    std::string(record.message));
+});
+uniorm::set_log_level(uniorm::log_level::debug);  // the default is info
+```
+
+The library carries no logger and links none: it hands one sink the failures it
+absorbs rather than throws — a driver's warning, a roll back a destructor could
+not finish, a worker's closure that threw with nobody to catch it, a log off or
+a `DEALLOCATE` the server refused — and the sink decides where they go. Until a
+sink is set nothing is produced — assembling a message is never paid for, and a
+driver's diagnostic read is never made. A record names its `site` (`core.pool`,
+`core.async`, `odbc.diagnostics`, `oci.statement`, `libpq.statement`, …) and
+says what happened, in one sentence; a bound value never reaches it. The sink is
+called from whichever thread the work happened on, destructors included, so it
+has to hold up under concurrency; an exception out of it is dropped, and a
+failure already handed over as an exception is not also logged.
+`uniorm::set_log_sink({})` stops it.
+
 ### Code generation (uniorm-gen)
 
 ```sh
@@ -497,7 +529,10 @@ ctest --test-dir build --output-on-failure
 
 - **unit_tests** — in-memory tests over a fake backend and a fake catalog;
   links no backend library, so a driver type leaking into the public API fails
-  to compile. Carries the generator's config and output tests too
+  to compile. Carries the generator's config and output tests too, and the log
+  hook's own cases: delivery, the threshold gating assembly, silence with no
+  sink, a throwing sink, and two real emit points — a transaction destructor and
+  a pool connection whose reset failed
 - **odbc_unit_tests** — the private ODBC handle layer, its error translation,
   the catalog's name re-filter (driver manager only, no DSN required)
 - **oracle_oci_unit_tests** — the placeholder rewrite, Oracle's type table,

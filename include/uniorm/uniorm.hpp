@@ -11,6 +11,7 @@
 #include <uniorm/decimal.hpp>
 #include <uniorm/dialect.hpp>
 #include <uniorm/error.hpp>
+#include <uniorm/log.hpp>
 #include <uniorm/mapping/registry.hpp>
 #include <uniorm/orm.hpp>
 #include <uniorm/params.hpp>

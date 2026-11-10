@@ -4,6 +4,7 @@
 #include <utility>
 
 #include <uniorm/error.hpp>
+#include <uniorm/log.hpp>
 
 namespace uniorm::async {
 namespace {
@@ -100,6 +101,11 @@ void worker_pool::run() {
       // Whatever a closure throws belongs to the operation it runs, not to
       // this thread: letting it escape takes the worker, the pool, and every
       // session that was waiting on it down with it.
+      uniorm::detail::log(uniorm::log_level::warn, "core.async", [] {
+        return "a closure a worker ran threw and was dropped, so the operation "
+               "it belonged to answers nothing: " +
+               uniorm::detail::current_exception_text();
+      });
     }
   }
 }

@@ -8,6 +8,8 @@
 #include <thread>
 #include <vector>
 
+#include <uniorm/log.hpp>
+
 namespace uniorm {
 
 struct pool_detail::shared_state {
@@ -66,6 +68,10 @@ struct pool_detail::shared_state {
         ++heartbeats;
       } catch (...) {
         alive = false;  // heartbeat failed: connection is considered dead
+        detail::log(log_level::warn, "core.pool", [] {
+          return "a heartbeat failed; the connection it ran on is dropped: " +
+                 detail::current_exception_text();
+        });
       }
       {
         std::lock_guard relock(mutex);
@@ -265,6 +271,11 @@ void connection_pool::release(connection conn) {
     }
   } catch (...) {
     reusable = false;
+    detail::log(log_level::warn, "core.pool", [] {
+      return "a connection handed back with work pending could not be reset, "
+             "so it is closed instead of pooled: " +
+             detail::current_exception_text();
+    });
   }
   {
     std::lock_guard lock(impl_->mutex);

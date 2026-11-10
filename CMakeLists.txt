@@ -49,6 +49,7 @@ add_library(uniorm SHARED
     src/dialect.cpp
     src/transaction.cpp
     src/pool.cpp
+    src/log.cpp
     src/backend/error.cpp
     src/backend/plugin_loader.cpp
     src/backend/registry.cpp

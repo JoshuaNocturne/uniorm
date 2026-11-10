@@ -24,6 +24,7 @@
 
 #include <uniorm/error.hpp>
 #include <uniorm/export.hpp>
+#include <uniorm/log.hpp>
 #include <uniorm/orm.hpp>
 #include <uniorm/transaction.hpp>
 
@@ -235,6 +236,11 @@ struct operation_core : result_slot<T>,
     try {
       report(failure);
     } catch (...) {
+      uniorm::detail::log(uniorm::log_level::warn, "core.async", [] {
+        return "the failure handler an application gave a detached operation "
+               "threw, so the report it was handed stops here: " +
+               uniorm::detail::current_exception_text();
+      });
     }
   }
 

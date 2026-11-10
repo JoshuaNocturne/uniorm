@@ -8,6 +8,7 @@
 
 #include <uniorm/async.hpp>
 #include <uniorm/error.hpp>
+#include <uniorm/log.hpp>
 
 namespace uniorm::async {
 
@@ -168,6 +169,11 @@ orm::~orm() {
       } catch (...) {
         // The connection is going either way; a driver that refuses the
         // rollback now has it on its own conscience.
+        uniorm::detail::log(uniorm::log_level::warn, "core.async", [] {
+          return "a transaction left open on a session being closed could "
+                 "not be rolled back: " +
+                 uniorm::detail::current_exception_text();
+        });
       }
     }
   }
@@ -261,6 +267,11 @@ transaction::~transaction() {
   } catch (...) {
     // destruction must not throw: the lease going back to the pool is the net
     // under whatever this one could not close.
+    uniorm::detail::log(uniorm::log_level::warn, "core.async", [] {
+      return "a roll back out of a live async transaction's destructor was "
+             "dropped: " +
+             uniorm::detail::current_exception_text();
+    });
   }
 }
 

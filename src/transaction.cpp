@@ -1,6 +1,7 @@
 #include "uniorm/transaction.hpp"
 
 #include <uniorm/connection.hpp>
+#include <uniorm/log.hpp>
 
 namespace uniorm {
 
@@ -19,8 +20,12 @@ transaction::~transaction() {
     try {
       rollback();
     } catch (...) {
-      // destruction must not throw; the connection will be closed or
-      // reset by the caller if needed
+      // destruction must not throw; what the roll back said goes to the sink
+      detail::log(log_level::warn, "core.transaction", [] {
+        return "a roll back out of a live transaction's destructor was "
+               "dropped: " +
+               detail::current_exception_text();
+      });
     }
   }
 }
@@ -38,6 +43,10 @@ transaction& transaction::operator=(transaction&& other) noexcept {
       try {
         rollback();
       } catch (...) {
+        detail::log(log_level::warn, "core.transaction", [] {
+          return "a roll back out of a moved-over transaction was dropped: " +
+                 detail::current_exception_text();
+        });
       }
     }
     conn_ = other.conn_;

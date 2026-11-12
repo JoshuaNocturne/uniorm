@@ -12,6 +12,7 @@
 
 #include <uniorm/backend/backend.hpp>
 #include <uniorm/backend/registry.hpp>
+#include <uniorm/error.hpp>
 #include <uniorm/orm.hpp>
 #include <uniorm/params.hpp>
 #include <uniorm/pool.hpp>
@@ -225,5 +226,44 @@ void test_batch_shape() {
     map_accounts(database);
     CHECK(database.insert(make_accounts(5)) == 5);
     CHECK(state->batches == whole_batch);
+  }
+
+  // The routing policy on a backend that reports one set's count for a whole
+  // array execute -- the psqlODBC habit. automatic protects the tally by going
+  // one set at a time; columnar takes the whole chunk in one execute and hands
+  // back the short count the driver reports for it.
+  {
+    auto state = std::make_shared<batch_state>();
+    state->report_array_totals = false;
+    register_batch_backend(state, "batchpolicy");
+    connection_pool pool{ batch_options("batchpolicy") };
+    orm database(pool);
+    map_accounts(database);
+    CHECK(database.batch_write_policy() == orm::batch_policy::automatic);
+
+    CHECK(database.update(make_accounts(5)) == 5);
+    CHECK(state->batches == one_set_at_a_time);
+
+    state->batches.clear();
+    database.batch_write_policy(orm::batch_policy::columnar);
+    CHECK(database.batch_write_policy() == orm::batch_policy::columnar);
+    CHECK(database.update(make_accounts(5)) == 1);
+    CHECK(state->batches == whole_batch);
+
+    state->batches.clear();
+    CHECK(database.remove(make_accounts(5)) == 1);
+    CHECK(state->batches == whole_batch);
+  }
+
+  // A server with no folded shape refuses the folded policy outright.
+  {
+    auto state = std::make_shared<batch_state>();
+    register_batch_backend(state, "batchpolicyfold");
+    connection_pool pool{ batch_options("batchpolicyfold") };
+    orm database(pool);
+    map_accounts(database);
+    database.batch_write_policy(orm::batch_policy::folded);
+    CHECK_THROWS(database.update(make_accounts(5)), uniorm_error);
+    CHECK_THROWS(database.remove(make_accounts(5)), uniorm_error);
   }
 }

@@ -618,9 +618,9 @@ void test_the_write_faces_send_what_the_sync_object_sends() {
   std::size_t const removed = sync.remove(rows);
   std::vector<std::string> const sent = fixture.state->executed;
   fixture.state->executed.clear();
-  // The fake cannot tally a whole parameter array, so a two-row sweep is two
-  // statements each way.
-  CHECK(sent.size() == 4);
+  // A family the core can fold goes through one statement per write, however
+  // little the fake's array tally says an execute touched.
+  CHECK(sent.size() == 2);
 
   CHECK(session.update(rows).block() == updated);
   CHECK(session.remove(rows).block() == removed);

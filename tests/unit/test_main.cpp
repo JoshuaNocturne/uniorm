@@ -11,6 +11,7 @@ void test_expression();
 void test_registry();
 void test_orm_crud_helpers();
 void test_batch_shape();
+void test_fold_batch();
 void test_orm_validate();
 void test_identifier_resolution();
 void test_binding_order();
@@ -48,6 +49,8 @@ int main() {
   test_orm_crud_helpers();
   std::printf("Running test_batch_shape...\n");
   test_batch_shape();
+  std::printf("Running test_fold_batch...\n");
+  test_fold_batch();
   std::printf("Running test_orm_validate...\n");
   test_orm_validate();
   std::printf("Running test_identifier_resolution...\n");

@@ -3,7 +3,7 @@
 // or "oracle" -- and UNIORM_IT_DSN / UNIORM_IT_USER / UNIORM_IT_PWD carry the
 // target in that scheme's own grammar: a registered DSN for odbc, a
 // host[:port]/service for oracle. Returns 77 (ctest SKIP) when any of them is
-// unset or the database is unreachable. ASCII data only for now.
+// unset or the database is unreachable.
 
 #include <cstdio>
 #include <cstdlib>
@@ -106,6 +106,20 @@ struct Chunk {
   std::optional<std::string> spare;
 };
 
+// The shapes a batch write spells out one column at a time: text holding the
+// punctuation an array literal is built from, a date without a clock, a byte
+// string holding a NUL, and rows that differ only in whether a column is there
+// at all.
+struct Said {
+  std::int64_t id = 0;
+  std::string said;
+  std::optional<std::string> maybe;
+  double amount = 0.0;
+  std::optional<timestamp> day;
+  std::optional<timestamp> moment;
+  std::optional<std::vector<std::byte>> raw;
+};
+
 }  // namespace uniorm
 
 namespace {
@@ -120,6 +134,7 @@ char const* k_num_table = "UNIORM_IT_NUMBER";
 // MariaDB keep this spelling, PostgreSQL answers with all lower.
 char const* k_case_table = "UNIORM_IT_CASE_USER";
 char const* k_chunk_table = "uniorm_it_chunk";
+char const* k_said_table = "uniorm_it_said";
 std::string const long_note(1000, 'x');
 
 // The face this run drives. One suite serves both backends, so everything the
@@ -1393,6 +1408,160 @@ void test_batch_shapes(orm& db) {
   db.execute_update(std::string("DROP TABLE ") + k_chunk_table);
 }
 
+// The punctuation a row source built from arrays is assembled out of, carried
+// in the values themselves. A fold that quoted, escaped or split one of these
+// wrong shows up as a row that did not change, or as text that came back
+// otherwise than it went in.
+void test_batch_spellings(orm& db) {
+  // Only this family lays a batch's columns beside each other with one array
+  // per column; the others fold from tuples, where the same values travel as
+  // parameters and never meet the quoting.
+  if (the_target.server_dialect.batch_write !=
+      dialect::batch_family::postgresql) {
+    skip_reason = "one array per column is a PostgreSQL shape";
+    return;
+  }
+  if (the_target.binary_type.empty()) {
+    skip_reason = "no raw-byte column is spelled for this server";
+    return;
+  }
+  db.execute_update(std::string("DROP TABLE IF EXISTS ") + k_said_table);
+  db.execute_update(std::string("CREATE TABLE ") + k_said_table + " (id " +
+                    the_target.integer_type +
+                    " NOT NULL PRIMARY KEY,"
+                    " said VARCHAR(200) NOT NULL,"
+                    " maybe VARCHAR(200) NULL,"
+                    " amount DOUBLE PRECISION NOT NULL,"
+                    " day DATE NULL,"
+                    " moment TIMESTAMP NULL,"
+                    " raw " +
+                    the_target.binary_type + " NULL)");
+  db.map<Said>(k_said_table)
+    .primary_key("id", &Said::id)
+    .column("said", &Said::said)
+    .column("maybe", &Said::maybe)
+    .column("amount", &Said::amount)
+    .column("day", &Said::day)
+    .column("moment", &Said::moment)
+    .column("raw", &Said::raw);
+
+  std::vector<std::string> const sayings{ "plain", ",", "\"", "\\", "{}",
+    "{a,b}", "\"x\"", R"(a\"b)", "  ", " tail ", " head ", "\t\n", "NULL",
+    "null", "NUL", "n", "日本語の文本", "a{b\"c\\d}", std::string(120, 'q') };
+  std::vector<Said> rows;
+  for (std::size_t index = 0; index < sayings.size(); ++index) {
+    Said row;
+    row.id = 7000 + static_cast<std::int64_t>(index);
+    // Nothing of the shape these rows take is in the stored value: the batch
+    // below is what puts every column's spelling there.
+    row.said = "placeholder";
+    row.raw = std::vector<std::byte>{ std::byte{ 0x41 } };
+    rows.push_back(std::move(row));
+  }
+  CHECK(db.insert(rows) == rows.size());
+
+  for (std::size_t index = 0; index < rows.size(); ++index) {
+    rows[index].said = sayings[index];
+    // A column that goes from a value to nothing, from nothing to an empty
+    // text, and back again: the empty text and the absence are two different
+    // things and the fold has to tell them apart.
+    rows[index].maybe = index % 3 == 0
+                          ? std::optional<std::string>(std::string{})
+                          : (index % 3 == 1 ? std::nullopt
+                                            : std::optional<std::string>(
+                                                "m" + std::to_string(index)));
+    rows[index].amount = static_cast<double>(index) / 3.0;
+    rows[index].day = index % 4 == 0
+                        ? std::nullopt
+                        : std::optional<timestamp>(detail::make_timestamp(2024,
+                            static_cast<unsigned>(1 + index % 12),
+                            static_cast<unsigned>(1 + index % 28), 0, 0, 0, 0));
+    rows[index].moment = index % 5 == 0
+                           ? std::nullopt
+                           : std::optional<timestamp>(detail::make_timestamp(
+                               2024, 3, 4, 12, 34, 56, 123456000UL));
+    // One row's bytes are none at all, and the rest carry the punctuation
+    // beside the bytes no text encoding reads.
+    if (index == 0) {
+      rows[index].raw = std::vector<std::byte>{};
+    } else if (index % 2 == 0) {
+      rows[index].raw = std::vector<std::byte>{ std::byte{ 0x00 },
+        std::byte{ 0xff }, std::byte{ '"' }, std::byte{ '\\' },
+        std::byte{ ',' }, std::byte{ '{' }, std::byte{ '}' } };
+    }
+  }
+  CHECK(db.update(rows) == rows.size());
+
+  auto read = db.query<Said>().order_by(&Said::id).all();
+  CHECK(read.size() == rows.size());
+  for (std::size_t index = 0; index < read.size(); ++index) {
+    Said const& sent = rows[index];
+    Said const& got = read[index];
+    CHECK(got.id == sent.id);
+    CHECK(got.said == sent.said);
+    CHECK(got.maybe == sent.maybe);
+    CHECK(got.amount == sent.amount);
+    CHECK(got.day == sent.day);
+    CHECK(got.moment == sent.moment);
+    CHECK(got.raw == sent.raw);
+  }
+
+  // The same sweep the other way round, so every column is moved twice and the
+  // second fold reads its shapes off rows whose values are the opposite ones.
+  for (std::size_t index = 0; index < rows.size(); ++index) {
+    rows[index].said = "again " + sayings[index];
+    rows[index].maybe =
+      index % 3 == 0
+        ? std::nullopt
+        : (index % 3 == 1
+              ? std::optional<std::string>(std::string{})
+              : std::optional<std::string>("n" + std::to_string(index)));
+    rows[index].amount = -static_cast<double>(index) / 3.0;
+    rows[index].day = index % 4 == 0
+                        ? std::optional<timestamp>(detail::make_timestamp(2023,
+                            static_cast<unsigned>(1 + index % 12),
+                            static_cast<unsigned>(1 + index % 28), 0, 0, 0, 0))
+                        : std::nullopt;
+    rows[index].moment = index % 5 == 0
+                           ? std::optional<timestamp>(detail::make_timestamp(
+                               2025, 11, 12, 1, 2, 3, 999999000UL))
+                           : std::nullopt;
+    rows[index].raw = index == 0
+                        ? std::optional<std::vector<std::byte>>(
+                            std::vector<std::byte>{ std::byte{ 0x10 } })
+                        : std::nullopt;
+  }
+  CHECK(db.update(rows) == rows.size());
+  read = db.query<Said>().order_by(&Said::id).all();
+  CHECK(read.size() == rows.size());
+  for (std::size_t index = 0; index < read.size(); ++index) {
+    CHECK(read[index].said == rows[index].said);
+    CHECK(read[index].maybe == rows[index].maybe);
+    CHECK(read[index].amount == rows[index].amount);
+    CHECK(read[index].day == rows[index].day);
+    CHECK(read[index].moment == rows[index].moment);
+    CHECK(read[index].raw == rows[index].raw);
+  }
+
+  // The text column is the key of a delete here: the values that decide which
+  // rows go are spelled through the same source, so a row the server read as
+  // something else would stay while one that should have stayed would not.
+  std::vector<Said> keyed;
+  for (std::size_t index = 0; index < read.size(); index += 2) {
+    Said row;
+    row.said = read[index].said;
+    keyed.push_back(row);
+  }
+  CHECK(db.remove(keyed, { "said" }) == keyed.size());
+  auto left = db.query<Said>().order_by(&Said::id).all();
+  CHECK(left.size() == rows.size() - keyed.size());
+  for (std::size_t index = 0; index < left.size(); ++index) {
+    CHECK(left[index].said == rows[index * 2 + 1].said);
+  }
+
+  db.execute_update(std::string("DROP TABLE ") + k_said_table);
+}
+
 void test_update(orm& db) {
   std::vector<User> users{ User{ 400, "ivy", std::int32_t{ 33 }, 1.0,
                              std::nullopt, std::nullopt },
@@ -1523,6 +1692,22 @@ void test_composite_key_and_where_fields(orm& db) {
   CHECK(db.update(rebased) == 1);
   CHECK(label_of(8, 1) == "c2");
   CHECK(label_of(7, 1) == "a");
+
+  // A batch whose rows share the leading key column: a match on that column
+  // alone would rewrite rows the sweep never named. These three belong to no
+  // other case here, so nothing else reads them.
+  std::vector<Pair> shared{ { 9, 1, "x" }, { 9, 2, "y" }, { 9, 3, "z" } };
+  CHECK(db.insert(shared) == 3);
+  std::vector<Pair> relabelled{ { 9, 1, "x2" }, { 9, 3, "z2" } };
+  CHECK(db.update(relabelled) == 2);
+  CHECK(label_of(9, 1) == "x2");
+  CHECK(label_of(9, 2) == "y");
+  CHECK(label_of(9, 3) == "z2");
+  CHECK(db.remove(relabelled) == 2);
+  CHECK(label_of(9, 2) == "y");
+  std::vector<Pair> leftovers{ { 9, 2, "y" }, { 9, 4, "never" } };
+  CHECK(db.remove(leftovers) == 1);
+  CHECK(label_of(9, 2) == "<missing>");
 
   CHECK(db.remove(Pair{ 7, 1, "a" }) == 1);
   CHECK(label_of(7, 1) == "<missing>");
@@ -2605,6 +2790,7 @@ int main() {
     guarded("test_insert", [&] { test_insert(db); });
     guarded("test_batch_round_trip", [&] { test_batch_round_trip(db); });
     guarded("test_batch_shapes", [&] { test_batch_shapes(db); });
+    guarded("test_batch_spellings", [&] { test_batch_spellings(db); });
     guarded("test_update", [&] { test_update(db); });
     guarded("test_remove", [&] { test_remove(db); });
     guarded("test_entity_update", [&] { test_entity_update(db); });

@@ -17,7 +17,8 @@ uniorm 是一个现代化的 C++ 数据库访问层：核心构建在驱动中�
 - 事务（RAII）
 - 参数绑定、语句执行、结果集迭代
 - 批量 CRUD：数组参数绑定（`SQL_ATTR_PARAMSET_SIZE` 分批）+ 块取行
-  （`SQL_ATTR_ROW_ARRAY_SIZE`），见 §4.5.2
+  （`SQL_ATTR_ROW_ARRAY_SIZE`）；数组计不上数或每组一发往返的服务端，写侧改把一
+  chunk 折成一条语句，见 §4.5.2
 - 类型系统：SQL 类型 ↔ 现代 C++ 类型映射，含 converter 扩展点（§4.4）
 - 三种结果对象：
   - 聚合 struct 投影（按列序绑定，无需注册；注册过的类型改按列名，见 §4.6）
@@ -333,7 +334,10 @@ class statement {                      // SQLHSTMT，move-only
 
 方言推断不在本层：高层 `connection::dbms_name()`（`SQLGetInfo(SQL_DBMS_NAME)`）
 输出产品名，交由 `dialect::detect(std::string_view)` 解释（见 §4.8），
-保持 ODBC 封装层不依赖高层类型。
+保持 ODBC 封装层不依赖高层类型。服务端自报的版本同一条路上另问一次
+（`SQLGetInfo(SQL_DBMS_VER)`，libpq 插件读 `PQparameterStatus("server_version")`，
+OCI 插件取 `OCIServerVersion` banner 里 "Release " 之后那个数），
+交给 `dialect::accept_server_version`（见 §4.5.2）。
 
 错误处理策略：所有 ODBC 调用检查返回码，非成功（`SQL_SUCCESS` / `SQL_SUCCESS_WITH_INFO` 之外）即提取 `SQLGetDiagRec` 全部记录后抛 `odbc_error`。`SQL_SUCCESS_WITH_INFO` 不抛异常，它的诊断记录原样交给日志钩子（§7.1）；没装钩子时连 `SQLGetDiagRec` 也不调。
 
@@ -613,7 +617,13 @@ class connection {
 
     // 元数据
     std::string dbms_name() const;             // SQL_DBMS_NAME，方言推断输入
+    std::string server_version() const;        // SQL_DBMS_VER，行源形状的输入
     backend::capabilities caps() const noexcept;
+
+    // 折叠的行源要问的最后一件事：这些列在这个库里被叫什么类型。按问的顺序给，
+    // 目录答不出的位置是空串；一张表的拼法读一次就跟着连接活（见 §4.5.2）
+    std::vector<std::string> column_type_names(
+        schema_meta::table_ref const& table, std::vector<std::string> const& columns);
 
     // 标识符拼法：空＝不声明，跟着 banner 探出的那家方言走（见 §4.8）
     std::optional<dialect::identifier_case> identifier_case() const noexcept;
@@ -696,7 +706,8 @@ std::size_t r = db.remove(people);   // 同上；无键列可推断且未给 whe
 实现要点：
 
 - 语句只含**一行**占位符组：`INSERT INTO <表> (<列…>) VALUES (?, ?, …)`
-  （`UPDATE` / `DELETE` 同形），行与行靠**数组参数绑定**展开——
+  （`UPDATE` / `DELETE` 同形），行与行靠**数组参数绑定**展开——这说的是数组通道；
+  折叠通道把一 chunk 的行写进语句本身，见下面两条能力位那一段——
   `SQL_ATTR_PARAMSET_SIZE` 决定每次 `SQLExecute` 提交的参数集个数，分批粒度是
   `orm::paramset_size()`（默认 1000；setter 把 0 归一为默认值，getter 因而总是
   报出实际生效值——列式分批循环以该值为步长，0 会原地打转）。`orm::row_array_size()`
@@ -708,7 +719,10 @@ std::size_t r = db.remove(people);   // 同上；无键列可推断且未给 whe
   - **列式**：backend 经 `batch_writer_iface` 按列分配 typed buffer，变长列 stride
     取该块内最大字节数（字符列 +1，列式路径另有 65 字节下限），实体字段经
     `column_meta::write_to_param_buffer` 直写缓冲，**只 `SQLBindParameter` 一次**，
-    后续块只覆写缓冲内容 + 重设 paramset size 再 execute；
+    后续块只覆写缓冲内容 + 重设 paramset size 再 execute；这一家在 psqlODBC 上
+    报回的受累行数仍是错的数（每组参数都执行了，`SQLRowCount` 停在其中一组的
+    行数），这里不绕——`insert()` 数的是提交的行数，`update()` / `remove()` 又
+    被下面那两条能力位送进折叠，两笔账都不经它；
   - **行式**：`bind_batch_params(std::vector<params>)` 把行式 `sql_value` 转置成列
     数组，逐块重绑
 - 顺序上先写缓冲后绑定：部分驱动（MariaDB ODBC）在 `SQLBindParameter` 时就会读缓冲内容
@@ -725,13 +739,123 @@ std::size_t r = db.remove(people);   // 同上；无键列可推断且未给 whe
   `array_rowcount_totals` 管；`update()` / `remove()` 累加 `affected_rows()`
 - `update()` / `remove()` 返回的正是那个累加值，而数组绑定时它是**驱动**给的：
   psqlODBC `16.00` 把每组参数都执行了，`SQLRowCount` 却停在其中一组的行数，两支
-  MySQL 线连接器报的是整组的总数（5 组全命中：`1` 对 `5`；一组不命中：`1` 对 `4`），
-  逐组 execute 再累加在三者上都得到同一个数。于是 `caps()` 多一项
-  `array_rowcount_totals`，ODBC 实现按 `SQL_DRIVER_NAME` 认出 psqlODBC 并清零它，
-  核心随即把这两处累加受累行数的批量写——`update()` 与 `remove()`——的分批粒度
-  收成 1，两条写通道都受这个粒度管。多付的只是客户端的 execute 次数——服务端那边
-  MariaDB 的连接器本来就把 5 组压成一条命令、Connector/ODBC 本来就发 5 条，逐组与
-  整组在两者上收到的命令数一样。insert 两条通道数的都是绑定的行数，不受此影响
+  MySQL 线连接器报的是整组的总数（5 组全命中：`1` 对 `5`；一组不命中：`1` 对 `4`）。
+  于是 `caps()` 用两项管这条通道：`array_rowcount_totals` 说一次数组 execute 报回
+  的是不是整组总数（ODBC 实现按 `SQL_DRIVER_NAME` 认出 psqlODBC 并清零它），
+  `array_single_send` 说一次 execute 是不是只发一次服务端往返（libpq 插件清零它：
+  这一家逐组发，200 行 UPDATE 每组 43.6 ms，正是一条往返的价钱）。两者皆真才留在
+  数组通道；任意为假而 `dialect.batch_write` 又认得这家服务端，`update()` 与
+  `remove()` 就走下面的折叠语句，两条写通道都不再受"分批粒度收成 1"管。insert
+  两条通道数的都是绑定的行数，不受这两项影响。OCI 与 ODBC 上报整组总数的连接器
+  都留在数组通道：2000 行、best of 3 实测那边 update 0.155、delete 0.102 ms
+  一行，且本次改动没碰这条通道
+- 这条选路另有一把用户开关 `orm::batch_write_policy()`（嵌套枚举 `batch_policy`，
+  默认 `automatic`，即上面这套由 caps 与方言决定的逻辑；`async::orm` 转发同名
+  访问器）。`folded` 强制走折叠语句，服务端没有折叠形状（`dialect.batch_write ==
+  none`，或 chunk 被上限夹到 0）时抛 `uniorm_error`；`columnar` 强制走参数组数组、
+  绝不折叠，chunk 取满生效的 `paramset_size` 而不收成一——于是 psqlODBC 上那次
+  整块 execute 报回的就是偏小的数组行数（见上），选它即认下这个返回值。没有列式
+  通道的 backend（`caps().columnar_batch` 为假）上 `columnar` 退回首尾相接的行式，
+  chunk 同样取满。insert 不读这把开关。选路集中在 `src/orm.cpp` 的
+  `choose_batch_route`，`update_batch_impl` / `delete_batch_impl` 共用；开关经批量
+  模板传进这两个静态入口（与 `paramset_size_` 同路）
+- **折叠语句**：一个 chunk 一条语句。行不再靠数组展开，而是读成一个派生表
+  `uo_batch_rows`，行源有三种形状：
+  - **种子元组**：种子一段 `SELECT <列> FROM <表> WHERE 1 = 0` 给出列名与列类型
+    （Oracle 的每条字面 SELECT 都补 `FROM dual`），随后每行一组 `SELECT ?, ?, ?`。
+    值都走参数，形状本身不认得任何类型名——代价是行数进了语句文本，参数个数撞
+    下面那条上限，列的类型也只看种子行；
+  - **数组**：`unnest(?::int8[], ?::text[]) AS uo_batch_rows(<列名>)`，一列一个
+    数组参数。只有 PostgreSQL 认这形状，且要服务端 9.4 及以上（更早的 `unnest`
+    一次只收一个数组），文本不随行数变，参数个数与行数无关，因而没有上限那一档、
+    也撞不到 54001 的栈深度；列的类型来自目录给的类型名。两种前提都靠连接问：
+    版本读自 `connection::server_version()`，类型名读自
+    `connection::column_type_names()`——不认得目录的 backend 答不出类型名，折叠
+    就退回种子元组
+  - **VALUES 构造器**：`(VALUES (?, ?), (?, ?)) [AS] uo_batch_rows(<列名>)`，
+    一段 VALUES 列表取代整条 `UNION ALL` 链，列名挂在别名上而不是由种子 SELECT
+    给出，那段死种子扫描也随之去掉。值仍是一行一组参数，所以参数个数照撞下面那条
+    上限、chunk 照被它切；省的是解析器要走的文本。SQL Server 2008（10.0）及以上、
+    Oracle 23ai（23）及以上认这形状，版本读自 `connection::server_version()`、
+    闸在 `accept_server_version`；SQL Server 别名前带 `AS`，Oracle 不带。MySQL 线
+    暂仍走种子元组：它的 VALUES 要 8.0.19、MariaDB 要 10.3.3，都是补丁级版本且两家
+    版本号不同口径，现有解析只取 major.minor，又没有活服务端可验
+  被写的表另起别名 `uo_batch_target`，两边靠 key 相等连接。两个别名都不带引号，
+  各家按自己的大小写习惯把它们折进语句里，列名仍走 `dialect::quote_identifier`，
+  于是与真列名同拼写。四家的形状（`(…)` 在够着版本的 SQL Server 与 Oracle 上就是
+  那段 VALUES 构造器，列名挂在别名上）：
+  - PostgreSQL：`UPDATE <表> uo_batch_target SET <裸列> = uo_batch_rows.<列> …
+    FROM (…) uo_batch_rows WHERE …`——SET 左侧带限定名时服务端把它当作目标表的
+    一个列名，别名不算（实测 42703）；删除为
+    `DELETE FROM <表> uo_batch_target USING (…) uo_batch_rows WHERE …`
+  - MySQL 线：`UPDATE <表> uo_batch_target JOIN (…) uo_batch_rows ON … SET
+    uo_batch_target.<列> = uo_batch_rows.<列>`——这儿正相反，裸列在两张表里都在，
+    不限定就歧义；删除为 `DELETE uo_batch_target FROM … JOIN …`
+  - Oracle：`MERGE INTO <表> uo_batch_target USING (…) uo_batch_rows ON (…)`
+    配 `WHEN MATCHED THEN UPDATE SET …`；删除为
+    `DELETE FROM <表> uo_batch_target WHERE EXISTS (…)`
+  - SQL Server：`UPDATE uo_batch_target SET … FROM <表> uo_batch_target JOIN …`；
+    删除为 `DELETE uo_batch_target FROM … JOIN …`
+- 数组形状的元素是写进文本的值，不是参数，因而每个非空元素双引号包住，只对 `"`
+  与 `\` 做反斜杠转义（引号内的 `,`、`{`、`}` 就是字面量），缺席的值写裸
+  `NULL`——被引号包住的 `NULL` 是那四个字母。含 NUL 字节的值直接抛错：一个参数
+  会被截断，一个字面量会把整段语法打断。`timestamp` 的文本含不含日期与时刻看
+  这一列的类型名（`date` 只有日期，带 `time` 而不带 `stamp` 的只有时刻，其余
+  两者都写），字节串写 `\x` 加小写十六进制，浮点用 `%.17g`，布尔写 `1` / `0`
+- 一条种子元组或 VALUES 构造器折叠语句最多带多少参数由
+  `dialect::fold_parameter_ceiling` 管：一行的代价是 key 列加 set 列，chunk 取
+  `paramset_size` 与「上限 / 每行参数」的较小值（VALUES 省的只是文本，参数仍是一行
+  一组，照被这条上限切）。数组形状的参数个数与行数无关，chunk 就是 `paramset_size`，
+  这条上限管不着它。前两家的 4000、Oracle 的 3000、SQL Server 的 2000 都读自服务端——
+  psqlODBC 到 6000 参数
+  还答得准、9000 就把连接丢了；Oracle 的 ODBC 驱动在 ~64 KB 文本之后回截断的语句；
+  SQL Server 本身一条语句上限 2100 参数。MySQL 线那个 4000 没在服务端读过。尾巴
+  一段行数不同、文本也就不同，因而是语句缓存里的另一条语句
+- 折叠写对一个 key 只落一次，落在哪一组值上由服务端挑（实测两种形状都挑源里第一
+  个被提到的那一行）；核心因此在折叠前按**匹配列**去重——不是按主键，
+  调用方点名别的列时匹配列就不是主键——把最后一行的值放进首次出现的槽位，
+  那正是逐条写留下的值。计数因此按行而不是按元组：同一个 key 写两遍只记
+  一遍。去重比的是实体里的值，不在服务端眼里比：两行在核心看来不同、服务端
+  按自己的排序规则或类型补全看成一个 key（大小写不敏感的排序规则、
+  `CHAR(n)` 补空格、`citext` 这一类），去重就拦不住，最终值由服务端挑；
+  逐条写在这种输入上顺序恰好确定，也并没有说清要哪一组值
+- 今天真走到折叠的只有 PostgreSQL 两条通道（ODBC 上的 psqlODBC 与 libpq 插件），
+  两条形状不同：psqlODBC 那条读得出目录，叫得出列的类型名，走数组；libpq 插件
+  按设计还不读目录（见 `backends/libpq/backend.hpp`），走种子元组。另三家的形状
+  由 `tests/unit/test_fold_batch.cpp` 钉住文本；SQL Server 与 Oracle 够着版本时的
+  VALUES 构造器形状（update / delete 的文本、逐行绑定、版本闸的上下两侧）也由它
+  钉住，连同 VALUES 仍按参数上限切块（行数从绑定数读，VALUES 文本没有 UNION ALL）
+  与某列整批为 NULL 时仍一行一个绑定、不被行源丢掉。Oracle 那条已在活服务端验过：
+  Oracle 23ai Free（Release 23.26.3）经 OCI 插件、`batch_write_policy(folded)`
+  强制折叠，2000 行 update / delete 各按 3000 参数上限切成 750 行一段，返回值都是
+  2000，回读核对更新命中 2000、删除后剩 0（best of 3：update 524 ms、delete
+  121 ms）。这条闸要 OCI 报得出 `server_version()` 才 fire——它从 `OCIServerVersion`
+  的 banner 里取 "Release " 之后那个数（banner 开头的 "26ai" 是营销名，不是闸读的
+  release）；找不到 "Release " 就报空版本，退回种子元组而不是拿营销名去闸。VALUES
+  没有种子 SELECT 定类型，列类型由服务端按目标列上下文推断：整批 NULL 列的推断与
+  SQL Server 的 VALUES 活库执行都仍待真服务端验（后者要一台 2008+ 的实例）。Oracle
+  的 MERGE 与
+  EXISTS 删除另在真服务端手工执行验过，只是它的路由今天不经折叠。复合主键的折叠
+  写由集成测试在那两条通道上跑活库：一批行共享 key 的首列，只按首列匹配就会改掉
+  这批没点名的行；写进文本的那些值（行源自己的标点、空串与缺席、只有日期的、
+  只有时刻的、字节）由 `test_batch_spellings` 在这两条通道上跑活库，一条走数组、
+  一条走种子元组。选路开关的三种取值由 `test_fold_batch.cpp` 与
+  `test_batch_shape.cpp` 钉住：`folded` 越过 caps 仍折叠、服务端无折叠形状时抛
+  `uniorm_error`，`columnar` 在报偏小数的 fake 上一次 execute 带整块、返回值就是
+  那一组的数
+- 实测（PostgreSQL 18 容器）：psqlODBC 逐组 execute 是 74.9 / 81.8 ms 一行
+  （1000 行 UPDATE / DELETE），折叠成 0.313 / 0.296 ms 一行；libpq 逐组是
+  43.6 / 38.4，折叠成 0.408 / 0.304。perf 那两条腿各取 best of 3：ODBC 2000 行
+  `update (batch)` 503.68 ms（0.25 ms 一行）、`delete (batch)` 202.53 ms
+  （0.10 ms 一行），libpq 10000 行分别 1326.89 ms（0.13）与 594.48 ms（0.06）。
+  两边的计数都仍是逐行对得上的命中数
+- 数组形状与种子元组在 psqlODBC 这条腿上各测一轮（20000 行、best of 3）：
+  `update (batch)` 1233.45 对 1473.87 ms，`delete (batch)` 334.47 对 672.06 ms。
+  两轮之间这条链路本身快了约一倍——同一轮里不经折叠的 `insert (batch)` 是
+  3581.76 对 6942.19 ms——这两个差数因此不能记在形状头上。形状确定给的是另外
+  三件事：文本不随行数变（尾巴不再切成语句缓存里的另一条语句）、参数个数与行数
+  无关（9 列 × 500 行一次 execute 发出去，种子元组在 444 行停）、撞不到 54001
+  的栈深度
 - "数提交的行数"依赖一个前提：**某一行失败必须抛**。ODBC 的 `execute()` 只把
   `SQL_ERROR` 当失败（`SQL_SUCCESS_WITH_INFO` 算成功），所以若某家驱动只把行级
   失败报成 info，`insert()` 的总数会偏大。这一家在此测不到（此机无可达的
@@ -862,6 +986,12 @@ class orm {                             // 非线程安全，按线程/会话持
     // 标识符拼法：空＝不声明，跟着连接的方言走；租到连接时重贴（见 §4.8）
     void identifier_case(std::optional<dialect::identifier_case>);
 
+    // 批量 update/remove 的选路开关（insert 不受影响：从不折叠，数绑定的行数）：
+    // automatic 由 caps 决定，folded 强制折叠（服务端无折叠形状抛 uniorm_error），
+    // columnar 强制参数组数组、绝不折叠；psqlODBC 走 columnar 返回值偏小（§4.5.2）
+    enum class batch_policy { automatic, folded, columnar };
+    batch_policy batch_write_policy() const noexcept;  void batch_write_policy(batch_policy);  // automatic
+
     template <class T> mapping_builder<T> map(std::string_view table);  // 重复注册抛 mapping_error
     template <class T> entity_meta const& meta() const;                 // 未注册抛 mapping_error
     entity_meta const* find(std::type_index type) const;
@@ -924,7 +1054,8 @@ std::string_view>)` 与动态表名版区分；无主键又没给 `where_fields`
 `meta<Entity>()` 与 `(data, sizeof(Entity), size)`，余下的 WHERE 解析、SET/WHERE
 列划分、语句文本、通道选择与事务都编译在库里，`Entity` 本身只在头文件这一层出现。
 同一条纪律也管住了非模板成员：配置访问器（`row_array_size` / `paramset_size` /
-`auto_commit` / `identifier_case`）、`find` / `size` 与 `native_connection` 都定义
+`auto_commit` / `identifier_case` / `batch_write_policy`）、`find` / `size` 与
+`native_connection` 都定义
 在 `src/orm.cpp`，头文件里只剩下声明、两个 `default_*` 常量，以及必须由调用方实例
 化的模板。写路径
 因此并未变慢：批量入口读的是 `paramset_size_` 成员本身，是否自开事务看
@@ -1050,11 +1181,17 @@ template <class T, class M> column_ref<T, M> col(M T::*member);
 struct dialect {
     enum class identifier_case { keep, lower, upper };
     enum class qualification { unsupported, schema, catalog };
+    enum class batch_family { none, postgresql, mysql, oracle, sql_server };
+    enum class batch_source { parameter_tuples, typed_arrays, value_constructors };
 
     char quote_open = '"', quote_close = '"';     // MySQL/MariaDB → ` `
     bool ansi_pagination = true;                  // false → LIMIT/OFFSET
     identifier_case identifiers = identifier_case::keep;
     qualification table_qualification = qualification::unsupported;
+    batch_family batch_write = batch_family::none;      // 认不出家门就留在数组通道
+    std::size_t fold_parameter_ceiling = 0;             // 0 = 不折叠
+    batch_source batch_rows = batch_source::parameter_tuples;  // 见 accept_server_version
+    std::size_t server_version = 0;                 // 9.4.20 → 904，没答就是 0
 
     std::string fold_identifier(std::string_view identifier) const;
     std::string quote_identifier(std::string_view identifier) const;
@@ -1063,6 +1200,10 @@ struct dialect {
     std::string pagination(std::optional<std::size_t> limit, std::size_t offset) const;
 
     static dialect detect(std::string_view dbms_name);   // 输入 connection::dbms_name()
+    // 第二个输入是 connection::server_version()：PostgreSQL 9.4 及以上认数组行源
+    // （一次 `unnest` 收多个数组参数是从这一版起的）；SQL Server 2008（10.0）与
+    // Oracle 23ai（23）及以上认 VALUES 构造器行源；其余留在种子元组
+    void accept_server_version(std::string_view version);
 };
 ```
 
@@ -1354,8 +1495,9 @@ worker 池的一条线程上。异步只回答三件事——这次同步调用�
   同名同参，一份注册配方对着手里那把写一遍就够。`:560` 那条接管已配好的对象仍留
   着，说的是"连里面的租约一起拿走"，现在没有用例走它。装 task 那一组
   （`connect`/`disconnect`/`execute_update`/实体批量三件/`query` 两式/
-  `auto_commit`/`commit`/`rollback`/`begin`）、四个只改内存的配置面按名字转发
-  （`map`（`:575`）、`row_array_size`、`paramset_size`、`identifier_case`，外加
+  `auto_commit`/`commit`/`rollback`/`begin`）、五个只改内存的配置面按名字转发
+  （`map`（`:575`）、`row_array_size`、`paramset_size`、`identifier_case`、
+  `batch_write_policy`，外加
   `auto_commit` 的读档——写它仍是一次操作）、`run_on`（`:601`）、`resume_on`
   （`:608`）、`submit_limit`（`:612`、`:614`）、`pending()`（`:617`），以及按值
   持有的那条 FIFO。`wait_all_operations()`（`:623`）是那道屏障的公开出口：
@@ -1550,9 +1692,9 @@ env 可覆盖成单一目录，用于测试和非常规部署。
 一份 `libuniorm_oracle.so`，libpq 是自己一份 `libuniorm_postgresql.so`（同见 §5.4）。
 核心 API（查询
 构建器、映射、池、事务）只依赖接口；能力缺失时应当抛清晰错误而非静默降级。
-`capabilities` 上只有两条真分岔——
-`columnar_batch` 与 `array_rowcount_totals`——各有一条更慢的退路可走，其余缺什么
-抛什么（见下方能力清单）。
+`capabilities` 上只有三条真分岔——
+`columnar_batch`、`array_rowcount_totals` 与 `array_single_send`——各有一条更慢的
+退路可走，其余缺什么抛什么（见下方能力清单）。
 
 **中立列缓冲契约**——三条物化路径（result_set / 聚合投影 / 实体直绑）
 统一为"调用方缓冲 + indicator"：
@@ -1583,7 +1725,8 @@ struct column_buffer { buffer_type type; void* data; std::size_t capacity;
 **语句与连接接口**：
 
 ```cpp
-struct capabilities { bool columnar_batch, array_rowcount_totals; };
+struct capabilities { bool columnar_batch, array_rowcount_totals,
+                       array_single_send; };
 
 struct statement_iface {
     void prepare(std::string_view sql);                    // SQL 用 '?' 占位符
@@ -1612,8 +1755,8 @@ struct batch_writer_iface { std::size_t add_column(buffer_type, count, element_s
 struct connection_iface { /* open(connection_string)（必选）/
                             open(connection_spec)（可选，默认抛）/ close /
                             is_open / set_autocommit / commit / rollback /
-                            caps / dbms_name / create_statement / schema() /
-                            native_handle */ };
+                            caps / dbms_name / server_version / create_statement /
+                            schema() / native_handle */ };
 
 struct column_shape { /* name / type / nullable；table_shape = 它的 vector，
                         find_column(shape, name) 按目录顺序找 */ };
@@ -1676,9 +1819,10 @@ MySQL 一类本来没有该层级的命名空间，不是通配符。匹配器�
 矛盾列元数据，一次解析只枚举一次目标范围、每张实际表只读一次列。
 
 ODBC 实现的当前能力：`{columnar_batch=true, array_rowcount_totals=开连接时按驱动
-探测}`。两个标志各有真实消费点：前者让 `orm` 的三个批量入口据此在列式与行式通道间
-二选一（§4.5.2），后者决定两条受累行数 sweep 的分批粒度（§4.5），ODBC 实现按
-`SQL_DRIVER_NAME` 认出 psqlODBC 才清零它。每个标志只表示"有一条更快的路"：缺能力时
+探测, array_single_send=true}`。三个标志各有真实消费点：前者让 `orm` 的三个批量入口
+据此在列式与行式通道间二选一（§4.5.2），后两者决定两条受累行数 sweep 走数组还是走
+折叠语句（§4.5.2），ODBC 实现按 `SQL_DRIVER_NAME` 认出 psqlODBC 才清零
+`array_rowcount_totals`。每个标志只表示"有一条更快的路"：缺能力时
 核心走慢的那条而不抛错，所以 backend 全置 `false` 也不失正确性。表结构自省不在这批
 标志里：它没有更慢的那条路可退，答不出即由 `connection::schema()` 抛
 `capability_not_supported`（门面侧的 `orm::schema()` 只转发，§4.7）。清单只装核心
@@ -1760,7 +1904,10 @@ PQputCopyData(pg, ...);                     // 用户自行驱动原生操作
    `run_batch()` 把各行同列的值铺成一条列方向的缓冲，步长取元素大小，行数交给
    `OCIStmtExecute` 的迭代次数。把行数写在绑定上的那一种形状（`maxarr_len` 非零
    再加 `OCIBindArrayOfStruct`）在 21.13 client 与 26ai Free 服务端这一对上答
-   ORA-03101，插、改、删同拒，故插件不走它。剩下没接的是目录读取，它让
+   ORA-03101，插、改、删同拒，故插件不走它。`server_version()` 从
+   `OCIServerVersion` 的 banner 取 "Release " 之后那个数（开头的 "26ai" 是营销名，
+   不是 release；没有 "Release " 就报空版本、退回种子元组），于是 §4.5.2 的 VALUES
+   行源闸在这条腿上 fire。剩下没接的是目录读取，它让
    `orm::schema()` 报 `capability_not_supported`
 2. **libpq**（PostgreSQL）——**已落地**：`backends/libpq/`，scheme `"postgresql"`，
    装成 `libuniorm_postgresql.so`，CI 为它单开一支作业（§8）。两条 `open` 原语都接：
@@ -1768,7 +1915,10 @@ PQputCopyData(pg, ...);                     // 用户自行驱动原生操作
    列式通道它不交——一批行从行式通道进来，`run_batch()` 再自己铺一次：insert 那一行
    VALUES 组被重复成一条多组语句（细节见本节末），铺不回去的仍旧一行一条 execute。
    `array_rowcount_totals` 交 `true`，因为整批的行数要么由服务端一次答出，要么是它
-   自己逐行加总出来的，与 OCI 那家同是一件事。
+   自己逐行加总出来的，与 OCI 那家同是一件事。`array_single_send` 交 `false`：
+   数组通道在这儿逐组发，200 行 UPDATE 实测每组 43.6 ms，正是一条往返的价钱，
+   于是核心的批量 `update()` / `remove()` 走折叠语句而不是它（§4.5.2）。insert
+   数的仍是绑定的行数，留在原路上
 
    值在两个方向上都是文本：绑出去时按列的形状写（`DATE` 不带时钟、`TIME` 不带日），
    读回来时按 `PQftype` 报的形状拆。所以一连上就先钉住两件会话默认——
@@ -1796,9 +1946,11 @@ libpq 把它拼成空格分隔的 conninfo，OCI 连串都没有——用户名�
 `65535/列数`，一批里的各组取同一行数，免得语句文本忽长忽短。那条语句不挂名字，
 连着参数一起交给 `PQexecParams`：批量跑在事务里，而事务里丢名字是没法补的——一次
 26000 已经把事务废了，再 `PQprepare` 只换来 25P02。认不出可重复组的（UPDATE、
-DELETE，以及一切带子查询的写法）仍旧一行一条 execute。两家的 `array_rowcount_totals`
-也都是 `true`——一次批量交回的行数，要么是服务端给整批的那一个总数，要么是它们
-自己逐行加总出来的，两个问题同一个答案。
+DELETE，以及一切带子查询的写法）仍旧一行一条 execute——不过核心的批量
+`update()` / `remove()` 今天已经不交数组给它了：这一家的 `array_single_send` 是
+`false`，两条写改走 §4.5.2 的折叠语句，一次 execute 一条语句。两家的
+`array_rowcount_totals` 也都是 `true`——一次批量交回的行数，要么是服务端给整批的
+那一个总数，要么是它们自己逐行加总出来的，两个问题同一个答案。
 
 ## 6. uniorm-gen 代码生成工具
 
@@ -2556,8 +2708,10 @@ commit/rollback/析构回滚、批量插入（含空 optional 写 NULL、1500 �
    形状长出：一份 plugin、一份白盒 export（`uniormLibpqTargets.cmake`），CI 也为它单开
    一支作业（§8）。
 9. ~~能力清单落地：`capabilities` 的四个未读标志各自找到真实消费点~~ **已完成**：
-   四个占位已删，清单只剩 `columnar_batch` 与 `array_rowcount_totals`，两条各有
-   读者（§5.2）；后者随 §8 那条 PostgreSQL 腿落地。
+   四个占位已删，清单先是只剩 `columnar_batch` 与 `array_rowcount_totals`，两条各有
+   读者（§5.2）；后者随 §8 那条 PostgreSQL 腿落地。批量写要分辨"数组数不满整组"与
+   "数组每组一次往返"，于是清单又长出第三条 `array_single_send`，读者同在后两条
+   sweep 上（§4.5.2、§5.2）。
    ~~并把 `capability_not_supported` 的抛出接上~~ **已完成**：表结构自省没有
    更慢的退路，backend 答不出时由 `connection::schema()` 抛它（§5.2）
 10. ~~池归还时的状态清理~~ **已完成**：`release` 见 `autocommit()` 为假即

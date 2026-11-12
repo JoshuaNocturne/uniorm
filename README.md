@@ -50,7 +50,16 @@ The full API reference is [docs/design.md](docs/design.md).
   of placeholders sent as an array of parameter sets
   (`SQL_ATTR_PARAMSET_SIZE` on ODBC, the iteration count of one
   `OCIStmtExecute` on OCI), chunked by `paramset_size`, wrapped in a
-  transaction when the connection autocommits
+  transaction when the connection autocommits. A batch `update` / `remove` on
+  a server whose array execute either counts short of the whole block or costs
+  a round trip per set — psqlODBC and libpq — goes as one folded statement per
+  chunk instead, its rows arriving as seeded `UNION ALL` tuples, as a `VALUES`
+  constructor on SQL Server 2008+ and Oracle 23ai+, or, on PostgreSQL 9.4+ over
+  a backend that names column types, as one array per column with the values
+  written into the text; `docs/design.md` §4.5.2 keeps the shape of each family.
+  `batch_write_policy` picks the route by hand
+  (`automatic` / `folded` / `columnar`); the columnar route on psqlODBC returns
+  a row count short of the rows written
 - **RAII transactions** — automatic rollback on destruction
 - **Async** (`async.hpp`) — the same synchronous calls as
   `uniorm::async::task<T>`: one session runs one operation at a time, three
@@ -322,6 +331,46 @@ Two sizes are settable on the `orm` and clamped if you hand them a zero:
 `paramset_size` (default 1000) rows per bound execute, and `row_array_size`
 (default 100) rows per fetch on every read path.
 
+A folded statement carries the whole chunk in its own text. Seeded tuples
+repeat one `UNION ALL` row per row, so `paramset_size` is only how far it may
+reach: the server's ceiling on parameters per statement caps it first, and a
+chunk's tail is a different statement. SQL Server 2008 and up, and Oracle 23ai
+and up, answer with a `VALUES` constructor instead — `(VALUES (?, ?), (?, ?))
+AS uo_batch_rows(id, name)` (Oracle drops the `AS`) — which trades the `UNION
+ALL` chain and its dead seed scan for one list; the binds are still one group
+per row, so the same parameter ceiling caps it. PostgreSQL 9.4 and up answer
+the same chunk with one array per column — `unnest(?::int8[], ?::text[])` — for
+as long as the backend can name a column's type: that text does not grow with
+the rows, so there is no parameter ceiling to reach and one statement serves
+every chunk, and the types come from the names the catalog gives rather than
+from a seed row. Either way a returned row count is one number per chunk summed
+over chunks, and rows whose match columns repeat inside one batch write once,
+with the last row's values — a per-row sweep would leave exactly that.
+
+Which shape a batch `update` / `remove` takes is settable on the `orm`:
+
+```cpp
+db.batch_write_policy(uniorm::orm::batch_policy::automatic);  // the default
+// db.batch_write_policy(uniorm::orm::batch_policy::folded);
+// db.batch_write_policy(uniorm::orm::batch_policy::columnar);
+```
+
+`automatic` lets the backend's capabilities decide: fold when the array execute
+would count short of the block or cost a round trip per set, otherwise send the
+array. `folded` forces one folded statement per chunk and throws `uniorm_error`
+when the server has no fold shape. `columnar` forces the array-of-parameter-sets
+path and never folds. Insert ignores the policy — it never folds and counts the
+rows it bound. The same knob is forwarded on `async::orm`.
+
+**The columnar path on psqlODBC returns a short count.** psqlODBC reports one
+parameter set's row count for an execute that ran the whole array, so a batch
+`update` / `remove` forced to `columnar` returns that single set's count instead
+of the rows actually written: every row is written, only the return value is
+wrong. `automatic` avoids this — it folds on psqlODBC, and where a server has no
+fold shape it goes one set at a time — so choose `columnar` only when you do not
+rely on the returned count. This is the driver's own behavior; the library cannot
+correct a count it is handed short.
+
 ### Transactions and connection pool
 
 ```cpp
@@ -529,10 +578,13 @@ ctest --test-dir build --output-on-failure
 
 - **unit_tests** — in-memory tests over a fake backend and a fake catalog;
   links no backend library, so a driver type leaking into the public API fails
-  to compile. Carries the generator's config and output tests too, and the log
-  hook's own cases: delivery, the threshold gating assembly, silence with no
-  sink, a throwing sink, and two real emit points — a transaction destructor and
-  a pool connection whose reset failed
+  to compile. Carries the generator's config and output tests too, the folded
+  batch statement for the families no server here reaches — in all three
+  row-source shapes: seeded tuples, the `VALUES` constructor, and one array per
+  column — and the log hook's own cases:
+  delivery, the threshold gating assembly, silence with no sink, a throwing
+  sink, and two real emit points — a transaction destructor and a pool
+  connection whose reset failed
 - **odbc_unit_tests** — the private ODBC handle layer, its error translation,
   the catalog's name re-filter (driver manager only, no DSN required)
 - **oracle_oci_unit_tests** — the placeholder rewrite, Oracle's type table,

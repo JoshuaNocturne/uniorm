@@ -39,7 +39,15 @@ API 本身不点任何一家的客户端名。自带三家：默认构建的 ODB
 - **批量写入**：`db.insert(rows)` 与批量 `db.update(rows)` /
   `db.remove(rows)`：一条占位符语句按参数组数组发出（ODBC 那家是
   `SQL_ATTR_PARAMSET_SIZE`，OCI 那家是一次 `OCIStmtExecute` 的迭代次数），
-  按 `paramset_size` 分批；连接处于 autocommit 时整批扫描包进事务
+  按 `paramset_size` 分批；连接处于 autocommit 时整批扫描包进事务。数组
+  execute 数不满整组、或每组一次往返的服务端（psqlODBC 与 libpq），批量
+  `update` / `remove` 改成一个 chunk 一条折叠语句：行读成种子
+  `UNION ALL` 的字面元组，或在 SQL Server 2008 及以上、Oracle 23ai 及以上读成
+  一段 `VALUES` 构造器，或在 PostgreSQL 9.4 及以上、backend 又叫得出列
+  类型名时读成一列一个数组、值写进语句文本；各家的形状记在
+  `docs/design.md` §4.5.2。`batch_write_policy` 可手动选路
+  （`automatic` / `folded` / `columnar`）；psqlODBC 走列式时返回的行数比实际
+  写下的少
 - **RAII 事务**：析构自动回滚
 - **可选的异步**（`async.hpp`）：同一个同步契约套上
   `uniorm::async::task<T>`：一把会话同时只跑一个操作，三种 drive 动作
@@ -292,6 +300,38 @@ std::size_t d = db.remove("users")
 每次绑定执行多少行，`row_array_size`（默认 100）每条读取路径每次 fetch 物化
 多少行。
 
+折叠语句把整个 chunk 写进语句自己的文本。种子元组一行一组 `UNION ALL`，
+`paramset_size` 在那儿只是个上界：服务端一条语句的参数上限先把 chunk 夹住，
+一个 chunk 的尾巴因此是另一条语句。SQL Server 2008 及以上、Oracle 23ai 及以上
+改成一段 `VALUES` 构造器——`(VALUES (?, ?), (?, ?)) AS uo_batch_rows(id, name)`
+（Oracle 不带 `AS`）——用一段列表取代 `UNION ALL` 链和那段死种子扫描；值仍是一行
+一组参数，所以同一条参数上限照样夹它。PostgreSQL 9.4 及以上改成一列一个数组，值
+直接写进语句文本，backend 叫得出列的类型名才走这条形状：它的文本不随行数变，
+没有参数上限可撞，一种文本服务所有 chunk，列的类型也来自目录给的名字而不是种子
+行。这些形状返回的受累行数都是按 chunk 累加，一批里匹配列重复的行只写一次，
+落的是最后一行的值——逐条写留下的也正是这个值。
+
+批量 `update` / `remove` 走哪种形状可在 `orm` 上点名：
+
+```cpp
+db.batch_write_policy(uniorm::orm::batch_policy::automatic);  // 默认
+// db.batch_write_policy(uniorm::orm::batch_policy::folded);
+// db.batch_write_policy(uniorm::orm::batch_policy::columnar);
+```
+
+`automatic` 由 backend 的能力决定：数组 execute 数不满整块、或每组一次往返时
+走折叠，否则直接发数组。`folded` 强制一个 chunk 一条折叠语句，服务端没有折叠
+形状时抛 `uniorm_error`。`columnar` 强制走参数组数组那条路，绝不折叠。insert
+不受这个开关影响——它从不折叠，数的是自己绑定的行数。`async::orm` 上转发同一个
+开关。
+
+**psqlODBC 走列式时返回值偏小。** psqlODBC 对一次跑完整块数组的 execute 只报
+一个参数组的行数，所以强制 `columnar` 的批量 `update` / `remove` 返回的是那一组
+的数，而不是实际写下的行数：行全都写进去了，错的只是返回值。`automatic` 避开了
+这一点——它在 psqlODBC 上走折叠，服务端没有折叠形状时则一组一组地发——所以只有
+在不依赖返回值时才选 `columnar`。这是驱动自己的行为，库拿到的数本就偏小，无从
+纠正。
+
 ### 事务与连接池
 
 ```cpp
@@ -481,9 +521,10 @@ ctest --test-dir build --output-on-failure
 
 - **unit_tests**：纯内存测试，基于 fake backend 与 fake 目录运行，且不链接任何
   backend 库，公共 API 一旦泄漏驱动类型即编译失败。它还收纳生成器的配置与
-  输出用例，以及日志钩子自己那一组：记录送达、门限挡住拼装、没装 sink 时的静默、
-  sink 抛异常不伤调用方，再加两个真接线点——`transaction` 析构，与归还时重置失败的
-  池连接
+  输出用例、折叠批量语句在这台机器上没有活服务端可跑的各家文本（三种行源
+  形状都钉：种子元组、`VALUES` 构造器、一列一个数组），以及日志钩子自己那一组：记录送达、
+  门限挡住拼装、没装 sink 时的静默、sink 抛异常不伤调用方，再加两个真接线
+  点——`transaction` 析构，与归还时重置失败的池连接
 - **odbc_unit_tests**：私有 ODBC 句柄层、它的错误转换，以及目录行按名字再筛
   那条判据（仅驱动管理器，无需 DSN）
 - **oracle_oci_unit_tests**：Oracle backend 自己那一层——占位符改写、它的类型表，

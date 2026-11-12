@@ -62,6 +62,21 @@ std::string oci_connection::dbms_name() const {
   return std::string(text, std::strlen(text));
 }
 
+std::string oci_connection::server_version() const {
+  OraText banner[512] = {};
+  throw_if_error(OCIServerVersion(conn_.service(), conn_.error(), banner,
+                   static_cast<ub4>(sizeof(banner)), OCI_HTYPE_SVCCTX),
+    conn_.error(), "read the server version");
+  std::string const text(reinterpret_cast<char const*>(banner),
+    std::strlen(reinterpret_cast<char const*>(banner)));
+  // The banner leads with a marketing name ("23ai", "19c") whose digits are not
+  // the release the shape gate reads; the number after "Release " is. A banner
+  // without that marker leaves the version unsaid, which keeps the seeded shape
+  // rather than gating on the marketing number.
+  std::size_t const at = text.find("Release ");
+  return at != std::string::npos ? text.substr(at + 8) : std::string{};
+}
+
 std::unique_ptr<backend::statement_iface> oci_connection::create_statement() {
   return std::make_unique<oci_statement>(conn_);
 }

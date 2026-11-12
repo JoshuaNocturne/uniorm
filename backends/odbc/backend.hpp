@@ -90,6 +90,7 @@ public:
   void rollback() override;
   backend::capabilities caps() const noexcept override;
   std::string dbms_name() const override;
+  std::string server_version() const override;
   std::unique_ptr<backend::statement_iface> create_statement() override;
   schema_meta* schema() noexcept override;
   void* native_handle() noexcept override;

@@ -236,45 +236,12 @@ inline backend::timestamp_parts parts_of(char const* text, unsigned native) {
   return out;
 }
 
-// A number written to the width the server pads it to.
-inline std::string padded(std::uint64_t value, std::size_t width) {
-  std::string out = std::to_string(value);
-  while (out.size() < width) {
-    out.insert(out.begin(), '0');
-  }
-  return out;
-}
-
-// The parts back into the words of the column they are bound to: the shape
-// that decides how a text is taken apart is the one that decides how it is
-// written, so a date carries no clock and a clock no day. A type the describe
-// left open keeps the whole shape, which every one of these takes.
+// A type the describe left open keeps the whole shape, which every one of
+// these takes.
 inline std::string text_of_timestamp(timestamp const& value, unsigned native) {
-  auto const parts = uniorm::detail::break_timestamp(value);
   text_shape const shape = shape_of(native);
-  std::string clock;
-  if (shape.has_clock) {
-    clock = padded(parts.hour, 2) + ':' + padded(parts.minute, 2) + ':' +
-            padded(parts.second, 2);
-    // The server keeps microseconds, and a fraction it cannot hold is left out
-    // rather than sent as a rounding of it.
-    std::uint64_t const micros = parts.fraction_ns / 1000UL;
-    if (micros != 0) {
-      std::string fraction = padded(micros, 6);
-      while (fraction.back() == '0') {
-        fraction.pop_back();
-      }
-      clock += '.';
-      clock += fraction;
-    }
-  }
-  if (!shape.has_day) {
-    return clock;
-  }
-  std::string const date = padded(static_cast<std::uint64_t>(parts.year), 4) +
-                           '-' + padded(parts.month, 2) + '-' +
-                           padded(parts.day, 2);
-  return shape.has_clock ? date + ' ' + clock : date;
+  return uniorm::detail::text_of_timestamp(
+    value, shape.has_day, shape.has_clock);
 }
 
 }  // namespace uniorm::libpq

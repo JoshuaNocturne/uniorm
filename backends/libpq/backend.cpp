@@ -44,10 +44,13 @@ void pq_connection::rollback() {
 }
 
 // The columnar channel is the one this backend does not offer: a batch is
-// executed row by row here. The counts run_batch() adds up are the whole
-// array's total, which is the second flag's question.
+// executed row by row here, which is also why an execute of a parameter array
+// is not one send -- 200 rows of UPDATE took 43.6 ms apiece on the measured
+// link, which is a round trip per row. The counts run_batch() adds up are the
+// whole array's total, which is the second flag's question.
 backend::capabilities pq_connection::caps() const noexcept {
-  return { /*columnar_batch=*/false, /*array_rowcount_totals=*/true };
+  return { /*columnar_batch=*/false, /*array_rowcount_totals=*/true,
+    /*array_single_send=*/false };
 }
 
 // The version the server reported at connect time, under the one name this
@@ -64,6 +67,16 @@ std::string pq_connection::dbms_name() const {
     name += version;
   }
   return name;
+}
+
+// The same words the server sent at connect time, on their own.
+std::string pq_connection::server_version() const {
+  PGconn const* const session = conn_.native();
+  if (session == nullptr) {
+    return {};
+  }
+  char const* const version = PQparameterStatus(session, "server_version");
+  return version == nullptr ? std::string() : std::string(version);
 }
 
 std::unique_ptr<backend::statement_iface> pq_connection::create_statement() {

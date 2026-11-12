@@ -712,6 +712,19 @@ std::string backend_connection::dbms_name() const {
   return std::string(buffer, static_cast<std::size_t>(length));
 }
 
+// A shape gate that cannot read a version simply stays with the older shape,
+// so a driver that does not answer this one is not an error.
+std::string backend_connection::server_version() const {
+  char buffer[128] = {};
+  SQLSMALLINT length = 0;
+  SQLRETURN const rc =
+    SQLGetInfo(conn_.native(), SQL_DBMS_VER, buffer, sizeof(buffer), &length);
+  if (!SQL_SUCCEEDED(rc) || length < 0) {
+    return {};
+  }
+  return std::string(buffer, static_cast<std::size_t>(length));
+}
+
 std::unique_ptr<backend::statement_iface>
 backend_connection::create_statement() {
   return std::make_unique<backend_statement>(conn_);

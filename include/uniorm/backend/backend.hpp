@@ -90,9 +90,14 @@ struct capabilities {
   // hands bind_batch_params() one params vector per row.
   bool columnar_batch;
   // One execute of an array of parameter sets reports the row count of the
-  // whole array. Without it, a write that has to tally affected rows executes
-  // one parameter set at a time.
+  // whole array. Without it, a write that has to tally affected rows either
+  // executes one parameter set at a time or, for a server whose folded shape
+  // the core knows, puts a chunk of rows into one statement.
   bool array_rowcount_totals;
+  // One execute of an array of parameter sets is one send to the server. A
+  // driver that walks the sets itself costs a round trip apiece, so a batch
+  // that has to tally affected rows goes into one statement per chunk instead.
+  bool array_single_send = true;
 };
 
 // Direct-write batch interface. The backend allocates column buffers;
@@ -214,6 +219,14 @@ struct connection_iface {
 
   // Database product name used for dialect detection.
   virtual std::string dbms_name() const = 0;
+
+  // The server's own words for which version of itself it is, such as "18.6"
+  // or "9.4.20". A statement shape the server only grew in some release is
+  // gated on this; an empty answer leaves the core with the shapes that server
+  // has always had.
+  virtual std::string server_version() const {
+    return {};
+  }
 
   virtual std::unique_ptr<statement_iface> create_statement() = 0;
 

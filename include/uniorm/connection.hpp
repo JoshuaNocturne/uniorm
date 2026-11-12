@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <functional>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -99,6 +100,15 @@ public:
   // does.
   schema_meta& schema() const;
 
+  // The server's own spelling of each named column's type, in the order the
+  // columns were asked for, and empty where the catalog has no answer. A
+  // table's spelling is read once and kept for as long as the connection
+  // lives, since the server does not change what a column is under it.
+  // Asking costs nothing when the answer is already here.
+  std::vector<std::string> column_type_names(
+    schema_meta::table_ref const& table,
+    std::vector<std::string> const& columns);
+
   // Escape hatch: the caller names the expected native handle type
   // (void* for ODBC's SQLHDBC, PGconn for libpq, ...) knowing which
   // backend it connected to.
@@ -127,6 +137,11 @@ private:
   // Built on first spelling. A closed connection is never reopened, so the
   // server facts it holds cannot go stale; the policy is rewritten in place.
   std::optional<dialect> sql_dialect_;
+  // What the catalog said each column's type is, per qualified table name,
+  // read on first ask. It lives here for the same reason the statement cache
+  // does: a server does not change an answer while the connection stands.
+  std::map<std::string, std::vector<std::pair<std::string, std::string>>>
+    column_types_;
 };
 
 }  // namespace uniorm

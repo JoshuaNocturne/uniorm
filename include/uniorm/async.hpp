@@ -589,6 +589,10 @@ public:
 
   void paramset_size(std::size_t size) noexcept;
 
+  uniorm::orm::batch_policy batch_write_policy() const noexcept;
+
+  void batch_write_policy(uniorm::orm::batch_policy policy) noexcept;
+
   // Reading the mode is here; changing it is an operation, because it reaches
   // the connection.
   bool auto_commit() const noexcept;

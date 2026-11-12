@@ -118,6 +118,14 @@ void orm::paramset_size(std::size_t size) noexcept {
   db_.paramset_size(size);
 }
 
+uniorm::orm::batch_policy orm::batch_write_policy() const noexcept {
+  return db_.batch_write_policy();
+}
+
+void orm::batch_write_policy(uniorm::orm::batch_policy policy) noexcept {
+  db_.batch_write_policy(policy);
+}
+
 bool orm::auto_commit() const noexcept {
   return db_.auto_commit();
 }

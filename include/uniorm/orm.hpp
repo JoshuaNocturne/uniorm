@@ -70,6 +70,18 @@ public:
   std::size_t row_array_size() const noexcept;
   void row_array_size(std::size_t size) noexcept;
 
+  // --- Batch write routing (update/remove) ---
+  // Which shape a batch update/remove takes. `automatic` lets the backend's
+  // capabilities decide (the default). `folded` forces one folded statement
+  // per chunk and throws when the server has no fold shape. `columnar` forces
+  // the array-of-parameter-sets path and returns the driver's count for it,
+  // which psqlODBC reports short of the rows actually written. Insert ignores
+  // this: it never folds and counts the rows it bound.
+  enum class batch_policy { automatic, folded, columnar };
+
+  batch_policy batch_write_policy() const noexcept;
+  void batch_write_policy(batch_policy policy) noexcept;
+
   // --- Batch operation configuration (insert/update) ---
   // Rows bound per execute(). 0 is clamped: the columnar loop advances by it.
   static constexpr std::size_t default_paramset_size = 1000;
@@ -193,7 +205,7 @@ public:
     ensure_connected();
     return update_batch_impl(native_connection(), meta<Entity>(),
       entities.data(), sizeof(Entity), entities.size(), std::nullopt,
-      paramset_size_);
+      paramset_size_, batch_policy_);
   }
 
   // Batch entity update with explicit where fields
@@ -203,7 +215,7 @@ public:
     ensure_connected();
     return update_batch_impl(native_connection(), meta<Entity>(),
       entities.data(), sizeof(Entity), entities.size(), where_fields,
-      paramset_size_);
+      paramset_size_, batch_policy_);
   }
 
   // ========================================================================
@@ -242,7 +254,7 @@ public:
     ensure_connected();
     return delete_batch_impl(native_connection(), meta<Entity>(),
       entities.data(), sizeof(Entity), entities.size(), std::nullopt,
-      paramset_size_);
+      paramset_size_, batch_policy_);
   }
 
   // Batch entity remove with explicit where fields
@@ -252,7 +264,7 @@ public:
     ensure_connected();
     return delete_batch_impl(native_connection(), meta<Entity>(),
       entities.data(), sizeof(Entity), entities.size(), where_fields,
-      paramset_size_);
+      paramset_size_, batch_policy_);
   }
 
   // ========================================================================
@@ -306,6 +318,7 @@ private:
   std::unordered_map<std::type_index, entity_meta> entities_;
   std::size_t row_array_size_ = default_row_array_size;
   std::size_t paramset_size_ = default_paramset_size;
+  batch_policy batch_policy_ = batch_policy::automatic;
   bool auto_commit_ = true;  // commit mode applied to every connection
   // Spelling policy applied to every connection, as auto_commit_ is.
   std::optional<dialect::identifier_case> identifiers_;
@@ -327,7 +340,7 @@ private:
   static std::size_t update_batch_impl(connection& conn, entity_meta const& m,
     void const* rows, std::size_t row_stride, std::size_t row_count,
     std::optional<std::vector<std::string>> const& where_fields,
-    std::size_t batch_size);
+    std::size_t batch_size, batch_policy policy);
 
   static std::size_t delete_single_impl(connection& conn, entity_meta const& m,
     void const* entity,
@@ -336,7 +349,7 @@ private:
   static std::size_t delete_batch_impl(connection& conn, entity_meta const& m,
     void const* rows, std::size_t row_stride, std::size_t row_count,
     std::optional<std::vector<std::string>> const& where_fields,
-    std::size_t batch_size);
+    std::size_t batch_size, batch_policy policy);
 };
 
 }  // namespace uniorm

@@ -296,6 +296,18 @@ std::size_t d = db.remove("users")
                   .execute();
 ```
 
+批量 `update` 写的是实体映射的每一列。要逐行只改其中几列，就把一个更窄的实体
+映射到同一张表：这一趟只 SET 点名的列，每行其余列保持原值。
+
+```cpp
+struct UserAge { std::int64_t id; std::optional<std::int32_t> age; };
+db.map<UserAge>("users")
+    .primary_key("id", &UserAge::id)
+    .column("age", &UserAge::age);
+std::vector<UserAge> ages = /* ... */;
+db.update(ages);   // 只 SET age；name 不动
+```
+
 两个尺寸可在 `orm` 上设，传 0 会被夹回默认值：`paramset_size`（默认 1000）
 每次绑定执行多少行，`row_array_size`（默认 100）每条读取路径每次 fetch 物化
 多少行。

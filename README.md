@@ -327,6 +327,19 @@ std::size_t d = db.remove("users")
                   .execute();
 ```
 
+A batch `update` writes every column its entity maps. To change only some
+columns per row, map a narrower entity to the same table; the sweep sets just
+those columns and leaves the rest of each row as it was:
+
+```cpp
+struct UserAge { std::int64_t id; std::optional<std::int32_t> age; };
+db.map<UserAge>("users")
+    .primary_key("id", &UserAge::id)
+    .column("age", &UserAge::age);
+std::vector<UserAge> ages = /* ... */;
+db.update(ages);   // SET age only; name is untouched
+```
+
 Two sizes are settable on the `orm` and clamped if you hand them a zero:
 `paramset_size` (default 1000) rows per bound execute, and `row_array_size`
 (default 100) rows per fetch on every read path.

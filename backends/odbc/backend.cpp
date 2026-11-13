@@ -659,15 +659,36 @@ backend_connection::backend_connection()
 
 void backend_connection::open(std::string_view connection_string) {
   conn_.open(connection_string);
-  // psqlODBC applies every parameter set but leaves SQLRowCount at the count
-  // of one of them; both MySQL-wire connectors report the array's total.
-  char name[64] = {};
+  // Executability stays false unless the driver confirms batch support. The
+  // gate is SQL_BATCH_SUPPORT, not SQL_PARAM_ARRAY_ROW_COUNTS: the MySQL-wire
+  // connectors report NO_BATCH row counts yet still run an array INSERT, while
+  // Oracle's ODBC driver reports SQL_BATCH_SUPPORT == 0 and drops every array
+  // DML. A driver that disclaims batch support gets the core's safe fallback.
+  SQLUINTEGER batch_support = 0;
   SQLSMALLINT length = 0;
+  if (SQL_SUCCEEDED(SQLGetInfo(conn_.native(), SQL_BATCH_SUPPORT,
+        &batch_support, sizeof(batch_support), &length)) &&
+      batch_support != 0) {
+    array_insert_ = true;
+    array_update_delete_ = true;
+  }
+  // The driver name refines what the array path can do. psqlODBC applies every
+  // set but leaves SQLRowCount at the count of one of them; the MySQL-wire
+  // connectors report the array's total.
+  char name[64] = {};
   if (SQL_SUCCEEDED(SQLGetInfo(
-        conn_.native(), SQL_DRIVER_NAME, name, sizeof(name), &length)) &&
-      std::string_view(name, static_cast<std::size_t>(length))
-          .find("psqlodbc") != std::string_view::npos) {
-    array_rowcount_totals_ = false;
+        conn_.native(), SQL_DRIVER_NAME, name, sizeof(name), &length))) {
+    std::string_view driver(name, static_cast<std::size_t>(length));
+    if (driver.find("psqlodbc") != std::string_view::npos) {
+      array_rowcount_totals_ = false;
+    }
+    // The MySQL-wire connectors run an array INSERT as multi-row VALUES but
+    // render an array UPDATE/DELETE as ;-separated multi-statement text the
+    // server rejects, so only the INSERT path stays open.
+    if (driver.find("maodbc") != std::string_view::npos ||
+        driver.find("myodbc") != std::string_view::npos) {
+      array_update_delete_ = false;
+    }
   }
 }
 
@@ -699,7 +720,10 @@ void backend_connection::rollback() {
 
 backend::capabilities backend_connection::caps() const noexcept {
   return { /*columnar_batch=*/true,
-    /*array_rowcount_totals=*/array_rowcount_totals_ };
+    /*array_rowcount_totals=*/array_rowcount_totals_,
+    /*array_single_send=*/true,
+    /*array_insert=*/array_insert_,
+    /*array_update_delete=*/array_update_delete_ };
 }
 
 std::string backend_connection::dbms_name() const {

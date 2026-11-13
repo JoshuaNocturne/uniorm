@@ -100,6 +100,8 @@ private:
   // Declared after conn_, which it refers to.
   odbc_schema_meta metadata_;
   bool array_rowcount_totals_ = true;
+  bool array_insert_ = false;
+  bool array_update_delete_ = false;
 };
 
 }  // namespace uniorm::odbc

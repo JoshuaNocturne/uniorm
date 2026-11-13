@@ -50,7 +50,9 @@ void oci_connection::rollback() {
 // execute. The counts it adds up are the whole array's total, which is the
 // second flag's question.
 backend::capabilities oci_connection::caps() const noexcept {
-  return { /*columnar_batch=*/false, /*array_rowcount_totals=*/true };
+  return { /*columnar_batch=*/false, /*array_rowcount_totals=*/true,
+    /*array_single_send=*/true, /*array_insert=*/true,
+    /*array_update_delete=*/true };
 }
 
 std::string oci_connection::dbms_name() const {

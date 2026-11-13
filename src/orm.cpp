@@ -901,17 +901,6 @@ std::size_t fold_chunk(
   return by_ceiling < chunk ? by_ceiling : chunk;
 }
 
-// Whether this sweep goes folded: the family has a shape for it, and the
-// backend's array of parameter sets either counts short of the array or sends
-// it one set at a time. An array that both counts and carries the whole block
-// is the cheaper route, so nothing here takes it away.
-bool write_folded(connection const& conn, dialect const& dialect,
-  std::size_t columns_per_row, std::size_t chunk) {
-  return dialect.batch_write != dialect::batch_family::none &&
-         fold_chunk(dialect, chunk, columns_per_row) > 0 &&
-         (!conn.caps().array_rowcount_totals || !conn.caps().array_single_send);
-}
-
 // The fold a sweep uses and how deep one execute of it goes. Arrays carry
 // whatever the caller asked for: two parameters however many rows they hold,
 // one text for every chunk, a parse as shallow as the column count. A tuple
@@ -1308,35 +1297,52 @@ std::size_t write_chunk(connection const& conn, std::size_t chunk) {
 // The route a batch update/remove takes and how deep one execute of it goes.
 struct batch_route {
   bool folded = false;
+  // The driver cannot execute an array of parameter sets and this server has
+  // no folded shape, so each row goes on its own (PARAMSET_SIZE = 1).
+  bool paramset_one = false;
   fold_shape shape;
   std::size_t chunk = 1;
 };
 
 batch_route choose_batch_route(connection& conn, entity_meta const& entity,
   dialect const& d, std::vector<std::size_t> const& columns,
-  std::size_t asked_chunk, orm::batch_policy policy) {
+  std::size_t asked_chunk, orm::batch_policy policy, bool array_ok) {
   batch_route route;
+  bool const can_fold = d.batch_write != dialect::batch_family::none &&
+                        fold_chunk(d, asked_chunk, columns.size()) > 0;
   if (policy == orm::batch_policy::columnar) {
+    if (!array_ok) {
+      throw uniorm_error(
+        "batch write: this driver cannot execute an array of parameter sets");
+    }
     // The caller chose the array-of-parameter-sets path and takes the count
     // the driver reports for it, so the whole chunk goes in one execute and
     // write_chunk's collapse-to-one is deliberately bypassed.
     route.chunk = asked_chunk;
     return route;
   }
-  bool const can_fold = d.batch_write != dialect::batch_family::none &&
-                        fold_chunk(d, asked_chunk, columns.size()) > 0;
-  if (policy == orm::batch_policy::folded) {
-    if (!can_fold) {
-      throw uniorm_error("batch write: this server has no folded batch shape");
-    }
-  } else if (!write_folded(conn, d, columns.size(), asked_chunk)) {
-    route.chunk = write_chunk(conn, asked_chunk);
+  // Fold when the caller asks for it, when the array path is unusable, or when
+  // the array would count short of the whole block or send it one set at a
+  // time. An array that both counts and carries the whole block is cheaper.
+  bool const want_fold = policy == orm::batch_policy::folded || !array_ok ||
+                         !conn.caps().array_rowcount_totals ||
+                         !conn.caps().array_single_send;
+  if (want_fold && can_fold) {
+    fold_plan const plan = plan_fold(conn, entity, d, columns, asked_chunk);
+    route.folded = true;
+    route.shape = plan.shape;
+    route.chunk = plan.chunk;
     return route;
   }
-  fold_plan const plan = plan_fold(conn, entity, d, columns, asked_chunk);
-  route.folded = true;
-  route.shape = plan.shape;
-  route.chunk = plan.chunk;
+  if (policy == orm::batch_policy::folded) {
+    throw uniorm_error("batch write: this server has no folded batch shape");
+  }
+  if (!array_ok) {
+    route.paramset_one = true;
+    route.chunk = 1;
+    return route;
+  }
+  route.chunk = write_chunk(conn, asked_chunk);
   return route;
 }
 
@@ -1357,7 +1363,10 @@ std::size_t orm::insert_impl(connection& conn, entity_meta const& m,
   std::optional<transaction> txn = begin_batch(conn);
 
   std::size_t inserted;
-  if (conn.caps().columnar_batch) {
+  if (!conn.caps().array_insert) {
+    // The driver drops or rejects an array INSERT, so each row goes on its own.
+    inserted = insert_rowwise(conn, m, rows, row_stride, row_count, 1);
+  } else if (conn.caps().columnar_batch) {
     dialect const& d = conn.sql_dialect();
     inserted =
       columnar_batch_write(conn, m, build_insert_sql(d, m), all_columns(m),
@@ -1406,8 +1415,8 @@ std::size_t orm::update_batch_impl(connection& conn, entity_meta const& m,
   dialect const& d = conn.sql_dialect();
   std::vector<std::size_t> const source_cols =
     concat_columns(where_cols, set_cols);
-  batch_route const route =
-    choose_batch_route(conn, m, d, source_cols, asked_chunk, policy);
+  batch_route const route = choose_batch_route(conn, m, d, source_cols,
+    asked_chunk, policy, conn.caps().array_update_delete);
 
   std::optional<transaction> txn = begin_batch(conn);
 
@@ -1416,6 +1425,9 @@ std::size_t orm::update_batch_impl(connection& conn, entity_meta const& m,
     updated = folded_batch_write(conn, m, d, fold_operation::update, set_cols,
       where_cols, distinct_key_rows(m, rows, row_stride, row_count, where_cols),
       rows, row_stride, route.chunk, route.shape);
+  } else if (route.paramset_one) {
+    updated = update_rowwise(
+      conn, m, set_cols, where_cols, rows, row_stride, row_count, 1);
   } else if (conn.caps().columnar_batch) {
     updated = columnar_batch_write(conn, m,
       update_statement(m, d, set_cols, where_cols),
@@ -1452,8 +1464,8 @@ std::size_t orm::delete_batch_impl(connection& conn, entity_meta const& m,
   std::size_t const asked_chunk =
     batch_size > 0 ? batch_size : default_paramset_size;
   dialect const& d = conn.sql_dialect();
-  batch_route const route =
-    choose_batch_route(conn, m, d, where_cols, asked_chunk, policy);
+  batch_route const route = choose_batch_route(conn, m, d, where_cols,
+    asked_chunk, policy, conn.caps().array_update_delete);
 
   std::optional<transaction> txn = begin_batch(conn);
 
@@ -1462,6 +1474,9 @@ std::size_t orm::delete_batch_impl(connection& conn, entity_meta const& m,
     deleted = folded_batch_write(conn, m, d, fold_operation::remove, {},
       where_cols, distinct_key_rows(m, rows, row_stride, row_count, where_cols),
       rows, row_stride, route.chunk, route.shape);
+  } else if (route.paramset_one) {
+    deleted =
+      delete_rowwise(conn, m, where_cols, rows, row_stride, row_count, 1);
   } else if (conn.caps().columnar_batch) {
     deleted = columnar_batch_write(conn, m, delete_statement(m, d, where_cols),
       where_cols, rows, row_stride, row_count, route.chunk,

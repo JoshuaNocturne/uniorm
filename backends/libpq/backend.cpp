@@ -50,7 +50,8 @@ void pq_connection::rollback() {
 // whole array's total, which is the second flag's question.
 backend::capabilities pq_connection::caps() const noexcept {
   return { /*columnar_batch=*/false, /*array_rowcount_totals=*/true,
-    /*array_single_send=*/false };
+    /*array_single_send=*/false, /*array_insert=*/true,
+    /*array_update_delete=*/true };
 }
 
 // The version the server reported at connect time, under the one name this

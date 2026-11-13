@@ -84,7 +84,10 @@ struct column_buffer {
 
 // What a backend implementation offers. Each flag names an optional fast path
 // the core can do without: it takes a slower route rather than throwing, so a
-// backend that leaves every flag false is still correct.
+// backend that leaves every flag false is still correct. The flags fall in two
+// groups by what a wrong guess costs: the performance flags default true (a
+// wrong true only picks a slower route), the executability flags default false
+// (a wrong true would send an array the driver drops or rejects).
 struct capabilities {
   // Batch writes fill a batch_writer's column buffers; otherwise the core
   // hands bind_batch_params() one params vector per row.
@@ -98,6 +101,16 @@ struct capabilities {
   // driver that walks the sets itself costs a round trip apiece, so a batch
   // that has to tally affected rows goes into one statement per chunk instead.
   bool array_single_send = true;
+  // An array of parameter sets (PARAMSET_SIZE > 1) actually executes an
+  // INSERT on this driver. A driver that reports no batch support, or renders
+  // the array as text it cannot run, leaves this false so the core never sends
+  // an array INSERT that would silently drop rows or throw.
+  bool array_insert = false;
+  // The same for UPDATE and DELETE. Kept apart from array_insert because a
+  // driver can execute one and not the other: the MySQL-wire ODBC connectors
+  // run an array INSERT as multi-row VALUES but render an array UPDATE/DELETE
+  // as multi-statement text the server rejects.
+  bool array_update_delete = false;
 };
 
 // Direct-write batch interface. The backend allocates column buffers;

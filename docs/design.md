@@ -743,12 +743,16 @@ std::size_t r = db.remove(people);   // 同上；无键列可推断且未给 whe
   于是 `caps()` 用两项管这条通道：`array_rowcount_totals` 说一次数组 execute 报回
   的是不是整组总数（ODBC 实现按 `SQL_DRIVER_NAME` 认出 psqlODBC 并清零它），
   `array_single_send` 说一次 execute 是不是只发一次服务端往返（libpq 插件清零它：
-  这一家逐组发，200 行 UPDATE 每组 43.6 ms，正是一条往返的价钱）。两者皆真才留在
-  数组通道；任意为假而 `dialect.batch_write` 又认得这家服务端，`update()` 与
-  `remove()` 就走下面的折叠语句，两条写通道都不再受"分批粒度收成 1"管。insert
-  两条通道数的都是绑定的行数，不受这两项影响。OCI 与 ODBC 上报整组总数的连接器
-  都留在数组通道：2000 行、best of 3 实测那边 update 0.155、delete 0.102 ms
-  一行，且本次改动没碰这条通道
+  这一家逐组发，200 行 UPDATE 每组 43.6 ms，正是一条往返的价钱）。数组能不能执行
+  另由可执行性位管（§5.5）：ODBC 实现认出 MySQL 线连接器——`SQL_DRIVER_NAME` 含
+  `maodbc`/`myodbc`——清零 `array_update_delete`：这一家的数组 UPDATE/DELETE 渲染成
+  驱动执行不了的多语句文本，只能折叠。性能位两者皆真、可执行性又允许，才留在数组
+  通道；性能位任意为假或可执行性不许，而 `dialect.batch_write` 又认得这家服务端，
+  `update()` 与 `remove()` 就走下面的折叠语句（无折叠形状则 paramset=1 逐行），两条
+  写通道都不再受"分批粒度收成 1"管。insert 两条通道数的都是绑定的行数，不受性能位
+  影响（可执行性 `array_insert` 仍管它能否走数组）。OCI 与数组写可执行、报整组总数的
+  ODBC 连接器留在数组通道：2000 行、best of 3 实测那边 update 0.155、delete
+  0.102 ms 一行
 - 这条选路另有一把用户开关 `orm::batch_write_policy()`（嵌套枚举 `batch_policy`，
   默认 `automatic`，即上面这套由 caps 与方言决定的逻辑；`async::orm` 转发同名
   访问器）。`folded` 强制走折叠语句，服务端没有折叠形状（`dialect.batch_write ==
@@ -1692,9 +1696,10 @@ env 可覆盖成单一目录，用于测试和非常规部署。
 一份 `libuniorm_oracle.so`，libpq 是自己一份 `libuniorm_postgresql.so`（同见 §5.4）。
 核心 API（查询
 构建器、映射、池、事务）只依赖接口；能力缺失时应当抛清晰错误而非静默降级。
-`capabilities` 上只有三条真分岔——
-`columnar_batch`、`array_rowcount_totals` 与 `array_single_send`——各有一条更慢的
-退路可走，其余缺什么抛什么（见下方能力清单）。
+`capabilities` 上五条真分岔——性能/传输三位 `columnar_batch`、
+`array_rowcount_totals`、`array_single_send`，可执行性两位 `array_insert`、
+`array_update_delete`（§5.5）——各有一条更慢的退路可走，其余缺什么抛什么（见下方
+能力清单）。
 
 **中立列缓冲契约**——三条物化路径（result_set / 聚合投影 / 实体直绑）
 统一为"调用方缓冲 + indicator"：
@@ -1726,7 +1731,8 @@ struct column_buffer { buffer_type type; void* data; std::size_t capacity;
 
 ```cpp
 struct capabilities { bool columnar_batch, array_rowcount_totals,
-                       array_single_send; };
+                       array_single_send;
+                      bool array_insert = false, array_update_delete = false; };
 
 struct statement_iface {
     void prepare(std::string_view sql);                    // SQL 用 '?' 占位符
@@ -1818,11 +1824,16 @@ ODBC 在丢弃原始行的身份字段前逐字筛选，必需身份缺失或截
 MySQL 一类本来没有该层级的命名空间，不是通配符。匹配器再去重完整表身份、检查
 矛盾列元数据，一次解析只枚举一次目标范围、每张实际表只读一次列。
 
-ODBC 实现的当前能力：`{columnar_batch=true, array_rowcount_totals=开连接时按驱动
-探测, array_single_send=true}`。三个标志各有真实消费点：前者让 `orm` 的三个批量入口
-据此在列式与行式通道间二选一（§4.5.2），后两者决定两条受累行数 sweep 走数组还是走
-折叠语句（§4.5.2），ODBC 实现按 `SQL_DRIVER_NAME` 认出 psqlODBC 才清零
-`array_rowcount_totals`。每个标志只表示"有一条更快的路"：缺能力时
+ODBC 实现的当前能力：`{columnar_batch=true, array_rowcount_totals=按驱动名探测,
+array_single_send=true, array_insert / array_update_delete=按 SQL_BATCH_SUPPORT
+探测}`。性能/传输位各有真实消费点：`columnar_batch` 让 `orm` 的三个批量入口据此在
+列式与行式通道间二选一（§4.5.2），`array_rowcount_totals` / `array_single_send`
+决定两条受累行数 sweep 走数组还是走折叠语句（§4.5.2）；可执行性两位是数组路径的硬闸
+（§5.5）。ODBC 先按 `SQL_BATCH_SUPPORT` 定可执行性（非零 → 两位 `true`，为零 →
+`false`），再按 `SQL_DRIVER_NAME` 细化：psqlODBC 清零 `array_rowcount_totals`（数组
+execute 报偏小数）；MySQL 线连接器（名含 `maodbc`/`myodbc`）清零 `array_update_delete`
+（数组 UPDATE/DELETE 渲染成执行不了的多语句文本，须折叠），`array_insert` 留 `true`
+（其数组 INSERT 是多行 VALUES，可执行）。每个标志只表示"有一条更快的路"：缺能力时
 核心走慢的那条而不抛错，所以 backend 全置 `false` 也不失正确性。表结构自省不在这批
 标志里：它没有更慢的那条路可退，答不出即由 `connection::schema()` 抛
 `capability_not_supported`（门面侧的 `orm::schema()` 只转发，§4.7）。清单只装核心
@@ -1951,6 +1962,71 @@ DELETE，以及一切带子查询的写法）仍旧一行一条 execute——不
 `false`，两条写改走 §4.5.2 的折叠语句，一次 execute 一条语句。两家的
 `array_rowcount_totals` 也都是 `true`——一次批量交回的行数，要么是服务端给整批的
 那一个总数，要么是它们自己逐行加总出来的，两个问题同一个答案。
+
+### 5.5 数组 DML 可执行性能力探测
+
+动机见仓库根 `uniorm_mysql_automatic_crash_report.md` 与
+`uniorm_oracle_odbc_array_dml_report.md`。两家驱动各证一种数组 DML 不可用：MySQL 线
+连接器把数组 UPDATE/DELETE 渲染成执行不了的多语句文本（throw）；Oracle Instant
+Client ODBC 的数组 INSERT/UPDATE/DELETE 全静默 no-op（报成功、零落库，还扰乱事务）。
+失败形态不同（显式报错 vs 静默丢数据），同源：可执行性曾被当成性能位的副产品。
+
+**原则：按失败方向定默认值。** 性能/传输位失败后果是「慢」或「数偏小」，不丢数据，
+可乐观默认 `true`、探到例外再清零；可执行性位失败后果是丢数据或 throw，须保守默认
+`false`、探到驱动确认才置 `true`。「全 false 仍正确」在此恰为 fail-safe：可执行性
+全 false → 核心退折叠或 paramset=1，慢但正确。
+
+**能力分两类。** 现有三位归性能/传输，语义不变：`columnar_batch`（列缓冲通道在否）、
+`array_rowcount_totals`（计数）、`array_single_send`（发送）。可执行性两位默认
+`false`，按语句类型拆以容纳两家的不对称：
+
+```cpp
+bool array_insert = false;         // 数组 INSERT 是否真落库
+bool array_update_delete = false;  // 数组 UPDATE/DELETE 是否真落库
+```
+
+必须两位：MySQL 线是 `insert✓ / update-delete✗`，Oracle ODBC 是 `全✗`；单位装不下
+MySQL 的 insert 例外，`array_update_delete` 单位又装不下 Oracle 的 insert。名字不用
+「writes」，以免误扫 insert——insert 从不折叠，也不读这两位的折叠路。
+
+**探测：只认 `SQL_BATCH_SUPPORT`，驱动名作 per-type 细化。** ODBC `open()` 问
+`SQLGetInfo(SQL_BATCH_SUPPORT)`：非零 → 两位都 `true`；为零或问不到 → 两位留 `false`
+（Oracle ODBC 自报 `0`，保守闸）。再按驱动名细化：MySQL 线（`SQL_DRIVER_NAME` 含
+`maodbc`/`myodbc`）置 `array_update_delete=false`、`array_insert` 留 `true`（其数组
+INSERT 是多行 VALUES，可执行）。
+
+闸**不**用 `SQL_PARAM_ARRAY_ROW_COUNTS`：活库实测 MariaDB 自报
+`SQL_PARAM_ARRAY_ROW_COUNTS=SQL_PARC_NO_BATCH` 却仍能执行数组 INSERT——该位说的是
+「数组是否回逐组行数」，不是「数组能否执行」，拿它当闸会误退 MariaDB。三家自报
+`SQL_BATCH_SUPPORT`：psqlODBC `3`、MariaDB `15`、Oracle ODBC `0`，故只有 Oracle 落进
+保守闸。`array_rowcount_totals` 仍按驱动名定（psqlODBC 清零），与可执行性无关。
+
+**路由：可执行性是硬闸，性能位只在闸内选路。** 记
+`array_ok = is_insert ? array_insert : array_update_delete`：
+
+- `columnar` 策略：`!array_ok` → 抛 `uniorm_error`（驱动不能执行数组该类写）；
+  `array_ok` → 走数组、认下偏小计数。
+- `automatic` / `folded`：`!array_ok` → 绝不 `paramset>1`——update/delete 且方言有
+  折叠形状走 fold，否则（insert 或无折叠形状）走 paramset=1 逐行；`array_ok` 时
+  `folded` 走 fold，`automatic` 按 `(!totals || !single_send)` 选 fold 或数组。
+
+可执行性管「能不能」，性能位管「划不划算」，前者一票否决。强制 columnar 在不可执行
+时明确报错，不静默写坏。paramset=1 退路复用现有 `insert_rowwise` / `update_rowwise` /
+`delete_rowwise`，以 `batch_size=1` 调用即每组一次 execute——这些函数本就
+`set_paramset_size(count)`，`count=1` 时绝不发数组，故 Oracle ODBC 上不再静默丢。
+
+**int64 类型映射（正交，另案）。** Oracle ODBC 拒 `SQL_C_SBIGINT`/`SQL_BIGINT`（绑定
+与读取两侧），与路由无关，是 ODBC 后端一张按驱动的类型映射表：Oracle ODBC 把 int64
+改 `SQL_C_CHAR`/`SQL_VARCHAR`（全 64 位）或 `SQL_C_SLONG`（≤32 位）。报告首选 Oracle
+走 OCI 可整体绕开；若支持 Oracle ODBC，此表是前置条件，不混进 batch 能力位。本次
+未动它，故含 int64 列的语句在 Oracle ODBC 上仍会在绑定处报错。
+
+**迁移。** 新位默认 `false`，OCI/libpq 显式置 `true`（数组 DML 可执行），否则被保守
+闸误退折叠；ODBC 按上文探测。MySQL 热修由 `array_update_delete=false` 取代，
+`array_single_send` 回归纯发送语义。性能位默认与语义不动，PostgreSQL/MySQL 现有路由
+不变。活库核验：MariaDB（insert 数组、update/delete 折叠）、Oracle ODBC（两位 0，
+paramset=1/折叠，批量落库不再静默丢）、psqlODBC（insert 数组、update/delete 折叠）
+三家批量 insert/update/delete 均落库正确。
 
 ## 6. uniorm-gen 代码生成工具
 
@@ -2711,7 +2787,8 @@ commit/rollback/析构回滚、批量插入（含空 optional 写 NULL、1500 �
    四个占位已删，清单先是只剩 `columnar_batch` 与 `array_rowcount_totals`，两条各有
    读者（§5.2）；后者随 §8 那条 PostgreSQL 腿落地。批量写要分辨"数组数不满整组"与
    "数组每组一次往返"，于是清单又长出第三条 `array_single_send`，读者同在后两条
-   sweep 上（§4.5.2、§5.2）。
+   sweep 上（§4.5.2、§5.2）。数组 DML 能不能执行另独立成 `array_insert` /
+   `array_update_delete` 两位（§5.5），按失败方向保守默认 `false`，与性能位分开。
    ~~并把 `capability_not_supported` 的抛出接上~~ **已完成**：表结构自省没有
    更慢的退路，backend 答不出时由 `connection::schema()` 抛它（§5.2）
 10. ~~池归还时的状态清理~~ **已完成**：`release` 见 `autocommit()` 为假即

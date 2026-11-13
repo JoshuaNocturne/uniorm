@@ -51,8 +51,10 @@ The full API reference is [docs/design.md](docs/design.md).
   (`SQL_ATTR_PARAMSET_SIZE` on ODBC, the iteration count of one
   `OCIStmtExecute` on OCI), chunked by `paramset_size`, wrapped in a
   transaction when the connection autocommits. A batch `update` / `remove` on
-  a server whose array execute either counts short of the whole block or costs
-  a round trip per set — psqlODBC and libpq — goes as one folded statement per
+  a server whose array execute counts short of the whole block (psqlODBC),
+  costs a round trip per set (libpq), or cannot execute the array write at all
+  (the MySQL-wire ODBC connectors, Oracle's ODBC driver) goes as one folded
+  statement per
   chunk instead, its rows arriving as seeded `UNION ALL` tuples, as a `VALUES`
   constructor on SQL Server 2008+ and Oracle 23ai+, or, on PostgreSQL 9.4+ over
   a backend that names column types, as one array per column with the values
@@ -369,11 +371,15 @@ db.batch_write_policy(uniorm::orm::batch_policy::automatic);  // the default
 ```
 
 `automatic` lets the backend's capabilities decide: fold when the array execute
-would count short of the block or cost a round trip per set, otherwise send the
-array. `folded` forces one folded statement per chunk and throws `uniorm_error`
+would count short of the block, cost a round trip per set, or the driver cannot
+execute the array write at all; otherwise send the array. Where the array is
+unexecutable and the server has no fold shape, it goes one parameter set at a
+time. `folded` forces one folded statement per chunk and throws `uniorm_error`
 when the server has no fold shape. `columnar` forces the array-of-parameter-sets
-path and never folds. Insert ignores the policy — it never folds and counts the
-rows it bound. The same knob is forwarded on `async::orm`.
+path and never folds; it throws `uniorm_error` when the driver cannot execute
+that array write, rather than silently dropping rows. Insert ignores the policy
+— it never folds and counts the rows it bound. The same knob is forwarded on
+`async::orm`.
 
 **The columnar path on psqlODBC returns a short count.** psqlODBC reports one
 parameter set's row count for an execute that ran the whole array, so a batch

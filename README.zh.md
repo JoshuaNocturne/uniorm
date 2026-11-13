@@ -40,8 +40,10 @@ API 本身不点任何一家的客户端名。自带三家：默认构建的 ODB
   `db.remove(rows)`：一条占位符语句按参数组数组发出（ODBC 那家是
   `SQL_ATTR_PARAMSET_SIZE`，OCI 那家是一次 `OCIStmtExecute` 的迭代次数），
   按 `paramset_size` 分批；连接处于 autocommit 时整批扫描包进事务。数组
-  execute 数不满整组、或每组一次往返的服务端（psqlODBC 与 libpq），批量
-  `update` / `remove` 改成一个 chunk 一条折叠语句：行读成种子
+  execute 数不满整组（psqlODBC）、每组一次往返（libpq）、或数组写根本执行不了
+  （MySQL 线 ODBC 连接器、Oracle 的 ODBC 驱动）的服务端，批量 `update` / `remove`
+  改成一个 chunk
+  一条折叠语句：行读成种子
   `UNION ALL` 的字面元组，或在 SQL Server 2008 及以上、Oracle 23ai 及以上读成
   一段 `VALUES` 构造器，或在 PostgreSQL 9.4 及以上、backend 又叫得出列
   类型名时读成一列一个数组、值写进语句文本；各家的形状记在
@@ -331,11 +333,12 @@ db.batch_write_policy(uniorm::orm::batch_policy::automatic);  // 默认
 // db.batch_write_policy(uniorm::orm::batch_policy::columnar);
 ```
 
-`automatic` 由 backend 的能力决定：数组 execute 数不满整块、或每组一次往返时
-走折叠，否则直接发数组。`folded` 强制一个 chunk 一条折叠语句，服务端没有折叠
-形状时抛 `uniorm_error`。`columnar` 强制走参数组数组那条路，绝不折叠。insert
-不受这个开关影响——它从不折叠，数的是自己绑定的行数。`async::orm` 上转发同一个
-开关。
+`automatic` 由 backend 的能力决定：数组 execute 数不满整块、每组一次往返、或
+驱动根本执行不了这类数组写时走折叠，否则直接发数组；数组不可执行而服务端又没有
+折叠形状时，一组一组地发。`folded` 强制一个 chunk 一条折叠语句，服务端没有折叠
+形状时抛 `uniorm_error`。`columnar` 强制走参数组数组那条路，绝不折叠；驱动执行
+不了这类数组写时抛 `uniorm_error`，而不是静默丢行。insert 不受这个开关影响——它
+从不折叠，数的是自己绑定的行数。`async::orm` 上转发同一个开关。
 
 **psqlODBC 走列式时返回值偏小。** psqlODBC 对一次跑完整块数组的 execute 只报
 一个参数组的行数，所以强制 `columnar` 的批量 `update` / `remove` 返回的是那一组

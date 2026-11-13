@@ -377,7 +377,7 @@ public:
   void commit() override {}
   void rollback() override {}
   backend::capabilities caps() const noexcept override {
-    return { state_->columnar, true };
+    return { state_->columnar, true, true, true, true };
   }
   std::string dbms_name() const override {
     return state_->product;

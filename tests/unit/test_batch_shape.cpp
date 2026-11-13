@@ -111,7 +111,9 @@ public:
   void rollback() override {}
   backend::capabilities caps() const noexcept override {
     return { /*columnar_batch=*/false,
-      /*array_rowcount_totals=*/state_->report_array_totals };
+      /*array_rowcount_totals=*/state_->report_array_totals,
+      /*array_single_send=*/true, /*array_insert=*/true,
+      /*array_update_delete=*/true };
   }
   std::string dbms_name() const override {
     return "batch";

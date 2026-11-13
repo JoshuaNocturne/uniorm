@@ -100,8 +100,11 @@ struct fold_state {
   std::vector<std::pair<std::string, std::string>> types;
   // What one execute answers for the rows it touched.
   std::size_t report = 1;
+  bool columnar_batch = false;
   bool array_rowcount_totals = false;
   bool array_single_send = true;
+  bool array_insert = true;
+  bool array_update_delete = true;
 };
 
 // The catalog read the array row source is spelled from: the configured names
@@ -255,9 +258,11 @@ public:
   void commit() override {}
   void rollback() override {}
   backend::capabilities caps() const noexcept override {
-    return { /*columnar_batch=*/false,
+    return { /*columnar_batch=*/state_->columnar_batch,
       /*array_rowcount_totals=*/state_->array_rowcount_totals,
-      /*array_single_send=*/state_->array_single_send };
+      /*array_single_send=*/state_->array_single_send,
+      /*array_insert=*/state_->array_insert,
+      /*array_update_delete=*/state_->array_update_delete };
   }
   std::string dbms_name() const override {
     return state_->server;
@@ -685,6 +690,59 @@ void test_fold_batch() {
     CHECK(session.state->executes.size() == 1);
     CHECK(folded_sets(session.state->executes.front().text) == 3);
     CHECK(session.state->executes.front().array_sets == 0);
+  }
+
+  // The MySQL-wire ODBC connectors (MariaDB Connector/ODBC and the MySQL one):
+  // the array counts the whole block, but an array UPDATE/DELETE renders as
+  // multi-statement text the driver cannot execute, so the backend reports
+  // array_update_delete=false. Even with the columnar batch on offer, automatic
+  // must fold the write rather than take the array path that would throw.
+  {
+    fold_session session{ "foldmysqlwire" };
+    session.state->server = "MySQL";
+    session.state->columnar_batch = true;
+    session.state->array_rowcount_totals = true;
+    session.state->array_update_delete = false;
+    CHECK(session.database.update(two_rows) == session.state->report);
+    CHECK(session.state->executes.size() == 1);
+    CHECK(folded_sets(session.state->executes.front().text) == 2);
+    CHECK(session.state->executes.front().array_sets == 0);
+    CHECK(
+      session.state->executes.front().text.find("JOIN") != std::string::npos);
+
+    session.state->executes.clear();
+    CHECK(session.database.remove(one_row) == session.state->report);
+    CHECK(folded_sets(session.state->executes.front().text) == 1);
+    CHECK(session.state->executes.front().array_sets == 0);
+  }
+
+  // The same driver asked for the columnar path explicitly: the array UPDATE
+  // is unexecutable, so the request is refused rather than sent to a driver
+  // that would drop it or throw.
+  {
+    fold_session session{ "foldmysqlwirecolumnar" };
+    session.state->server = "MySQL";
+    session.state->columnar_batch = true;
+    session.state->array_rowcount_totals = true;
+    session.state->array_update_delete = false;
+    session.database.batch_write_policy(orm::batch_policy::columnar);
+    CHECK_THROWS(session.database.update(two_rows), uniorm_error);
+  }
+
+  // A driver that cannot execute the array and a server with no folded shape:
+  // automatic falls back to one parameter set per execute, never an array.
+  {
+    fold_session session{ "foldnoarray" };
+    session.state->server = "batch";
+    session.state->columnar_batch = true;
+    session.state->array_rowcount_totals = true;
+    session.state->array_update_delete = false;
+    // One parameter set per row tallies each execute on its own.
+    CHECK(session.database.update(two_rows) == 2 * session.state->report);
+    CHECK(session.state->executes.size() == 2);
+    for (auto const& sent : session.state->executes) {
+      CHECK(sent.array_sets == 1);
+    }
   }
 
   // The same family once the server names a version that grew the array row

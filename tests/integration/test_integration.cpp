@@ -135,6 +135,7 @@ char const* k_num_table = "UNIORM_IT_NUMBER";
 char const* k_case_table = "UNIORM_IT_CASE_USER";
 char const* k_chunk_table = "uniorm_it_chunk";
 char const* k_said_table = "uniorm_it_said";
+char const* k_narrow_table = "uniorm_it_narrow";
 std::string const long_note(1000, 'x');
 
 // The face this run drives. One suite serves both backends, so everything the
@@ -1562,6 +1563,81 @@ void test_batch_spellings(orm& db) {
   db.execute_update(std::string("DROP TABLE ") + k_said_table);
 }
 
+// A batch update writes only the columns its entity names: a second, narrower
+// mapping of the same table carries the key and one column, so a sweep through
+// it changes that column alone and leaves the rest of each row as it was.
+void test_narrow_entity_update(orm& db) {
+  struct wide_row {
+    std::int64_t id = 0;
+    std::string name;
+    std::int64_t score = 0;
+    std::optional<std::string> note;
+  };
+  struct narrow_row {
+    std::int64_t id = 0;
+    std::int64_t score = 0;
+  };
+
+  db.execute_update(std::string("DROP TABLE IF EXISTS ") + k_narrow_table);
+  std::string const id_type = the_target.integer_type;
+  db.execute_update(std::string("CREATE TABLE ") + k_narrow_table + " (id " +
+                    id_type +
+                    " NOT NULL PRIMARY KEY,"
+                    " name VARCHAR(64) NOT NULL,"
+                    " score " +
+                    id_type +
+                    " NOT NULL,"
+                    " note VARCHAR(64) NULL)");
+  db.map<wide_row>(k_narrow_table)
+    .primary_key("id", &wide_row::id)
+    .column("name", &wide_row::name)
+    .column("score", &wide_row::score)
+    .column("note", &wide_row::note);
+  db.map<narrow_row>(k_narrow_table)
+    .primary_key("id", &narrow_row::id)
+    .column("score", &narrow_row::score);
+
+  std::int64_t const first = 7000;
+  std::int64_t const count = 50;
+  std::vector<wide_row> rows;
+  for (std::int64_t offset = 0; offset < count; ++offset) {
+    wide_row row;
+    row.id = first + offset;
+    row.name = "n" + std::to_string(row.id);
+    row.score = offset;
+    if (offset % 2 == 0) {
+      row.note = "note" + std::to_string(row.id);
+    }
+    rows.push_back(std::move(row));
+  }
+  CHECK(db.insert(rows) == static_cast<std::size_t>(count));
+
+  // The narrow sweep carries a new score and nothing else: name and note are
+  // not in this entity, so the statement has no column to write them with.
+  std::vector<narrow_row> recut;
+  for (std::int64_t offset = 0; offset < count; ++offset) {
+    recut.push_back(narrow_row{ first + offset, 1000 + offset });
+  }
+  CHECK(db.update(recut) == static_cast<std::size_t>(count));
+
+  auto read = db.query<wide_row>()
+                .where(ge(&wide_row::id, first))
+                .order_by(&wide_row::id)
+                .all();
+  CHECK(read.size() == static_cast<std::size_t>(count));
+  for (std::size_t index = 0; index < read.size(); ++index) {
+    CHECK(read[index].id == rows[index].id);
+    // The one column the narrow entity named took the new value.
+    CHECK(read[index].score == 1000 + static_cast<std::int64_t>(index));
+    // Every other column kept what the insert left, the absent note included.
+    CHECK(read[index].name == rows[index].name);
+    CHECK(read[index].note == rows[index].note);
+  }
+
+  db.execute_update(std::string("DELETE FROM ") + k_narrow_table);
+  db.execute_update(std::string("DROP TABLE ") + k_narrow_table);
+}
+
 void test_update(orm& db) {
   std::vector<User> users{ User{ 400, "ivy", std::int32_t{ 33 }, 1.0,
                              std::nullopt, std::nullopt },
@@ -2791,6 +2867,8 @@ int main() {
     guarded("test_batch_round_trip", [&] { test_batch_round_trip(db); });
     guarded("test_batch_shapes", [&] { test_batch_shapes(db); });
     guarded("test_batch_spellings", [&] { test_batch_spellings(db); });
+    guarded(
+      "test_narrow_entity_update", [&] { test_narrow_entity_update(db); });
     guarded("test_update", [&] { test_update(db); });
     guarded("test_remove", [&] { test_remove(db); });
     guarded("test_entity_update", [&] { test_entity_update(db); });

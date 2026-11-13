@@ -75,6 +75,13 @@ struct wide_account {
   std::int64_t col_h = 0;
 };
 
+// A second mapping of the same wide table that names only the key and one
+// column, which is how a batch update writes a subset of the table's columns.
+struct partial_wide {
+  std::int64_t id = 0;
+  std::int64_t col_a = 0;
+};
+
 // One execute's worth of what the core asked the server for: the statement it
 // prepared, the values it bound and the ordinal each went to, and -- for the
 // array route -- how many sets one execute was handed.
@@ -602,6 +609,33 @@ void test_fold_batch() {
     std::vector<std::string> const null_binds{ "1:7", "2:NULL", "3:bytes",
       "4:8", "5:NULL", "6:bytes" };
     CHECK(sent.binds == null_binds);
+  }
+
+  // A batch update writes the columns its entity names, no more: a second
+  // mapping of the wide table that carries only the key and col_a sets col_a
+  // alone, leaving the table's other columns out of the SET and the row source.
+  {
+    fold_session session{ "foldpartial" };
+    session.database.map<partial_wide>("wide_accounts")
+      .primary_key("id", &partial_wide::id)
+      .column("col_a", &partial_wide::col_a);
+    session.state->report = 2;
+    std::vector<partial_wide> const rows{ { 1, 10 }, { 2, 20 } };
+    CHECK(session.database.update(rows) == 2);
+    CHECK(session.state->executes.size() == 1);
+    fold_execute const& sent = session.state->executes.front();
+    std::string const expected =
+      "UPDATE \"wide_accounts\" uo_batch_target SET \"col_a\" = "
+      "uo_batch_rows.\"col_a\" FROM (SELECT \"id\", \"col_a\" FROM "
+      "\"wide_accounts\" WHERE 1 = 0 UNION ALL SELECT ?, ? UNION ALL SELECT "
+      "?, ?) uo_batch_rows WHERE uo_batch_target.\"id\" = "
+      "uo_batch_rows.\"id\"";
+    CHECK(sent.text == expected);
+    CHECK(sent.text.find("col_b") == std::string::npos);
+    CHECK(folded_sets(sent.text) == 2);
+    std::vector<std::string> const partial_binds{ "1:1", "2:10", "3:2",
+      "4:20" };
+    CHECK(sent.binds == partial_binds);
   }
 
   // The ceiling, not the asked chunk, decides how a sweep splits: nine columns

@@ -22,6 +22,7 @@ add_library(uniorm_libpq SHARED
     backend.cpp
     connection.cpp
     error.cpp
+    schema_catalog.cpp
     sql_text.cpp
     statement.cpp
 )

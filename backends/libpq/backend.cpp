@@ -13,6 +13,8 @@
 
 namespace uniorm::libpq {
 
+pq_connection::pq_connection() : metadata_(conn_) {}
+
 void pq_connection::open(std::string_view connection_string) {
   conn_.open(connection_string);
 }
@@ -82,6 +84,10 @@ std::string pq_connection::server_version() const {
 
 std::unique_ptr<backend::statement_iface> pq_connection::create_statement() {
   return std::make_unique<pq_statement>(conn_);
+}
+
+schema_meta* pq_connection::schema() noexcept {
+  return &metadata_;
 }
 
 // The connected session, which is what a caller outside this library needs to

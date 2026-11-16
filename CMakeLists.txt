@@ -112,8 +112,8 @@ target_compile_definitions(uniorm
 if(UNIORM_BUILD_TOOLS AND NOT UNIORM_BACKEND_ODBC)
     message(FATAL_ERROR
         "UNIORM_BUILD_TOOLS requires UNIORM_BACKEND_ODBC: uniorm-gen reads "
-        "live schema through backend introspection, and ODBC is the only "
-        "backend that offers it")
+        "live schema through backend introspection, and its bundled "
+        "end-to-end leg reads that schema over ODBC")
 endif()
 
 if(UNIORM_BUILD_TOOLS)

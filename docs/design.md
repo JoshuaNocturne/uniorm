@@ -1727,6 +1727,15 @@ struct column_buffer { buffer_type type; void* data; std::size_t capacity;
 那半按 ODBC 驱动的读法补齐——时钟无日记为 1970-01-01，日无钟记零时；拿列的
 文本硬套完整的日期格式，会把时钟的位数读成年月日，折出一个非法日期。
 
+Oracle 的 ODBC 驱动（SQORA32）绑与读都不收 `SQL_C_SBIGINT` / `SQL_BIGINT`，
+于是 ODBC adapter 在 `SQL_DBMS_NAME == "Oracle"` 时把 int64 一律走十进制文本：
+写侧（`bind_parameter` 与 `bind_batch_params`）按 `SQL_C_CHAR` / `SQL_VARCHAR`
+绑一个 32 字节定宽文本槽；读侧 `bind_column` 改绑 backend 自有的文本 staging
+（deque 保各列 staging 地址稳定），`fetch()` 逐行 `from_chars` 解析回调用方的
+int64 数组并置 indicator（NULL 记 `null_indicator`）。这一适配只在 ODBC 那家、
+只对 Oracle 生效：Oracle OCI 原生收 int64，其余 ODBC 驱动仍走 `SQL_C_SBIGINT`
+直绑零拷贝。
+
 **语句与连接接口**：
 
 ```cpp

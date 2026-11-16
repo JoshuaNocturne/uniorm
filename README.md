@@ -38,7 +38,9 @@ The full API reference is [docs/design.md](docs/design.md).
   entity mapping (`db.query<T>()`)
 - **Direct entity binding** — `query<T>::all()/one()` bind result columns
   straight onto entity fields (`SQLBindCol` on ODBC), skipping row
-  materialization
+  materialization. Oracle's ODBC driver rejects `SQL_C_SBIGINT`, so int64
+  columns there bind and read as decimal text (`SQL_C_CHAR`) and convert in
+  the backend; other drivers keep the zero-copy `SQL_C_SBIGINT` path
 - **Custom type mapping** — specializing `uniorm::converter<T>` names the SQL
   representation a domain type binds as; strict `validate()` compares it
   against the live column type

@@ -30,7 +30,9 @@ API 本身不点任何一家的客户端名。自带三家：默认构建的 ODB
 - **三种使用层次**：裸 SQL（`execute` / `execute_update` + `params`）、聚合投影
   （`db.query<Row>(sql)`，零注册）、实体映射（`db.query<T>()`）
 - **实体直接绑定**：`query<T>::all()/one()` 将结果列直接绑到实体字段
-  （ODBC 那家是 `SQLBindCol`），跳过行物化
+  （ODBC 那家是 `SQLBindCol`），跳过行物化。Oracle 的 ODBC 驱动不收
+  `SQL_C_SBIGINT`，int64 列在那儿按十进制文本（`SQL_C_CHAR`）绑与读、由
+  backend 转换；其余驱动仍走 `SQL_C_SBIGINT` 零拷贝
 - **自定义类型映射**：特化 `uniorm::converter<T>` 即命名域类型所绑定的 SQL
   表示；strict 模式的 `validate()` 会拿它与活库的列类型比对
 - **精确定点小数值**：`uniorm::decimal_t` 存尾数 + scale，按值比较、逐值零分配；

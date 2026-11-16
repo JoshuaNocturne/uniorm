@@ -2,7 +2,10 @@
 
 #include <algorithm>
 #include <cctype>
+#include <charconv>
+#include <cstdio>
 #include <cstring>
+#include <system_error>
 #include <unordered_map>
 #include <utility>
 
@@ -16,6 +19,7 @@
 #include <uniorm/backend/error.hpp>
 #include <uniorm/backend/plugin.hpp>
 #include <uniorm/backend/registry.hpp>
+#include <uniorm/error.hpp>
 
 #include "environment.hpp"
 #include "error.hpp"
@@ -161,7 +165,8 @@ backend::buffer_type buffer_type_for(sql_value const& v) {
 
 }  // namespace
 
-backend_statement::backend_statement(odbc::connection& conn) : stmt_(conn) {}
+backend_statement::backend_statement(odbc::connection& conn, bool int64_as_text)
+  : stmt_(conn), int64_as_text_(int64_as_text) {}
 
 void backend_statement::prepare(std::string_view sql) {
   stmt_.prepare(sql);
@@ -193,9 +198,17 @@ void backend_statement::bind_parameter(
     stmt_.bind_parameter(odbc_index, SQL_C_SLONG, SQL_INTEGER,
       const_cast<std::int32_t*>(p), sizeof(*p), &slot.indicator);
   } else if (auto* p = std::get_if<std::int64_t>(&value)) {
-    slot.indicator = sizeof(*p);
-    stmt_.bind_parameter(odbc_index, SQL_C_SBIGINT, SQL_BIGINT,
-      const_cast<std::int64_t*>(p), sizeof(*p), &slot.indicator);
+    if (int64_as_text_) {
+      SQLLEN len = std::snprintf(slot.i64_text, sizeof(slot.i64_text), "%lld",
+        static_cast<long long>(*p));
+      slot.indicator = len;
+      stmt_.bind_parameter(odbc_index, SQL_C_CHAR, SQL_VARCHAR, slot.i64_text,
+        sizeof(slot.i64_text), &slot.indicator, 20);
+    } else {
+      slot.indicator = sizeof(*p);
+      stmt_.bind_parameter(odbc_index, SQL_C_SBIGINT, SQL_BIGINT,
+        const_cast<std::int64_t*>(p), sizeof(*p), &slot.indicator);
+    }
   } else if (auto* p = std::get_if<double>(&value)) {
     slot.indicator = sizeof(*p);
     stmt_.bind_parameter(odbc_index, SQL_C_DOUBLE, SQL_DOUBLE,
@@ -227,6 +240,18 @@ void backend_statement::bind_parameter(
 
 void backend_statement::bind_column(
   std::size_t index, backend::column_buffer const& buffer) {
+  if (int64_as_text_ && buffer.type == backend::buffer_type::int64) {
+    int64_text_column column;
+    column.staging.resize(row_array_size_ * int64_text_column::stride);
+    column.staging_ind.resize(row_array_size_);
+    column.dest = static_cast<std::int64_t*>(buffer.data);
+    column.dest_ind = buffer.indicator;
+    stmt_.bind_column(static_cast<SQLUSMALLINT>(index), SQL_C_CHAR,
+      column.staging.data(), int64_text_column::stride,
+      column.staging_ind.data());
+    int64_text_cols_.push_back(std::move(column));
+    return;
+  }
   stmt_.bind_column(static_cast<SQLUSMALLINT>(index), c_type_for(buffer.type),
     buffer.data, static_cast<SQLLEN>(buffer.capacity),
     reinterpret_cast<SQLLEN*>(buffer.indicator));
@@ -289,12 +314,25 @@ void backend_statement::bind_batch_params(std::vector<params> const& rows) {
       }
       break;
     case backend::buffer_type::int64:
-      col.i64_vals.resize(n, 0);
-      col.stride = sizeof(std::int64_t);
-      for (std::size_t r = 0; r < n; ++r) {
-        if (auto* p = std::get_if<std::int64_t>(&rows[r].at(c))) {
-          col.i64_vals[r] = *p;
-          col.indicators[r] = sizeof(std::int64_t);
+      if (int64_as_text_) {
+        // Oracle's driver takes int64 only as text; reuse the chars bind path.
+        col.type = backend::buffer_type::chars;
+        col.stride = 32;
+        col.var_buf.resize(n * col.stride, '\0');
+        for (std::size_t r = 0; r < n; ++r) {
+          if (auto* p = std::get_if<std::int64_t>(&rows[r].at(c))) {
+            col.indicators[r] = std::snprintf(&col.var_buf[r * col.stride],
+              col.stride, "%lld", static_cast<long long>(*p));
+          }
+        }
+      } else {
+        col.i64_vals.resize(n, 0);
+        col.stride = sizeof(std::int64_t);
+        for (std::size_t r = 0; r < n; ++r) {
+          if (auto* p = std::get_if<std::int64_t>(&rows[r].at(c))) {
+            col.i64_vals[r] = *p;
+            col.indicators[r] = sizeof(std::int64_t);
+          }
         }
       }
       break;
@@ -534,11 +572,42 @@ void backend_statement::execute() {
 }
 
 bool backend_statement::fetch() {
-  return stmt_.fetch();
+  if (!stmt_.fetch()) {
+    return false;
+  }
+  if (!int64_text_cols_.empty()) {
+    std::size_t rows = static_cast<std::size_t>(stmt_.rows_fetched());
+    for (auto& column : int64_text_cols_) {
+      for (std::size_t row = 0; row < rows; ++row) {
+        SQLLEN ind = column.staging_ind[row];
+        if (ind == SQL_NULL_DATA) {
+          column.dest_ind[row] = backend::null_indicator;
+          continue;
+        }
+        // A length past the slot means the driver truncated a value too wide
+        // for int64; parsing ind bytes would read past the staging buffer.
+        if (ind < 0 || ind >= static_cast<SQLLEN>(int64_text_column::stride)) {
+          throw type_mismatch(
+            "integer text out of range from Oracle ODBC column");
+        }
+        char const* begin =
+          column.staging.data() + row * int64_text_column::stride;
+        std::int64_t parsed = 0;
+        auto result = std::from_chars(begin, begin + ind, parsed);
+        if (result.ec != std::errc{}) {
+          throw type_mismatch("invalid integer text from Oracle ODBC column");
+        }
+        column.dest[row] = parsed;
+        column.dest_ind[row] = ind;
+      }
+    }
+  }
+  return true;
 }
 
 void backend_statement::set_row_array_size(std::size_t size) {
-  stmt_.set_row_array_size(static_cast<SQLULEN>(size));
+  row_array_size_ = size > 0 ? size : 1;
+  stmt_.set_row_array_size(static_cast<SQLULEN>(row_array_size_));
 }
 
 std::size_t backend_statement::rows_fetched() const {
@@ -605,6 +674,7 @@ void backend_statement::reset() {
   batch_cols_.clear();
   batch_cols_.shrink_to_fit();
   batch_writer_.reset();
+  int64_text_cols_.clear();
   stmt_.reset();
 }
 
@@ -690,6 +760,15 @@ void backend_connection::open(std::string_view connection_string) {
       array_update_delete_ = false;
     }
   }
+  // Oracle's ODBC driver rejects SQL_C_SBIGINT on bind and read alike; an
+  // int64 column there travels as decimal text. The Oracle OCI backend is
+  // unaffected, so this is keyed on the DBMS the ODBC driver talks to.
+  char dbms[128] = {};
+  if (SQL_SUCCEEDED(SQLGetInfo(
+        conn_.native(), SQL_DBMS_NAME, dbms, sizeof(dbms), &length))) {
+    std::string_view server(dbms, static_cast<std::size_t>(length));
+    int64_as_text_ = server == "Oracle";
+  }
 }
 
 // Spelled out here, then handed to the one route every connection takes:
@@ -751,7 +830,7 @@ std::string backend_connection::server_version() const {
 
 std::unique_ptr<backend::statement_iface>
 backend_connection::create_statement() {
-  return std::make_unique<backend_statement>(conn_);
+  return std::make_unique<backend_statement>(conn_, int64_as_text_);
 }
 
 void* backend_connection::native_handle() noexcept {

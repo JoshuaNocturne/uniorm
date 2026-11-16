@@ -3,6 +3,8 @@
 // Private header: the ODBC implementation of the backend contract.
 // Not installed; consumers interact with uniorm::backend interfaces only.
 
+#include <cstddef>
+#include <cstdint>
 #include <deque>
 #include <memory>
 #include <string>
@@ -17,7 +19,7 @@ namespace uniorm::odbc {
 
 class backend_statement : public backend::statement_iface {
 public:
-  explicit backend_statement(odbc::connection& conn);
+  backend_statement(odbc::connection& conn, bool int64_as_text);
 
   void prepare(std::string_view sql) override;
   void bind_parameter(std::size_t index, sql_value const& value) override;
@@ -40,10 +42,15 @@ public:
 
 private:
   odbc::statement stmt_;
+  // Oracle's ODBC driver rejects SQL_C_SBIGINT on both bind and read, so an
+  // int64 column travels as decimal text and converts here.
+  bool int64_as_text_ = false;
+  std::size_t row_array_size_ = 1;
   struct param_slot {
     SQLLEN indicator = SQL_NULL_DATA;
     unsigned char bit = 0;
     SQL_TIMESTAMP_STRUCT ts{};
+    char i64_text[32]{};
   };
   // deque, not vector: bind_parameter hands the driver pointers into
   // existing slots, and appending further slots must not relocate them.
@@ -69,6 +76,18 @@ private:
   // Direct-write batch writer. Owns no data itself — references batch_cols_.
   class odbc_batch_writer;
   std::unique_ptr<odbc_batch_writer> batch_writer_;
+
+  // Read-side staging for int64-as-text columns. SQLBindCol writes decimal
+  // text here; fetch() parses it back into the caller's int64 array. deque
+  // keeps each column's staging address stable across further binds.
+  struct int64_text_column {
+    static constexpr std::size_t stride = 32;
+    std::vector<char> staging;
+    std::vector<SQLLEN> staging_ind;
+    std::int64_t* dest = nullptr;
+    std::int64_t* dest_ind = nullptr;
+  };
+  std::deque<int64_text_column> int64_text_cols_;
 };
 
 // The three connection pieces spelled the way this driver manager reads
@@ -102,6 +121,7 @@ private:
   bool array_rowcount_totals_ = true;
   bool array_insert_ = false;
   bool array_update_delete_ = false;
+  bool int64_as_text_ = false;
 };
 
 }  // namespace uniorm::odbc

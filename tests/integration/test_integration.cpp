@@ -997,6 +997,95 @@ void test_identifier_case_twins(std::string_view conn_string) {
   transaction.rollback();
 }
 
+// The three catalog reads the mapping stages never reach: primary_key,
+// foreign_keys, indexes. The seeded pair carries a composite key; a parent
+// and child built here carry a multi-column foreign key plus one unique and
+// one plain index, so key order, column pairs, and the uniqueness flag are
+// asked of a live server rather than assumed from the SQL that reads them.
+void test_catalog_keys_and_indexes(orm& db) {
+  if (!catalog_available()) {
+    return;
+  }
+  auto& metadata = db.schema();
+  std::string const id_type = the_target.integer_type;
+  std::string const parent = "uniorm_it_cat_parent";
+  std::string const child = "uniorm_it_cat_child";
+
+  auto pair_key = metadata.primary_key({ {}, {}, k_pair_table });
+  CHECK(pair_key.size() == 2);
+  if (pair_key.size() == 2) {
+    CHECK(detail::fold_lower(pair_key[0]) == "grp");
+    CHECK(detail::fold_lower(pair_key[1]) == "idx");
+  }
+  auto user_key = metadata.primary_key({ {}, {}, k_table });
+  CHECK(user_key.size() == 1);
+  if (user_key.size() == 1) {
+    CHECK(detail::fold_lower(user_key[0]) == "id");
+  }
+
+  // DDL is not transactional on every server here, so the tables are made in
+  // autocommit and dropped by name; the leading drop clears a prior leak.
+  db.execute_update(std::string("DROP TABLE IF EXISTS ") + child);
+  db.execute_update(std::string("DROP TABLE IF EXISTS ") + parent);
+  db.execute_update(std::string("CREATE TABLE ") + parent + " (a " + id_type +
+                    " NOT NULL, b " + id_type +
+                    " NOT NULL, PRIMARY KEY (a, b))");
+  db.execute_update(std::string("CREATE TABLE ") + child + " (x " + id_type +
+                    " NOT NULL, y " + id_type +
+                    " NOT NULL, d VARCHAR(64) NULL,"
+                    " FOREIGN KEY (x, y) REFERENCES " +
+                    parent + " (a, b))");
+  db.execute_update(
+    std::string("CREATE UNIQUE INDEX uniorm_it_cat_uq ON ") + child + " (d)");
+  db.execute_update(
+    std::string("CREATE INDEX uniorm_it_cat_nu ON ") + child + " (x)");
+
+  auto foreign = metadata.foreign_keys({ {}, {}, child });
+  CHECK(foreign.size() == 2);
+  bool saw_x_to_a = false;
+  bool saw_y_to_b = false;
+  for (auto const& row : foreign) {
+    if (detail::fold_lower(row.referenced_table) != parent) {
+      continue;
+    }
+    std::string const local = detail::fold_lower(row.column);
+    std::string const remote = detail::fold_lower(row.referenced_column);
+    saw_x_to_a = saw_x_to_a || (local == "x" && remote == "a");
+    saw_y_to_b = saw_y_to_b || (local == "y" && remote == "b");
+  }
+  CHECK(saw_x_to_a);
+  CHECK(saw_y_to_b);
+
+  // Searched by name: a server that indexes a foreign key on its own adds
+  // rows of its own, so the count is not what this asserts.
+  auto indexes = metadata.indexes({ {}, {}, child });
+  bool saw_unique = false;
+  bool saw_plain = false;
+  for (auto const& index : indexes) {
+    std::string const name = detail::fold_lower(index.name);
+    if (name == "uniorm_it_cat_uq") {
+      saw_unique = true;
+      CHECK(index.unique);
+      CHECK(index.columns.size() == 1);
+      if (index.columns.size() == 1) {
+        CHECK(detail::fold_lower(index.columns[0]) == "d");
+      }
+    } else if (name == "uniorm_it_cat_nu") {
+      saw_plain = true;
+      CHECK(!index.unique);
+      CHECK(index.columns.size() == 1);
+      if (index.columns.size() == 1) {
+        CHECK(detail::fold_lower(index.columns[0]) == "x");
+      }
+    }
+  }
+  CHECK(saw_unique);
+  CHECK(saw_plain);
+
+  db.execute_update(std::string("DROP TABLE IF EXISTS ") + child);
+  db.execute_update(std::string("DROP TABLE IF EXISTS ") + parent);
+}
+
 void test_query_builder(orm& db) {
   CHECK(db.query<User>().count() == 3);
 
@@ -2931,6 +3020,8 @@ int main() {
       [&] { test_identifier_spelling(conn_string); });
     guarded("test_identifier_case_twins",
       [&] { test_identifier_case_twins(conn_string); });
+    guarded("test_catalog_keys_and_indexes",
+      [&] { test_catalog_keys_and_indexes(db); });
 
     guarded("test_query_builder", [&] { test_query_builder(db); });
     guarded("test_transaction", [&] { test_transaction(db); });

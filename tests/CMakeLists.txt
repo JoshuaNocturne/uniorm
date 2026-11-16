@@ -152,6 +152,7 @@ if(UNIORM_BACKEND_LIBPQ)
         unit/test_libpq_main.cpp
         unit/test_libpq_sql_text.cpp
         unit/test_libpq_types.cpp
+        unit/test_libpq_catalog.cpp
         unit/test_libpq_connection.cpp
         unit/test_libpq_statement.cpp
     )

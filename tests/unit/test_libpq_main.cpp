@@ -12,6 +12,7 @@ void test_libpq_fold_skips_what_a_statement_hides();
 void test_libpq_declared_shape();
 void test_libpq_sql_type_from_native();
 void test_libpq_display_width();
+void test_libpq_catalog_column_metrics();
 void test_libpq_text_shape();
 void test_libpq_text_of_timestamp();
 void test_libpq_conninfo_keeps_a_written_target();
@@ -38,6 +39,7 @@ int main() {
   test_libpq_declared_shape();
   test_libpq_sql_type_from_native();
   test_libpq_display_width();
+  test_libpq_catalog_column_metrics();
   test_libpq_text_shape();
   test_libpq_text_of_timestamp();
   test_libpq_conninfo_keeps_a_written_target();

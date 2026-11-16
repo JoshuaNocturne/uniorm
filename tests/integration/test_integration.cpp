@@ -5,10 +5,12 @@
 // host[:port]/service for oracle. Returns 77 (ctest SKIP) when any of them is
 // unset or the database is unreachable.
 
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
 #include <functional>
+#include <limits>
 #include <optional>
 #include <string>
 #include <thread>
@@ -136,6 +138,7 @@ char const* k_case_table = "UNIORM_IT_CASE_USER";
 char const* k_chunk_table = "uniorm_it_chunk";
 char const* k_said_table = "uniorm_it_said";
 char const* k_narrow_table = "uniorm_it_narrow";
+char const* k_i64_table = "uniorm_it_i64";
 std::string const long_note(1000, 'x');
 
 // The face this run drives. One suite serves both backends, so everything the
@@ -444,6 +447,75 @@ void test_zero_block_fetch_size(orm& db) {
   }
   CHECK(rows == 3);
   CHECK(note_chars == long_note.size() + 5);  // "short" on the third row
+}
+
+// Full 64-bit range through both read paths. Oracle's ODBC driver carries an
+// int64 as decimal text, so a value past 32 bits is the shape that exposes a
+// bind/read mapping which only ever saw small ids.
+void test_int64_full_range(orm& db) {
+  struct i64_row {
+    std::int64_t id;
+    std::int64_t v;
+    std::optional<std::int64_t> n;
+  };
+  try {
+    db.execute_update(std::string("DROP TABLE ") + k_i64_table);
+  } catch (...) {
+  }
+  std::string const id_type = the_target.integer_type;
+  db.execute_update(std::string("CREATE TABLE ") + k_i64_table + " (id " +
+                    id_type + " NOT NULL PRIMARY KEY, v " + id_type +
+                    " NOT NULL, n " + id_type + " NULL)");
+  db.map<i64_row>(k_i64_table)
+    .primary_key("id", &i64_row::id)
+    .column("v", &i64_row::v)
+    .column("n", &i64_row::n);
+
+  std::int64_t const maxv = std::numeric_limits<std::int64_t>::max();
+  std::int64_t const minv = std::numeric_limits<std::int64_t>::min();
+  std::vector<i64_row> rows{
+    { 1, 0, std::nullopt },
+    { 2, 1, 1 },
+    { 3, -1, -1 },
+    { 4, maxv, maxv },
+    { 5, minv, minv },
+    { 6, 4294967296LL, 4294967296LL },
+    { 7, -4294967296LL, std::nullopt },
+  };
+  CHECK(db.insert(rows) == rows.size());
+
+  auto back = db.query<i64_row>().order_by(&i64_row::id).all();
+  CHECK(back.size() == rows.size());
+  for (std::size_t index = 0; index < back.size() && index < rows.size();
+    ++index) {
+    CHECK(back[index].id == rows[index].id);
+    CHECK(back[index].v == rows[index].v);
+    CHECK(back[index].n == rows[index].n);
+  }
+
+  // The dynamic row path binds its integer slot independently of the typed
+  // projection; a block smaller than the row count spans more than one fetch.
+  result_set rs = db.native_connection().execute(
+    std::string("SELECT id, v, n FROM ") + k_i64_table + " ORDER BY id",
+    params{}, 4);
+  std::size_t seen = 0;
+  while (rs.next()) {
+    CHECK(seen < rows.size());
+    if (seen >= rows.size()) {
+      break;
+    }
+    row r = rs.current();
+    CHECK(r.get<std::int64_t>(0) == rows[seen].id);
+    CHECK(r.get<std::int64_t>(1) == rows[seen].v);
+    CHECK(r.is_null(2) == !rows[seen].n.has_value());
+    if (rows[seen].n.has_value()) {
+      CHECK(r.get<std::int64_t>(2) == *rows[seen].n);
+    }
+    ++seen;
+  }
+  CHECK(seen == rows.size());
+
+  db.execute_update(std::string("DROP TABLE ") + k_i64_table);
 }
 
 void test_projection(orm& db) {
@@ -2848,6 +2920,7 @@ int main() {
     guarded("test_decimal_mapped", [&] { test_decimal_mapped(db); });
     guarded(
       "test_zero_block_fetch_size", [&] { test_zero_block_fetch_size(db); });
+    guarded("test_int64_full_range", [&] { test_int64_full_range(db); });
     guarded("test_projection", [&] { test_projection(db); });
     guarded("test_registered_read_by_label",
       [&] { test_registered_read_by_label(db); });

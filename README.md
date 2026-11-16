@@ -258,6 +258,11 @@ merged shape; name the schema in `ref` when that matters. The reference belongs
 to the leased connection — take it afresh rather than caching it across a
 `disconnect()` or a re-lease.
 
+ODBC answers these reads from the driver's catalog procedures and libpq from
+`pg_catalog`, the latter reading inside the session's open transaction so it
+sees uncommitted DDL too; names come back as the exact bytes the server stores.
+Oracle OCI does not answer them yet.
+
 ### Identifier spelling
 
 ```cpp
@@ -298,7 +303,7 @@ together or none change. Resolved mappings use the actual quoted names and
 ignore `identifier_case`. PostgreSQL requires its current database and an
 explicit schema; MySQL/MariaDB require a database and an empty schema. Only
 ordinary tables are supported, and unsupported backends fail explicitly — the
-libpq backend answers no catalog reads, so on that leg both `schema()` and
+Oracle OCI backend answers no catalog reads, so on that leg both `schema()` and
 `validate()` raise.
 `clear_identifier_resolution()` restores normal folding; connect and disconnect
 clear results too. Hand-written SQL is never rewritten, and dynamic table
@@ -701,7 +706,7 @@ runner; that leg is green against a live container replayed by hand, and the
 runner's own half of it — apt's libpq, the image pull, the health gate — is
 unconfirmed.
 
-Open: in both native backends, the catalog reads they have yet to answer — see
+Open: in the Oracle OCI backend, the catalog reads it has yet to answer — see
 design doc §5.4 and §9.
 
 ## License

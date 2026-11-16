@@ -825,7 +825,7 @@ std::size_t r = db.remove(people);   // 同上；无键列可推断且未给 whe
   逐条写在这种输入上顺序恰好确定，也并没有说清要哪一组值
 - 今天真走到折叠的只有 PostgreSQL 两条通道（ODBC 上的 psqlODBC 与 libpq 插件），
   两条形状不同：psqlODBC 那条读得出目录，叫得出列的类型名，走数组；libpq 插件
-  按设计还不读目录（见 `backends/libpq/backend.hpp`），走种子元组。另三家的形状
+  的折叠按设计不靠目录读取定类型，走种子元组（类型从单行文本的 describe 读回）。另三家的形状
   由 `tests/unit/test_fold_batch.cpp` 钉住文本；SQL Server 与 Oracle 够着版本时的
   VALUES 构造器形状（update / delete 的文本、逐行绑定、版本闸的上下两侧）也由它
   钉住，连同 VALUES 仍按参数上限切块（行数从绑定数读，VALUES 文本没有 UNION ALL）
@@ -1884,8 +1884,8 @@ backend，要在自己的 `reset()` 重写里清干净。
 
 **构建门禁**：`option(UNIORM_BACKEND_ODBC ON)`；启用时 `backends/odbc/` 出一个独立
 shared 目标 `uniorm::odbc`，PRIVATE 链 `ODBC::ODBC`（§5.1）；`uniorm-gen` 向
-`orm::schema()` 要活库元数据，而目前只有 ODBC backend 提供它，故
-`UNIORM_BUILD_TOOLS` 依赖该选项。`option(UNIORM_BACKEND_ORACLE_OCI OFF)` 按同一形状出
+`orm::schema()` 要活库元数据，ODBC 与 libpq 两家都答得上，而 gen 随附的端到端腿
+走 ODBC，故 `UNIORM_BUILD_TOOLS` 依赖该选项。`option(UNIORM_BACKEND_ORACLE_OCI OFF)` 按同一形状出
 `uniorm::oracle_oci`（scheme `"oracle"`，PRIVATE 链 Oracle Call Interface）；配置它要有
 一份 Oracle 客户端库，流水线为那一支现装，多数构建机上仍没有，故默认关闭。
 
@@ -1949,11 +1949,22 @@ PQputCopyData(pg, ...);                     // 用户自行驱动原生操作
    dollar-quoted 体、嵌套块注释与 `E''`，成对的 `??` 则是留给服务端自己那批 `?` 算符
    （jsonb、几何）的写法。
 
-   它暂未接的是目录读取：`orm::schema()` 对它报 `capability_not_supported`，
-   `validate()` 与 `resolve_identifiers()` 在这条腿上便没有可读的目录。大小写因此只剩
-   `dialect::detect` 从 banner 答的那个默认（PostgreSQL 答 `lower`），要别的拼法得自己
-   `identifier_case(...)` 声明——这条腿与 ODBC 那家的差别就在这里。COPY /
-   LISTEN-NOTIFY / 原生异步仍旧走原生句柄，暂无门面。
+   目录读取经 `pg_catalog` 答出（`schema_catalog.hpp/.cpp` 的 `pq_schema_meta`）：
+   `tables` / `exact_tables` 读 `pg_class`+`pg_namespace`，只留 `relkind` 为 `r`/`p`
+   的普通表与分区表，挡掉 `pg_catalog`/`information_schema`/`pg_toast%`/`pg_temp%`；
+   `table_columns` / `exact_table_columns` 读 `pg_attribute`+`pg_attrdef`，`atttypid`
+   经 `sql_type_from_native` 归一、`format_type` 给服务端自己的类型拼法、`atttypmod`
+   经 `declared_length`/`declared_precision`/`declared_scale` 拆出宽度与精度标度、
+   `attnotnull` 取反得可空；主键/外键读 `pg_constraint`（`conkey`/`confkey` 带
+   `WITH ORDINALITY` 定键序），索引读 `pg_index`+`pg_class`（`indisunique` 定唯一、
+   表达式键跳过）。名字一律作 `$n` 文本参数交 `PQexecParams`，不拼进 SQL；每次读前先
+   `open_transaction()`，落在会话已开的事务里，所以未提交的 DDL 也看得见。pg_catalog
+   按字节存标识符，读出来即服务器自己的拼写，不需要 ODBC 那套 pattern 转义与大小写回滤。
+   这套可见 schema 的排除为各条读共用：非 exact 读留空 schema 即向所有可见 schema 敞开，
+   同名跨 schema 合并成一份（合 `schema.hpp` 的契约，`table_columns` 与 `tables` 同形）；
+   exact_* 才把空 catalog/schema 钉成 `current_database()`/`current_schema()` 再按字节滤。
+   `validate()` 与 `resolve_identifiers()` 这条腿因此与 ODBC 一样有目录可读，大小写变体
+   由核心在目录清单上折叠找出。COPY / LISTEN-NOTIFY / 原生异步仍旧走原生句柄，暂无门面。
 
 两者均来自既有项目中必须绕开 ODBC 的实际经验。四件套（§5.2）正是为它们留的路：
 libpq 把它拼成空格分隔的 conninfo，OCI 连串都没有——用户名与口令是
@@ -2042,8 +2053,8 @@ paramset=1/折叠，批量落库不再静默丢）、psqlODBC（insert 数组、
 ### 6.1 形态
 
 独立 CLI，schema 来源两种：活连接目标数据库，或一份建表脚本（§6.2）。本仓库只
-提供可执行文件（`UNIORM_BUILD_TOOLS=ON` 时构建，因活连接那条路要的 schema 自省
-目前只有 ODBC backend 提供，故依赖 `UNIORM_BACKEND_ODBC`；顶层构建时也按 §3.1
+提供可执行文件（`UNIORM_BUILD_TOOLS=ON` 时构建，因随附的活连接端到端腿走 ODBC，
+故依赖 `UNIORM_BACKEND_ODBC`；顶层构建时也按 §3.1
 装进 `<bindir>`）；仓库内没有任何 `add_custom_command`，"构建期生成"要调用方自己
 在 CMake 里接。
 
@@ -2545,12 +2556,13 @@ commit/rollback/析构回滚、批量插入（含空 optional 写 NULL、1500 �
   是第四支作业，它不进驱动的矩阵，因为环里没有驱动管理器——现装 Oracle 客户端库、按
   scheme 名载 plugin、对一只 Oracle Free 容器跑同一套集成测试，注册四条 ctest 而非
   五条：它有自己的白盒单测与同一套集成测试顶上，少掉的那一条正是 `gen_e2e`——生成器
-  读的是活库目录，而只有 ODBC 那一家答得上，所以这一支把 `UNIORM_BUILD_TOOLS` 关着。
+  的活连接端到端腿走 ODBC，这一支没有 ODBC，所以把 `UNIORM_BUILD_TOOLS` 关着。
   第五支 `libpq` 也不进驱动的矩阵，理由与这一支同一条：环里没有驱动管理器。它链
   `libpq`、按 scheme 名载 `libuniorm_postgresql.so`，服务端用的是 psqlODBC 那一条腿
   同一只 `postgres:17`——两条腿读同一个服务端，一个走连接器、一个走原生客户端，
   连接器从前替服务端答的那些东西，差别就在这一支上显出来。它同样关着
-  `UNIORM_BUILD_TOOLS`：这一家也还没答目录读取。
+  `UNIORM_BUILD_TOOLS`：生成器的端到端腿走 ODBC，这一支没有 ODBC（libpq 自己
+  如今经 `pg_catalog` 答得上目录读取，§5.4）。
   今天 runner 上的形状是五支作业定义、七个
   实例，服务端多答一家 `Oracle AI Database 26ai Free Release 23.26.3.0.0`）：
   一支 `UNIORM_BACKEND_ODBC=OFF`
@@ -2757,7 +2769,7 @@ commit/rollback/析构回滚、批量插入（含空 optional 写 NULL、1500 �
 1. ~~backend 接口提取~~ **已完成（里程碑 1）**：中立接口 + scheme 注册表，
    ODBC 迁移至接口之后，核心单测不链接 ODBC（见 §5）；它那时还只是核心
    PRIVATE 链的一家，此后整家拆成 plugin（§5.1、条目 8）。三家都已落地，剩下的
-   **待做**是 OCI 与 libpq 两家都还没接上的目录读取（§5.4）。
+   **待做**是 OCI 那家还没接上的目录读取（§5.4）；libpq 的已经 `pg_catalog` 答出。
 2. Unit of Work / 脏检查 / 级联
 3. ~~批量操作~~ **已完成**：`SQL_ATTR_PARAMSET_SIZE` 数组绑定 + 块取行，
    列式（`batch_writer_iface`）与行式（`bind_batch_params`）双通道（见 §4.5.2）。

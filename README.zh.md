@@ -238,6 +238,10 @@ if (auto const* id = uniorm::find_column(shape, "id")) {
 里写明 schema。这个引用属于所借的那条连接，别跨 `disconnect()` 或重新借出缓存
 它。
 
+ODBC 经驱动的目录过程答这些读取，libpq 经 `pg_catalog` 答——后者落在会话已开的
+事务里读，所以未提交的 DDL 也看得见；名字按服务器存储的精确字节返回。Oracle OCI
+暂未接这些读取。
+
 ### 标识符拼法
 
 ```cpp
@@ -271,8 +275,8 @@ db.validate();
 `mapping_error`，所有映射一起安装结果，任意一个失败则全部保留原状。已解析映射
 使用实际名称，不再受 `identifier_case` 影响。PostgreSQL 要求当前数据库和显式
 schema；MySQL/MariaDB 要求 database 和空 schema。首版只支持普通表，后端不能保证
-精确元数据读取时明确报不支持——libpq 这一家还没接目录读取，这条腿上 `schema()`
-与 `validate()` 都是直接抛出。`clear_identifier_resolution()` 恢复原来的大小写
+精确元数据读取时明确报不支持——Oracle OCI 这一家还没接目录读取，这条腿上
+`schema()` 与 `validate()` 都是直接抛出。`clear_identifier_resolution()` 恢复原来的大小写
 策略，重连、断开也会清除结果。手写 SQL 不改写；动态表构建器不参与解析，继续
 使用连接的大小写策略。
 
@@ -629,7 +633,7 @@ CI 是五支作业定义、七个实例：`core`、`core-windows`、`oracle-oci`
 是在手边复放过一遍活容器，runner 自己那一半——apt 的 libpq、镜像拉取、健康门——
 还没验过。
 
-未结：两家原生 backend 都欠着的目录读取，见设计文档 §5.4 与 §9。
+未结：Oracle OCI backend 欠着的目录读取，见设计文档 §5.4 与 §9。
 
 ## 许可证
 

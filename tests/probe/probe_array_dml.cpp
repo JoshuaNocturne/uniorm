@@ -4,10 +4,10 @@
 // across a sweep of parameter-set sizes. The probe core is the same one the
 // runtime fallback uses, so this validates the whole gating path end to end.
 //
-// The assertion is asymmetric while the table is being seeded: a bit the table
-// grants but measurement contradicts is red (an unsafe grant), while a bit the
-// table denies but measurement passes is only a warning (a conservative miss to
-// correct later, once integration at scale confirms it).
+// The assertion is bidirectional now that every CI leg's table is seeded from
+// measurement: a grant measurement contradicts is red (unsafe), and a denial
+// measurement passes is red too (a stale prior -- a driver version bump lands
+// here to be re-measured and re-pinned, not silently under-granted).
 
 #include <algorithm>
 #include <array>
@@ -91,21 +91,19 @@ struct measured {
   bool totals = true;
 };
 
-// One op's verdict against the table bit. Returns true when the disagreement
-// is the unsafe kind (table grants, measurement contradicts) and must fail.
+// One op's verdict against the table bit. Any disagreement is red in both
+// directions; inconclusive is not asserted (a privilege or transport problem
+// is not a capability verdict).
 bool check_op(char const* op, bool table_bit, detail::probe_outcome result) {
   if (result == detail::probe_outcome::inconclusive) {
     std::printf("  %s: inconclusive, not asserted\n", op);
     return false;
   }
   bool const measured_pass = result == detail::probe_outcome::pass;
-  if (table_bit && !measured_pass) {
-    std::printf("  %s: RED table grants but measurement fails\n", op);
+  if (table_bit != measured_pass) {
+    std::printf("  %s: RED table %s but measurement %s\n", op,
+      table_bit ? "grants" : "denies", measured_pass ? "passes" : "fails");
     return true;
-  }
-  if (!table_bit && measured_pass) {
-    std::printf("  %s: warn table denies but measurement passes\n", op);
-    return false;
   }
   std::printf("  %s: agrees (%s)\n", op, measured_pass ? "pass" : "fail");
   return false;
@@ -173,20 +171,19 @@ int main() {
   red |= check_op("insert", table.array_insert, ground.insert);
   red |= check_op("update", table.array_update, ground.update);
   red |= check_op("delete", table.array_delete, ground.remove);
-  if (table.array_rowcount_totals && !ground.totals) {
-    std::printf("  totals: RED table grants but measurement tallies short\n");
+  if (table.array_rowcount_totals != ground.totals) {
+    std::printf("  totals: RED table says %d but measurement tallies %d\n",
+      table.array_rowcount_totals ? 1 : 0, ground.totals ? 1 : 0);
     red = true;
-  } else if (!table.array_rowcount_totals && ground.totals) {
-    std::printf("  totals: warn table denies but measurement tallies whole\n");
   } else {
     std::printf("  totals: agrees (%d)\n", ground.totals ? 1 : 0);
   }
 
   conn.close();
   if (red) {
-    std::printf("FAIL: compatibility table grants an op measurement denies\n");
+    std::printf("FAIL: compatibility table disagrees with measurement\n");
     return 1;
   }
-  std::printf("pass: no unsafe grant (conservative misses warned above)\n");
+  std::printf("pass: table matches measurement on every asserted op\n");
   return 0;
 }

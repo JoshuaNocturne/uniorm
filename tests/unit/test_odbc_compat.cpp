@@ -48,18 +48,40 @@ void test_odbc_compat() {
     CHECK(entry->array_delete);
     CHECK(entry->array_rowcount_totals);
   }
-  // An unmeasured maodbc version stays on the conservative family prior: the
-  // grant is pinned to the version the probe and integration confirmed.
+  // maodbc 3.1.23 measured on CI against MariaDB 11: every op granted, whole
+  // tally, pinned ahead of the family prior.
   {
     auto const* entry = odbc::compat_lookup(
-      "maodbc.so", version(3, 1, 23), "MariaDB", version(11, 0, 0));
+      "maodbc.so", version(3, 1, 23), "MariaDB", version(11, 8, 9));
+    CHECK(entry != nullptr);
+    CHECK(entry->array_insert);
+    CHECK(entry->array_update);
+    CHECK(entry->array_delete);
+    CHECK(entry->array_rowcount_totals);
+  }
+  // An unmeasured maodbc version stays on the conservative family prior: the
+  // grant is pinned to the versions the probe and integration confirmed.
+  {
+    auto const* entry = odbc::compat_lookup(
+      "maodbc.so", version(3, 1, 24), "MariaDB", version(11, 8, 9));
     CHECK(entry != nullptr);
     CHECK(entry->array_insert);
     CHECK(!entry->array_update);
     CHECK(!entry->array_delete);
     CHECK(entry->array_rowcount_totals);
   }
-  // myodbc unmeasured: array INSERT only, total row counts.
+  // myodbc 26.10.0 measured on CI against MySQL 8.4: every op granted, whole
+  // tally. The ANSI driver name (libmyodbc26a.so) folds to the same family.
+  {
+    auto const* entry = odbc::compat_lookup(
+      "libmyodbc26a.so", version(26, 10, 0), "MySQL", version(8, 4, 13));
+    CHECK(entry != nullptr);
+    CHECK(entry->array_insert);
+    CHECK(entry->array_update);
+    CHECK(entry->array_delete);
+    CHECK(entry->array_rowcount_totals);
+  }
+  // An unmeasured myodbc version stays on the insert-only prior.
   {
     auto const* entry = odbc::compat_lookup(
       "myodbc8w.so", version(8, 0, 32), "MySQL", version(8, 0, 0));

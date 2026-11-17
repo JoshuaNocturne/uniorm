@@ -2028,7 +2028,8 @@ update/delete 两位的折叠路。
 表分两层：**已实测可执行的版本钉在族先验之前，未实测的版本落回保守先验**。已钉授权
 皆 `insert✓/update✓/delete✓/totals✓`：`maodbc 3.1.12`（本机 MariaDB 10.6.4，探针
 N=2..1000 全 pass、集成走数组 UPDATE/DELETE 路绿）、`maodbc 3.1.23`（CI MariaDB
-11.8.9）、`myodbc 26.10.0`（CI MySQL 8.4.13），后两者探针全 pass、整组计数。其余
+11.8.9）、`myodbc 26.10.0`（CI MySQL 8.4.13），后两者探针全 pass、整组计数，CI 集成
+走数组 UPDATE/DELETE 路亦绿。其余
 maodbc/myodbc 版本未实测，留先验 `insert✓/update✗/delete✗/totals✓`（3.2 线数组
 INSERT 会 OOM，更不放开）。psqlODBC `insert✓/update✓/delete✓/totals✗`（CI 17.0.7
 实测确认短计数）。Oracle 按 DBMS 名键控（驱动自报不可信、服务端名可靠）保守

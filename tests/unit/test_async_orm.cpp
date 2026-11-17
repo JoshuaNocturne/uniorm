@@ -176,7 +176,7 @@ public:
     state_->log.push_back("rollback");
   }
   backend::capabilities caps() const noexcept override {
-    return { false, false, true, true, true };
+    return { false, false, true, true, true, true };
   }
   std::string dbms_name() const override {
     return "PostgreSQL";

@@ -113,7 +113,7 @@ public:
     return { /*columnar_batch=*/false,
       /*array_rowcount_totals=*/state_->report_array_totals,
       /*array_single_send=*/true, /*array_insert=*/true,
-      /*array_update_delete=*/true };
+      /*array_update=*/true, /*array_delete=*/true };
   }
   std::string dbms_name() const override {
     return "batch";

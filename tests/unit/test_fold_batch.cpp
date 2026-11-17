@@ -104,7 +104,8 @@ struct fold_state {
   bool array_rowcount_totals = false;
   bool array_single_send = true;
   bool array_insert = true;
-  bool array_update_delete = true;
+  bool array_update = true;
+  bool array_delete = true;
 };
 
 // The catalog read the array row source is spelled from: the configured names
@@ -262,7 +263,8 @@ public:
       /*array_rowcount_totals=*/state_->array_rowcount_totals,
       /*array_single_send=*/state_->array_single_send,
       /*array_insert=*/state_->array_insert,
-      /*array_update_delete=*/state_->array_update_delete };
+      /*array_update=*/state_->array_update,
+      /*array_delete=*/state_->array_delete };
   }
   std::string dbms_name() const override {
     return state_->server;
@@ -695,14 +697,15 @@ void test_fold_batch() {
   // The MySQL-wire ODBC connectors (MariaDB Connector/ODBC and the MySQL one):
   // the array counts the whole block, but an array UPDATE/DELETE renders as
   // multi-statement text the driver cannot execute, so the backend reports
-  // array_update_delete=false. Even with the columnar batch on offer, automatic
-  // must fold the write rather than take the array path that would throw.
+  // array_update=array_delete=false. Even with the columnar batch on offer,
+  // automatic must fold the write rather than take the array path that throws.
   {
     fold_session session{ "foldmysqlwire" };
     session.state->server = "MySQL";
     session.state->columnar_batch = true;
     session.state->array_rowcount_totals = true;
-    session.state->array_update_delete = false;
+    session.state->array_update = false;
+    session.state->array_delete = false;
     CHECK(session.database.update(two_rows) == session.state->report);
     CHECK(session.state->executes.size() == 1);
     CHECK(folded_sets(session.state->executes.front().text) == 2);
@@ -724,7 +727,8 @@ void test_fold_batch() {
     session.state->server = "MySQL";
     session.state->columnar_batch = true;
     session.state->array_rowcount_totals = true;
-    session.state->array_update_delete = false;
+    session.state->array_update = false;
+    session.state->array_delete = false;
     session.database.batch_write_policy(orm::batch_policy::columnar);
     CHECK_THROWS(session.database.update(two_rows), uniorm_error);
   }
@@ -736,7 +740,8 @@ void test_fold_batch() {
     session.state->server = "batch";
     session.state->columnar_batch = true;
     session.state->array_rowcount_totals = true;
-    session.state->array_update_delete = false;
+    session.state->array_update = false;
+    session.state->array_delete = false;
     // One parameter set per row tallies each execute on its own.
     CHECK(session.database.update(two_rows) == 2 * session.state->report);
     CHECK(session.state->executes.size() == 2);

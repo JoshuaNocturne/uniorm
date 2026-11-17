@@ -10,6 +10,7 @@ add_executable(uniorm_unit_tests
     unit/test_orm_crud_helpers.cpp
     unit/test_batch_shape.cpp
     unit/test_fold_batch.cpp
+    unit/test_array_probe.cpp
     unit/test_orm_validate.cpp
     unit/test_identifier_resolution.cpp
     unit/test_binding_order.cpp
@@ -77,6 +78,8 @@ if(UNIORM_BACKEND_ODBC)
         unit/test_odbc_main.cpp
         unit/test_odbc_handles.cpp
         unit/test_odbc_catalog.cpp
+        unit/test_odbc_compat.cpp
+        unit/test_odbc_probe_cache.cpp
     )
     # White-box test of the backend's own layer: link uniorm::odbc for the
     # symbols under test and ODBC::ODBC for the SQL* headers the private
@@ -121,6 +124,23 @@ if(UNIORM_BACKEND_ODBC)
         SKIP_RETURN_CODE 77 LABELS perf
         ENVIRONMENT "UNIORM_PLUGIN_PATH=${UNIORM_BUILD_TREE_PLUGIN_DIR}")
     uniorm_copy_runtime_dlls(uniorm_perf_tests)
+
+    # The compatibility-table validator: white-box like the unit tests above,
+    # but it opens the leg's real driver and measures array DML on a scratch
+    # table. Not a perf leg -- it asserts the table against measurement, so it
+    # runs in the daily ctest sweep and skips (77) when no DSN is set.
+    add_executable(uniorm_probe_array_dml
+        probe/probe_array_dml.cpp
+    )
+    target_link_libraries(uniorm_probe_array_dml
+        PRIVATE uniorm::odbc ODBC::ODBC)
+    target_include_directories(uniorm_probe_array_dml PRIVATE
+        ${PROJECT_SOURCE_DIR}/backends ${PROJECT_SOURCE_DIR}/src)
+    add_test(NAME probe_array_dml COMMAND uniorm_probe_array_dml)
+    set_tests_properties(probe_array_dml PROPERTIES
+        SKIP_RETURN_CODE 77
+        ENVIRONMENT "UNIORM_PLUGIN_PATH=${UNIORM_BUILD_TREE_PLUGIN_DIR}")
+    uniorm_copy_runtime_dlls(uniorm_probe_array_dml)
 
     if(UNIORM_BUILD_TOOLS)
         add_executable(uniorm_gen_e2e_tests

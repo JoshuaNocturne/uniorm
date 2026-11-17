@@ -2106,8 +2106,10 @@ backend（§5.2）；句柄层里那条 DSN 专用的 `SQLConnect` 通路失去�
   法）。宁可响一声：静默丢掉主键标记的产物编译得过、跑得通，只是键错了
 - `foreign_keys(ref)` → 一个列对一行（ODBC 侧为 `SQLForeignKeys`，按被引用表的
   键序），gen 按被引用表首次出现的顺序分组还原成约束
-- `indexes(ref)` → 一个索引一行（列序 + 唯一性，ODBC 侧为 `SQLStatistics`），
-  gen 按索引名排序
+- `indexes(ref)` → 一个索引一行（列序 + 唯一性）。ODBC 侧一般走
+  `SQLStatistics`；MySQL/MariaDB 这一族改读 `INFORMATION_SCHEMA.STATISTICS`
+  的 `NON_UNIQUE`——maodbc 的 `SQLStatistics` 在 MariaDB 11 上把唯一索引的
+  唯一性报丢，走普通结果路径读服务器自己的目录才稳。gen 按索引名排序
 - `database_name()` → 缺省单元名（ODBC 侧即 `SQLGetInfo(SQL_DATABASE_NAME)`）
 
 每表四次读取。外键与索引都只以注释形式进生成物

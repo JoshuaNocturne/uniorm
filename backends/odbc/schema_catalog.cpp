@@ -322,6 +322,61 @@ std::vector<column_row> read_table_columns(
   return rows;
 }
 
+// maodbc's SQLStatistics reports NON_UNIQUE unreliably on MariaDB 11, so the
+// MySQL-wire family takes uniqueness from the server's own catalog through
+// the ordinary result path rather than the catalog call.
+std::vector<meta::index_row> read_mysql_wire_indexes(
+  connection& conn, meta::table_ref const& table) {
+  std::string catalog(table.catalog);
+  if (catalog.empty()) {
+    catalog = info_text(conn.native(), SQL_DATABASE_NAME);
+  }
+  std::string name(table.name);
+
+  odbc::statement stmt(conn);
+  stmt.prepare("SELECT INDEX_NAME, NON_UNIQUE, COLUMN_NAME "
+               "FROM INFORMATION_SCHEMA.STATISTICS "
+               "WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? "
+               "ORDER BY INDEX_NAME, SEQ_IN_INDEX");
+  SQLLEN catalog_ind = static_cast<SQLLEN>(catalog.size());
+  SQLLEN name_ind = static_cast<SQLLEN>(name.size());
+  stmt.bind_parameter(1, SQL_C_CHAR, SQL_VARCHAR,
+    const_cast<char*>(catalog.data()), static_cast<SQLLEN>(catalog.size()),
+    &catalog_ind, std::max<SQLULEN>(catalog.size(), 1));
+  stmt.bind_parameter(2, SQL_C_CHAR, SQL_VARCHAR,
+    const_cast<char*>(name.data()), static_cast<SQLLEN>(name.size()), &name_ind,
+    std::max<SQLULEN>(name.size(), 1));
+  stmt.execute();
+
+  char_buffer index_name;
+  char_buffer column;
+  SQLINTEGER non_unique = 0;
+  SQLLEN non_unique_ind = SQL_NULL_DATA;
+  stmt.bind_column(
+    1, SQL_C_CHAR, index_name.data, sizeof(index_name.data), &index_name.ind);
+  stmt.bind_column(
+    2, SQL_C_SLONG, &non_unique, sizeof(non_unique), &non_unique_ind);
+  stmt.bind_column(
+    3, SQL_C_CHAR, column.data, sizeof(column.data), &column.ind);
+
+  std::vector<meta::index_row> rows;
+  while (stmt.fetch()) {
+    std::string iname = index_name.str();
+    if (iname.empty()) {
+      continue;
+    }
+    auto it = std::find_if(rows.begin(), rows.end(),
+      [&](meta::index_row const& row) { return row.name == iname; });
+    if (it == rows.end()) {
+      rows.push_back(meta::index_row{ iname, {}, false });
+      it = std::prev(rows.end());
+    }
+    it->unique = non_unique_ind != SQL_NULL_DATA && non_unique == 0;
+    it->columns.push_back(column.str());
+  }
+  return rows;
+}
+
 }  // namespace
 
 std::string odbc_schema_meta::database_name() {
@@ -418,6 +473,11 @@ std::vector<meta::foreign_key_row> odbc_schema_meta::foreign_keys(
 }
 
 std::vector<meta::index_row> odbc_schema_meta::indexes(table_ref const& table) {
+  auto dbms =
+    uniorm::detail::fold_lower(info_text(conn_.native(), SQL_DBMS_NAME));
+  if (dbms == "mysql" || dbms == "mariadb") {
+    return read_mysql_wire_indexes(conn_, table);
+  }
   std::string cat(table.catalog);
   std::string sch(table.schema);
   std::string tbl(table.name);

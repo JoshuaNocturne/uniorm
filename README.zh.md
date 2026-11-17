@@ -353,6 +353,17 @@ db.batch_write_policy(uniorm::orm::batch_policy::automatic);  // 默认
 在不依赖返回值时才选 `columnar`。这是驱动自己的行为，库拿到的数本就偏小，无从
 纠正。
 
+**数组写可执行性怎么定（ODBC）。** 驱动能不能真跑数组 INSERT/UPDATE/DELETE，不信它的
+自报：ODBC 的 `SQL_BATCH_SUPPORT` 说的是多结果集批处理，不是参数组 DML，两头都说过谎。
+ODBC backend 按驱动与服务端的名 + 版本查一张版本化兼容表，表由效果级实测种下——scratch
+表上跑 `PARAMSET_SIZE=N` 再 SELECT 验证行状态。已知组合取表的逐 op 位。未知组合在
+连接的句柄上探一次（同一 scratch 表探针，N=8），三 op 全 conclusive 才把结论按驱动
+与服务端的名 + 版本（不是连接串）缓存进进程内单例，同身份的后续连接复用。探针
+inconclusive（连接级错，或账号没有建 scratch 表的权限）则该组合保守 deny（折叠或一组
+一组发）且不缓存——DDL 权限是 per-connection，缓存成全局硬 deny 会误杀有权限的连接。
+CI 逐腿重测已知组合并断言表与探针一致。原生 OCI 与 libpq backend 把三位可执行性硬编码
+为 true。
+
 ### 事务与连接池
 
 ```cpp

@@ -397,6 +397,21 @@ fold shape it goes one set at a time — so choose `columnar` only when you do n
 rely on the returned count. This is the driver's own behavior; the library cannot
 correct a count it is handed short.
 
+**How array-write executability is decided (ODBC).** Whether a driver can actually
+run an array INSERT/UPDATE/DELETE is not taken from its self-report: ODBC's
+`SQL_BATCH_SUPPORT` describes multi-result-set batching, not parameter-set DML, and
+has lied in both directions. The ODBC backend looks the driver and server up by name
+and version in a versioned compatibility table seeded by effect-level measurement —
+a scratch-table probe that runs `PARAMSET_SIZE=N` and verifies the rows by SELECT. A
+known combo gets the table's per-op bits. An unknown combo is probed once on the
+connecting handle (the same scratch-table probe, N=8); a conclusive verdict is cached
+process-wide by driver and server name+version — not the connection string — so later
+connections of that identity reuse it. An inconclusive probe (a connection-level error,
+or no privilege to create the scratch table) leaves the combo at conservative deny
+(fold, or one parameter set at a time) and caches nothing, because DDL privilege is
+per-connection. CI re-measures each known leg and asserts the table against the probe.
+The native OCI and libpq backends hardcode the three executability bits true.
+
 ### Transactions and connection pool
 
 ```cpp

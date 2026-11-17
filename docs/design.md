@@ -741,12 +741,13 @@ std::size_t r = db.remove(people);   // 同上；无键列可推断且未给 whe
   psqlODBC `16.00` 把每组参数都执行了，`SQLRowCount` 却停在其中一组的行数，两支
   MySQL 线连接器报的是整组的总数（5 组全命中：`1` 对 `5`；一组不命中：`1` 对 `4`）。
   于是 `caps()` 用两项管这条通道：`array_rowcount_totals` 说一次数组 execute 报回
-  的是不是整组总数（ODBC 实现按 `SQL_DRIVER_NAME` 认出 psqlODBC 并清零它），
+  的是不是整组总数（ODBC 由版本化兼容表给位，psqlODBC 实测短计数故清零，§5.5），
   `array_single_send` 说一次 execute 是不是只发一次服务端往返（libpq 插件清零它：
   这一家逐组发，200 行 UPDATE 每组 43.6 ms，正是一条往返的价钱）。数组能不能执行
-  另由可执行性位管（§5.5）：ODBC 实现认出 MySQL 线连接器——`SQL_DRIVER_NAME` 含
-  `maodbc`/`myodbc`——清零 `array_update`/`array_delete`：这一家的数组 UPDATE/DELETE 渲染成
-  驱动执行不了的多语句文本，只能折叠。性能位两者皆真、可执行性又允许，才留在数组
+  另由可执行性位管（§5.5）：ODBC 查兼容表按驱动版本给三位，未实测的 MySQL 线版本
+  留先验、清零 `array_update`/`array_delete`——部分旧版本把数组 UPDATE/DELETE 渲染成
+  驱动执行不了的多语句文本，只能折叠；已实测可执行的版本（maodbc 3.1.12/3.1.23、
+  myodbc 26.10.0）三位全开。性能位两者皆真、可执行性又允许，才留在数组
   通道；性能位任意为假或可执行性不许，而 `dialect.batch_write` 又认得这家服务端，
   `update()` 与 `remove()` 就走下面的折叠语句（无折叠形状则 paramset=1 逐行），两条
   写通道都不再受"分批粒度收成 1"管。insert 两条通道数的都是绑定的行数，不受性能位
@@ -1834,16 +1835,17 @@ ODBC 在丢弃原始行的身份字段前逐字筛选，必需身份缺失或截
 MySQL 一类本来没有该层级的命名空间，不是通配符。匹配器再去重完整表身份、检查
 矛盾列元数据，一次解析只枚举一次目标范围、每张实际表只读一次列。
 
-ODBC 实现的当前能力：`{columnar_batch=true, array_rowcount_totals=按驱动名探测,
-array_single_send=true, array_insert / array_update / array_delete=按 SQL_BATCH_SUPPORT
-探测}`。性能/传输位各有真实消费点：`columnar_batch` 让 `orm` 的三个批量入口据此在
+ODBC 实现的当前能力：`{columnar_batch=true, array_rowcount_totals=按兼容表,
+array_single_send=true, array_insert / array_update / array_delete=按兼容表}`。
+性能/传输位各有真实消费点：`columnar_batch` 让 `orm` 的三个批量入口据此在
 列式与行式通道间二选一（§4.5.2），`array_rowcount_totals` / `array_single_send`
 决定两条受累行数 sweep 走数组还是走折叠语句（§4.5.2）；可执行性三位是数组路径的硬闸
-（§5.5）。ODBC 先按 `SQL_BATCH_SUPPORT` 定可执行性（非零 → 三位 `true`，为零 →
-`false`），再按 `SQL_DRIVER_NAME` 细化：psqlODBC 清零 `array_rowcount_totals`（数组
-execute 报偏小数）；MySQL 线连接器（名含 `maodbc`/`myodbc`）清零 `array_update`/`array_delete`
-（数组 UPDATE/DELETE 渲染成执行不了的多语句文本，须折叠），`array_insert` 留 `true`
-（其数组 INSERT 是多行 VALUES，可执行）。每个标志只表示"有一条更快的路"：缺能力时
+（§5.5）。ODBC `open()` 查版本化兼容表给这四位（§5.5）：已实测可执行的驱动版本三位
+全开，未实测的 MySQL 线版本留先验 `array_insert✓`、`array_update`/`array_delete✗`
+（部分旧版本数组 UPDATE/DELETE 渲染成执行不了的多语句文本，须折叠；其数组 INSERT 是
+多行 VALUES，可执行），psqlODBC 清零 `array_rowcount_totals`（数组 execute 报偏
+小数）；表未命中的未知组合先跑一次效果级探针再定。`SQL_BATCH_SUPPORT` 与驱动名分支
+已退役（自报两头都说过谎，§5.5）。每个标志只表示"有一条更快的路"：缺能力时
 核心走慢的那条而不抛错，所以 backend 全置 `false` 也不失正确性。表结构自省不在这批
 标志里：它没有更慢的那条路可退，答不出即由 `connection::schema()` 抛
 `capability_not_supported`（门面侧的 `orm::schema()` 只转发，§4.7）。清单只装核心
@@ -2023,15 +2025,17 @@ update/delete 两位的折叠路。
 （`array_insert/update/delete` + `array_rowcount_totals`）。表由效果级实测种下，是
 已知组合的先验；未命中 → 三位可执行性留 `false`、totals 留 `true`（保守 deny）。
 
-表分两层：**已实测可执行的版本钉在族先验之前，未实测的版本落回保守先验**。当前
-`maodbc 3.1.12`（MariaDB）经探针 N=2..1000 全 pass、集成 suite 走数组 UPDATE/DELETE
-路绿，钉成 `insert✓/update✓/delete✓/totals✓`；其余 maodbc 版本与 `myodbc` 未实测，留
-先验 `insert✓/update✗/delete✗/totals✓`（3.2 线数组 INSERT 会 OOM，更不放开）。
-psqlODBC `insert✓/update✓/delete✓/totals✗`（实测确认短计数）。Oracle 按 DBMS 名键控
-（驱动自报不可信、服务端名可靠）保守 `全✗/totals✓`：现代 Oracle 23ai/SQORA 21.13 在
-探针的 int32 形状上实测可执行，但授权要等版本钉死 + int64 形状 + 集成确认，故 deny
-不动。`array_rowcount_totals` 折进表作实测列，不再按驱动名分支。授权只认实测：探针
-全 N pass 是必要条件，集成在真实实体形状与规模上绿才放行，且只放给实测过的版本。
+表分两层：**已实测可执行的版本钉在族先验之前，未实测的版本落回保守先验**。已钉授权
+皆 `insert✓/update✓/delete✓/totals✓`：`maodbc 3.1.12`（本机 MariaDB 10.6.4，探针
+N=2..1000 全 pass、集成走数组 UPDATE/DELETE 路绿）、`maodbc 3.1.23`（CI MariaDB
+11.8.9）、`myodbc 26.10.0`（CI MySQL 8.4.13），后两者探针全 pass、整组计数。其余
+maodbc/myodbc 版本未实测，留先验 `insert✓/update✗/delete✗/totals✓`（3.2 线数组
+INSERT 会 OOM，更不放开）。psqlODBC `insert✓/update✓/delete✓/totals✗`（CI 17.0.7
+实测确认短计数）。Oracle 按 DBMS 名键控（驱动自报不可信、服务端名可靠）保守
+`全✗/totals✓`：现代 Oracle 23ai/SQORA 21.13 在探针的 int32 形状上实测可执行，但授权
+要等版本钉死 + int64 形状 + 集成确认，故 deny 不动。`array_rowcount_totals` 折进表作
+实测列，不再按驱动名分支。授权只认实测：探针全 N pass 是必要条件，集成在真实实体形状
+与规模上绿才放行，且只放给实测过的版本。
 
 **`SQL_BATCH_SUPPORT` 与名字分支退役。** ODBC 规范没有描述 PARAMSET-DML 可执行性的
 `SQLGetInfo` 项：`SQL_BATCH_SUPPORT` 说的是多结果集批处理，与目标无逻辑蕴含，驱动
@@ -2055,11 +2059,13 @@ oracle/none 永久唯一名 + RAII DROP），3 列只绑 int32/string。小样�
 `odbc::backend_connection`、经 `native_handle()`+`SQLGetInfo` 读身份、读 `caps()`
 （运行时表决策），跑 N-sweep `{2,8,64,1000}`（1000=核心默认 paramset），以 pass 为
 种子取最坏（`worse` 取严重度最高者，全 pass 的 sweep 读作 pass 而非 inconclusive），
-打印机器可读种子行，**非对称断言**：表授权而实测 fail → 判红（不安全授权）；表 deny
-而实测 pass → 仅警告（保守漏放，待大规模集成确认后修正）。断言留非对称，直到每条 CI
-腿的表都等于实测才收紧到双向——否则未实测腿的保守漏放会误判红。它只在 ODBC 矩阵腿建
-target，随现有 Test step 的 `ctest -LE perf` 跑（DSN 已设故不 skip），不新增
-job/artifact。
+打印机器可读种子行，**双向断言**：表位与实测不等即判红——表授权而实测 fail 是不安全
+授权，表 deny 而实测 pass 是过时先验。每条 CI 腿的表都已等于实测（三条腿探针全 pass、
+计数与表一致），故收紧到双向；inconclusive 不置断言（权限/传输问题不是能力结论）。
+CI 的 myodbc/psqlODBC 经 apt 浮动装版（maodbc 由 tag 源码钉死 3.1.23），版本一漂即
+落回族先验、双向断言判红，逼着重测重钉——这是先验须随实测校准的信号，不是误判。它只
+在 ODBC 矩阵腿建 target，随现有 Test step 的 `ctest -LE perf` 跑（DSN 已设故不
+skip），不新增 job/artifact。
 
 **运行时兜底（方向 B）。** 表未命中的未知驱动/版本组合不再信任自报：open() 在当前
 连接上跑一次同一探针核心（`probe_array_dml`，N=8），三 op 全 conclusive 才把结论
@@ -2096,10 +2102,10 @@ insert 读 `array_insert`、update 读 `array_update`、delete 读 `array_delete
 ODBC 由兼容表给已知组合的四位，未知组合先探一次再定（conclusive 缓存复用，
 inconclusive 保守 deny，退折叠或 paramset=1，慢但正确）。
 `array_single_send` 是纯发送语义，与可执行性正交；性能位默认与语义不动。路由按表给
-的位走：已实测的 maodbc 3.1.12 三位全开（insert/update/delete 都走数组、totals✓）；
-未实测的 MySQL 线先验 insert 数组、update/delete 折叠；psqlODBC insert 数组、
-update/delete 折叠（totals✗ 故逐组计数）；Oracle ODBC 三位 0，paramset=1/折叠，批量
-落库不再静默丢。
+的位走：已实测的 maodbc 3.1.12/3.1.23 与 myodbc 26.10.0 三位全开（insert/update/
+delete 都走数组、totals✓）；未实测的 MySQL 线先验 insert 数组、update/delete 折叠；
+psqlODBC insert 数组、update/delete 折叠（totals✗ 故逐组计数）；Oracle ODBC 三位 0，
+paramset=1/折叠，批量落库不再静默丢。
 
 ## 6. uniorm-gen 代码生成工具
 
@@ -2666,8 +2672,12 @@ commit/rollback/析构回滚、批量插入（含空 optional 写 NULL、1500 �
   见到输出里的 `Skipped` 即判失败（真正的失败交给 `set -o pipefail`，测试条数不写死）。
   同一道 `ctest -LE perf` 还拾取数组 DML 兼容表校验靶 `probe_array_dml`（§5.5）：它只在
   三条驱动腿建（`UNIORM_BACKEND_ODBC`），白盒开该腿驱动、把 `caps()` 的表决策与效果级
-  探针的 N-sweep `{2,8,64,1000}` 实测相比，非对称断言（表授权而实测 fail 判红，表 deny
-  而实测 pass 仅警告），并打印机器可读种子行。DSN 已设故不 skip，不另开 job/artifact。
+  探针的 N-sweep `{2,8,64,1000}` 实测相比，双向断言（表位与实测不等即判红：授权而 fail
+  是不安全授权，deny 而 pass 是过时先验），并打印机器可读种子行。三条腿的表如今都等于
+  实测（myodbc `26.10.0`、maodbc `3.1.23`、psqlODBC `17.0.7` 探针全 pass），故收紧到
+  双向。myodbc/psqlODBC 经 apt 浮动装版（先前那趟重放装到的是 `26.7.1` / `16.00`，现已
+  漂到上述版本），maodbc 由 tag 钉死；apt 一漂、版本落回族先验，双向断言即判红逼着重测
+  重钉。DSN 已设故不 skip，不另开 job/artifact。
   三条驱动腿还在构建之前先用 `isql` 问过是哪台服务端答的：每条腿带一个 `server_prefix`（引号不能省，
   `11.` 裸写会被 YAML 读成数字 11，那前缀任何 MariaDB banner 都对得上），拿**该腿自己的**
   那句版本查询的 banner 去比前缀，对不上即红——问哪句也是服务端自己的选择，PostgreSQL 的

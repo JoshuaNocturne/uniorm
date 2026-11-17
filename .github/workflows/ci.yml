@@ -49,12 +49,14 @@ name: ci
 # mysql-connector-odbc lives only in MySQL's own apt component -- so the driver
 # choice splits the legs between install and build. All three were replayed on
 # the runner's own image before being written down, and the version each leg
-# ends up with is a measurement rather than a preference: apt delivers
-# Connector/ODBC 26.7.1, which needs no DSN keys at all, the MariaDB driver's
-# 3.2 line fails an array-bound INSERT and that leg stays on 3.1, and apt's
-# psqlODBC 16.00 is the one that answered the questions above. The two wire legs
-# ran green alongside the cross pairings in a container holding both pinned
-# connectors, so the shape this job dropped is measured rather than assumed.
+# ends up with is a measurement rather than a preference: apt floats
+# Connector/ODBC (26.7.1 when first replayed, 26.10.0 now) and psqlODBC (16.00
+# then, 17.0.7 now), so the array-DML probe re-measures each leg every run and
+# the compat grants pin to the measured version; the MariaDB driver's 3.2 line
+# fails an array-bound INSERT and that leg stays on the tag-pinned 3.1. The two
+# wire legs ran green alongside the cross pairings in a container holding both
+# pinned connectors, so the shape this job dropped is measured rather than
+# assumed.
 # What the runner has yet to confirm is this shape of the job itself -- the
 # matrix picking the image, the port and the probe statement, one service
 # carrying three families' env prefixes, and the preflight turning away a DSN
@@ -206,10 +208,11 @@ jobs:
             version_sql: SELECT VERSION();
             health_cmd: mysqladmin ping -h 127.0.0.1 -uroot
               -puniorm-ci-root --silent
-            # Empty: Connector/ODBC 26.7.1 takes every parameter shape under
-            # server-side prepares against this server. The key stays as the
-            # escape hatch it already was -- 8.4.0 needed NO_SSPS = 1 on either
-            # banner MariaDB has used.
+            # Empty: the measured Connector/ODBC (26.10.0 now, apt floats) takes
+            # every parameter shape under server-side prepares against this
+            # server, as the array-DML probe confirms each run. The key stays as
+            # the escape hatch it already was -- 8.4.0 needed NO_SSPS = 1 on
+            # either banner MariaDB has used.
             dsn_extra: ''
           - name: mariadb-odbc on mariadb-11
             driver: mariadb

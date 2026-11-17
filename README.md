@@ -409,7 +409,10 @@ process-wide by driver and server name+version — not the connection string —
 connections of that identity reuse it. An inconclusive probe (a connection-level error,
 or no privilege to create the scratch table) leaves the combo at conservative deny
 (fold, or one parameter set at a time) and caches nothing, because DDL privilege is
-per-connection. CI re-measures each known leg and asserts the table against the probe.
+per-connection. Grants are pinned to measured driver versions, and CI re-measures
+every leg and asserts the table equals the probe in both directions: a grant
+measurement contradicts, or a denial measurement passes, reddens the leg — so a
+driver version bump forces a re-measure and re-pin rather than silently drifting.
 The native OCI and libpq backends hardcode the three executability bits true.
 
 ### Transactions and connection pool

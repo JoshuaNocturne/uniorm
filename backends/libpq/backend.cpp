@@ -53,7 +53,8 @@ void pq_connection::rollback() {
 backend::capabilities pq_connection::caps() const noexcept {
   return { /*columnar_batch=*/false, /*array_rowcount_totals=*/true,
     /*array_single_send=*/false, /*array_insert=*/true,
-    /*array_update_delete=*/true };
+    /*array_update=*/true,
+    /*array_delete=*/true };
 }
 
 // The version the server reported at connect time, under the one name this

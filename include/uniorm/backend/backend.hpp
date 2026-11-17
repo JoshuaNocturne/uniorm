@@ -106,11 +106,12 @@ struct capabilities {
   // the array as text it cannot run, leaves this false so the core never sends
   // an array INSERT that would silently drop rows or throw.
   bool array_insert = false;
-  // The same for UPDATE and DELETE. Kept apart from array_insert because a
-  // driver can execute one and not the other: the MySQL-wire ODBC connectors
-  // run an array INSERT as multi-row VALUES but render an array UPDATE/DELETE
-  // as multi-statement text the server rejects.
-  bool array_update_delete = false;
+  // The same for UPDATE and DELETE, one bit apiece: a driver can execute one
+  // and not the other, so the two are gated apart. The MySQL-wire ODBC
+  // connectors run an array INSERT as multi-row VALUES but render an array
+  // UPDATE/DELETE as multi-statement text the server rejects.
+  bool array_update = false;
+  bool array_delete = false;
 };
 
 // Direct-write batch interface. The backend allocates column buffers;

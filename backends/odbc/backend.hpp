@@ -96,7 +96,7 @@ private:
 UNIORM_ODBC_API std::string dsn_string(
   std::string_view target, std::string_view user, std::string_view password);
 
-class backend_connection : public backend::connection_iface {
+class UNIORM_ODBC_API backend_connection : public backend::connection_iface {
 public:
   backend_connection();
 
@@ -120,7 +120,8 @@ private:
   odbc_schema_meta metadata_;
   bool array_rowcount_totals_ = true;
   bool array_insert_ = false;
-  bool array_update_delete_ = false;
+  bool array_update_ = false;
+  bool array_delete_ = false;
   bool int64_as_text_ = false;
 };
 

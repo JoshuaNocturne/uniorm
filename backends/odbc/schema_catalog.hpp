@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "connection.hpp"
+#include "export.hpp"
 #include "identifier.hpp"
 #include <uniorm/schema.hpp>
 
@@ -101,7 +102,7 @@ inline bool exact_catalog_table_matches(
          asked.name == reported.name;
 }
 
-struct odbc_schema_meta : schema_meta {
+struct UNIORM_ODBC_API odbc_schema_meta : schema_meta {
   explicit odbc_schema_meta(connection& conn) : conn_(conn) {}
 
   std::string database_name() override;

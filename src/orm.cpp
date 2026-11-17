@@ -1415,8 +1415,8 @@ std::size_t orm::update_batch_impl(connection& conn, entity_meta const& m,
   dialect const& d = conn.sql_dialect();
   std::vector<std::size_t> const source_cols =
     concat_columns(where_cols, set_cols);
-  batch_route const route = choose_batch_route(conn, m, d, source_cols,
-    asked_chunk, policy, conn.caps().array_update_delete);
+  batch_route const route = choose_batch_route(
+    conn, m, d, source_cols, asked_chunk, policy, conn.caps().array_update);
 
   std::optional<transaction> txn = begin_batch(conn);
 
@@ -1464,8 +1464,8 @@ std::size_t orm::delete_batch_impl(connection& conn, entity_meta const& m,
   std::size_t const asked_chunk =
     batch_size > 0 ? batch_size : default_paramset_size;
   dialect const& d = conn.sql_dialect();
-  batch_route const route = choose_batch_route(conn, m, d, where_cols,
-    asked_chunk, policy, conn.caps().array_update_delete);
+  batch_route const route = choose_batch_route(
+    conn, m, d, where_cols, asked_chunk, policy, conn.caps().array_delete);
 
   std::optional<transaction> txn = begin_batch(conn);
 

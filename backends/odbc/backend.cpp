@@ -21,9 +21,11 @@
 #include <uniorm/backend/registry.hpp>
 #include <uniorm/error.hpp>
 
+#include "compat.hpp"
 #include "environment.hpp"
 #include "error.hpp"
 #include "native_types.hpp"
+#include "probe_cache.hpp"
 #include "uniorm/detail/time.hpp"
 
 namespace uniorm::odbc {
@@ -710,6 +712,20 @@ std::string quoted(std::string_view value) {
   return out;
 }
 
+// A driver that does not answer an info string is not an error: the lookup
+// then sees an empty name and falls back to conservative deny.
+std::string info_text(SQLHDBC dbc, SQLUSMALLINT type) {
+  char buffer[256] = {};
+  SQLSMALLINT length = 0;
+  if (!SQL_SUCCEEDED(SQLGetInfo(dbc, type, buffer, sizeof(buffer), &length)) ||
+      length <= 0) {
+    return {};
+  }
+  auto const count = static_cast<std::size_t>(std::min<SQLSMALLINT>(
+    length, static_cast<SQLSMALLINT>(sizeof(buffer) - 1)));
+  return std::string(buffer, count);
+}
+
 }  // namespace
 
 std::string dsn_string(
@@ -729,46 +745,34 @@ backend_connection::backend_connection()
 
 void backend_connection::open(std::string_view connection_string) {
   conn_.open(connection_string);
-  // Executability stays false unless the driver confirms batch support. The
-  // gate is SQL_BATCH_SUPPORT, not SQL_PARAM_ARRAY_ROW_COUNTS: the MySQL-wire
-  // connectors report NO_BATCH row counts yet still run an array INSERT, while
-  // Oracle's ODBC driver reports SQL_BATCH_SUPPORT == 0 and drops every array
-  // DML. A driver that disclaims batch support gets the core's safe fallback.
-  SQLUINTEGER batch_support = 0;
-  SQLSMALLINT length = 0;
-  if (SQL_SUCCEEDED(SQLGetInfo(conn_.native(), SQL_BATCH_SUPPORT,
-        &batch_support, sizeof(batch_support), &length)) &&
-      batch_support != 0) {
-    array_insert_ = true;
-    array_update_delete_ = true;
-  }
-  // The driver name refines what the array path can do. psqlODBC applies every
-  // set but leaves SQLRowCount at the count of one of them; the MySQL-wire
-  // connectors report the array's total.
-  char name[64] = {};
-  if (SQL_SUCCEEDED(SQLGetInfo(
-        conn_.native(), SQL_DRIVER_NAME, name, sizeof(name), &length))) {
-    std::string_view driver(name, static_cast<std::size_t>(length));
-    if (driver.find("psqlodbc") != std::string_view::npos) {
-      array_rowcount_totals_ = false;
-    }
-    // The MySQL-wire connectors run an array INSERT as multi-row VALUES but
-    // render an array UPDATE/DELETE as ;-separated multi-statement text the
-    // server rejects, so only the INSERT path stays open.
-    if (driver.find("maodbc") != std::string_view::npos ||
-        driver.find("myodbc") != std::string_view::npos) {
-      array_update_delete_ = false;
-    }
-  }
+  // Executability is decided by the versioned compatibility table, seeded by
+  // effect-level measurement -- not by SQL_BATCH_SUPPORT, which ODBC defines
+  // for multi-result-set batching and which has lied about PARAMSET DML in
+  // both directions.
+  std::string const driver = info_text(conn_.native(), SQL_DRIVER_NAME);
+  version_triple const driver_ver =
+    parse_version(info_text(conn_.native(), SQL_DRIVER_VER));
+  std::string const dbms = info_text(conn_.native(), SQL_DBMS_NAME);
+  version_triple const dbms_ver =
+    parse_version(info_text(conn_.native(), SQL_DBMS_VER));
   // Oracle's ODBC driver rejects SQL_C_SBIGINT on bind and read alike; an
   // int64 column there travels as decimal text. The Oracle OCI backend is
   // unaffected, so this is keyed on the DBMS the ODBC driver talks to.
-  char dbms[128] = {};
-  if (SQL_SUCCEEDED(SQLGetInfo(
-        conn_.native(), SQL_DBMS_NAME, dbms, sizeof(dbms), &length))) {
-    std::string_view server(dbms, static_cast<std::size_t>(length));
-    int64_as_text_ = server == "Oracle";
+  int64_as_text_ = dbms == "Oracle";
+
+  probe_conclusion bits;
+  if (compat_entry const* entry =
+        compat_lookup(driver, driver_ver, dbms, dbms_ver)) {
+    bits = { entry->array_insert, entry->array_update, entry->array_delete,
+      entry->array_rowcount_totals };
+  } else {
+    // Unknown combo: probe this connection once and cache a conclusive verdict.
+    bits = probe_unknown_combo(*this, driver, driver_ver, dbms, dbms_ver);
   }
+  array_insert_ = bits.array_insert;
+  array_update_ = bits.array_update;
+  array_delete_ = bits.array_delete;
+  array_rowcount_totals_ = bits.array_rowcount_totals;
 }
 
 // Spelled out here, then handed to the one route every connection takes:
@@ -802,7 +806,8 @@ backend::capabilities backend_connection::caps() const noexcept {
     /*array_rowcount_totals=*/array_rowcount_totals_,
     /*array_single_send=*/true,
     /*array_insert=*/array_insert_,
-    /*array_update_delete=*/array_update_delete_ };
+    /*array_update=*/array_update_,
+    /*array_delete=*/array_delete_ };
 }
 
 std::string backend_connection::dbms_name() const {

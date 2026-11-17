@@ -52,7 +52,8 @@ void oci_connection::rollback() {
 backend::capabilities oci_connection::caps() const noexcept {
   return { /*columnar_batch=*/false, /*array_rowcount_totals=*/true,
     /*array_single_send=*/true, /*array_insert=*/true,
-    /*array_update_delete=*/true };
+    /*array_update=*/true,
+    /*array_delete=*/true };
 }
 
 std::string oci_connection::dbms_name() const {

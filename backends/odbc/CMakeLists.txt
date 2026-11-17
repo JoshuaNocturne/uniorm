@@ -16,9 +16,11 @@ endif()
 
 add_library(uniorm_odbc SHARED
     backend.cpp
+    compat.cpp
     connection.cpp
     environment.cpp
     error.cpp
+    probe_cache.cpp
     schema_catalog.cpp
     statement.cpp
 )

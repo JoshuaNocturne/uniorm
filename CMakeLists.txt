@@ -47,6 +47,7 @@ add_library(uniorm SHARED
     src/result_set.cpp
     src/connection.cpp
     src/dialect.cpp
+    src/array_probe.cpp
     src/transaction.cpp
     src/pool.cpp
     src/log.cpp

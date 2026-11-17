@@ -28,12 +28,18 @@ std::uint32_t read_group(std::string_view text, std::size_t& position) {
 // integration at scale confirms before a grant widens to versions still
 // unmeasured.
 constexpr compat_entry compat_table[] = {
-  // maodbc 3.1.12 measured executable: probe pass at N=2..1000 and the
-  // integration suite green through the array UPDATE/DELETE path. The 3.2 line
-  // OOMs on array INSERT, so unmeasured versions stay on the prior below.
+  // maodbc 3.1.12 measured locally (probe N=2..1000, integration green via the
+  // array path); 3.1.23 measured on CI against MariaDB 11. The 3.2 line OOMs on
+  // array INSERT, so unmeasured versions stay on the prior below.
   { "maodbc", { 3, 1, 12 }, { 3, 1, 13 }, "", {}, version_max, true, true, true,
     true },
+  { "maodbc", { 3, 1, 23 }, { 3, 1, 24 }, "", {}, version_max, true, true, true,
+    true },
   { "maodbc", {}, version_max, "", {}, version_max, true, false, false, true },
+  // myodbc 26.10.0 measured on CI against MySQL 8.4: every op passes, whole
+  // tally. Older unmeasured versions stay on the insert-only prior.
+  { "myodbc", { 26, 10, 0 }, { 26, 10, 1 }, "", {}, version_max, true, true,
+    true, true },
   { "myodbc", {}, version_max, "", {}, version_max, true, false, false, true },
   { "psqlodbc", {}, version_max, "", {}, version_max, true, true, true, false },
   // Keyed on the DBMS, not the driver name: the ODBC driver's batch self-report

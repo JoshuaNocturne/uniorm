@@ -1087,7 +1087,7 @@ std::vector<column_info> oci_statement::column_meta() const {
 }
 
 void oci_statement::set_row_array_size(std::size_t size) {
-  row_array_size_ = size == 0 ? 1 : size;
+  row_array_size_ = size == 0 ? 100 : size;
 }
 
 std::size_t oci_statement::rows_fetched() const {

@@ -58,7 +58,7 @@ public:
 
 private:
   detail::stmt_handle handle_;
-  SQLULEN row_array_size_ = 1;
+  SQLULEN row_array_size_ = 100;
   SQLULEN rows_fetched_ = 0;
   SQLULEN paramset_size_ = 1;
 };

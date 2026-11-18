@@ -608,7 +608,7 @@ bool backend_statement::fetch() {
 }
 
 void backend_statement::set_row_array_size(std::size_t size) {
-  row_array_size_ = size > 0 ? size : 1;
+  row_array_size_ = size > 0 ? size : 100;
   stmt_.set_row_array_size(static_cast<SQLULEN>(row_array_size_));
 }
 

@@ -232,7 +232,7 @@ private:
   // carried by one execute, unless its columns will not stage.
   std::vector<params> batch_;
 
-  std::size_t row_array_size_ = 1;
+  std::size_t row_array_size_ = 100;
   std::size_t rows_fetched_ = 0;
   std::size_t affected_ = 0;
   bool query_ = false;

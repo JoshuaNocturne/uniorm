@@ -132,7 +132,7 @@ private:
   // Whether the values staged for the next execute belong to a group.
   bool folding_ = false;
 
-  std::size_t row_array_size_ = 1;
+  std::size_t row_array_size_ = 100;
   // The row the current block starts at, so a continuation read of a row in
   // the block can be turned back into a position in the result.
   std::size_t block_start_ = 0;

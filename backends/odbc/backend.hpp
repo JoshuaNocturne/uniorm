@@ -45,7 +45,7 @@ private:
   // Oracle's ODBC driver rejects SQL_C_SBIGINT on both bind and read, so an
   // int64 column travels as decimal text and converts here.
   bool int64_as_text_ = false;
-  std::size_t row_array_size_ = 1;
+  std::size_t row_array_size_ = 100;
   struct param_slot {
     SQLLEN indicator = SQL_NULL_DATA;
     unsigned char bit = 0;

@@ -2,10 +2,12 @@
 
 [English](README.md)
 
-现代 C++20 数据库访问层，核心是驱动中立的：连接串里的 scheme 选择 backend，
-API 本身不点任何一家的客户端名。自带三家：默认构建的 ODBC，以及由构建
-开关打开的 Oracle OCI 与 libpq。实体映射、成员指针查询构建、事务、连接池
-与异步都建在这层核心之上。
+以 C++20 为基础、驱动中立的数据库访问层，目标是向上层提供易用且高性能的统一访问。
+设计上，uniorm 将数据库客户端（ODBC、OCI、libpq）封装为后端（backend），自身
+backend 中立：通过连接串里的 scheme 识别 backend，再以插件形式动态加载。目前
+backend 有三家：默认构建的 ODBC，由构建开关控制的 Oracle OCI 与 libpq。uniorm
+核心完成实体映射、成员指针查询构建、事务、连接池、语句缓存、异步等，backend
+完成实际的连接与 statement 操作等。
 
 权威 API 参考见 [docs/design.md](docs/design.md)。
 

@@ -2,11 +2,15 @@
 
 [中文文档](README.zh.md)
 
-A C++20 database access layer with a driver-neutral core: the scheme in a
-connection string selects the backend, and the API itself names no vendor's
-client. Three backends ship: ODBC, built by default, with Oracle OCI and
-libpq behind build options. Entity mapping, a member-pointer query builder,
-transactions, pooling, and async sit on top of that core.
+A C++20 database access layer with a driver-neutral core, aiming to give the
+code above it a single, easy-to-use, high-performance path to the database.
+By design, uniorm wraps the database clients (ODBC, OCI, libpq) as backends
+and stays backend-neutral itself: the scheme in a connection string selects
+the backend, which is then loaded dynamically as a plugin. Three backends
+ship: ODBC, built by default, with Oracle OCI and libpq behind build options.
+The core handles entity mapping, a member-pointer query builder,
+transactions, connection pooling, a statement cache, and async; the backend
+handles the actual connections and statement operations.
 
 The full API reference is [docs/design.md](docs/design.md).
 
@@ -580,8 +584,8 @@ uniorm-gen --input-ddl=schema.sql --out=build/gen [--name=app]
 Exactly one of `--dsn`, `--connection-string`, `--input-ddl` is required, as
 is `--out`. `--catalog` and `--schema` narrow where tables are looked for:
 each name is matched by name, not as a wildcard pattern, so a `%` there
-matches nothing (the run says so). `--name` renames the output unit and
-`--tables` takes a comma-separated list.
+matches nothing (left empty, the connection decides). `--name` renames the
+output unit and `--tables` takes a comma-separated list.
 
 `--input-ddl` reads a create-table script instead of a live server, so that run
 opens no connection. It takes the MySQL and PostgreSQL spellings of
@@ -662,8 +666,9 @@ ctest --test-dir build --output-on-failure
   plugin's own insert shape, save that the rows it puts on a statement come
   from the server's parameter ceiling rather than from a fixed thousand — and
   the target is read as `host[:port]/dbname`
-- **gen_e2e_tests** — generated code compared with a checked-in golden header,
-  which is itself compiled, registered and `validate(strict)`ed; needs a DSN
+- **gen_e2e_tests** — generated code compared with a checked-in golden header
+  (comments excluded), which is itself compiled, registered and
+  `validate(strict)`ed; needs a DSN
 - **install_smoke** — `cmake --install` into a throwaway prefix, then an outside
   project (`tests/install/`) configures, builds and runs through
   `find_package(uniorm CONFIG)` without setting a C++ standard of its own

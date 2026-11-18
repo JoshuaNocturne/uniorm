@@ -62,7 +62,7 @@ public:
 private:
   entity_meta const* meta_;
   T proto_{};
-  std::size_t row_array_size_ = 1;
+  std::size_t row_array_size_ = 100;
   std::vector<std::unique_ptr<field_binding>> bindings_;
 };
 

@@ -69,7 +69,7 @@ protected:
   // Copy staging into the entity's field; assumes data is non-NULL.
   virtual void write(std::size_t row_index, void* entity) = 0;
 
-  std::size_t row_array_size_ = 1;
+  std::size_t row_array_size_ = 100;
   std::ptrdiff_t offset_ = 0;
   std::vector<std::int64_t> ind_;
 };
@@ -391,7 +391,7 @@ public:
   }
 
 private:
-  std::size_t row_array_size_ = 1;
+  std::size_t row_array_size_ = 100;
   std::vector<std::unique_ptr<field_binding>> bindings_;
 };
 

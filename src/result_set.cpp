@@ -71,7 +71,7 @@ struct result_set::impl {
     std::size_t row_array_size)
     : stmt(std::move(s)), release(std::move(r)),
       // value_of() divides buffer sizes by this to locate a row's slot.
-      row_array_size_(row_array_size > 0 ? row_array_size : 1) {
+      row_array_size_(row_array_size > 0 ? row_array_size : 100) {
     describe_and_bind();
   }
 

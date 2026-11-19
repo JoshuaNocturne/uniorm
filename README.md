@@ -163,8 +163,10 @@ uniorm::orm db("DSN=mydb;UID=user;PWD=secret");
 // build with the ODBC backend off throws unknown_scheme.
 //
 // The string is also a pool key: this constructor leases from a process-wide
-// pool keyed on DSN and UID, with default pool_options. Pass a connection_pool
-// of your own to choose the size, timeouts and maintainer instead.
+// pool keyed on DSN and UID. A bare URI carrying neither token (e.g.
+// "postgresql://user:pwd@host/db") keys on the whole string, so distinct
+// databases never collapse into one pool. Pass a connection_pool of your own
+// to choose the size, timeouts and maintainer instead.
 
 // The same database, without writing one backend's string:
 uniorm::orm pieces(uniorm::connection_spec{

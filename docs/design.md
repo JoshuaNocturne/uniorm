@@ -347,6 +347,13 @@ OCI 插件取 `OCIServerVersion` banner 里 "Release " 之后那个数），
 - 字符串列与参数一律按窄字符绑定（`SQL_C_CHAR` / `SQL_VARCHAR`），库内不做编码
   转换；WVARCHAR 等宽 SQL 类型能取到值，是驱动自己做了字符集转换（策略见 §4.2）；
 - 长数据（长 VARCHAR / BLOB）v1 策略：绑定固定缓冲，截断（indicator 为负——`SQL_NO_TOTAL` 或 `SQL_NTS`——或超出缓冲）时经 `SQLGetData` 循环重取**完整值**整体替换——MariaDB Connector/ODBC 在截断续读时返回的是全量值而非剩余部分，追加式拼接会重复计数据；
+- 块取行下 `SQLGetData` 只读驱动当前行，而并非每家驱动都认块内 `SQLSetPos`
+  （MariaDB Connector/ODBC 返回成功却不定位，块内非首行的长值会读成首行的）。故凡
+  声明宽度可能超出绑定槽的变长列——字符列 `display_size × 4`、二进制列
+  `display_size` 大于等于槽宽，或宽度未知（`display_size` 为 0）/长类型——
+  `bind_column` 把整条语句降为逐行取（`SQL_ATTR_ROW_ARRAY_SIZE=1`），使
+  `SQLGetData` 的当前行恒为所求行；核心按 `rows_fetched()` 推进，自然跟着逐行。
+  不含这类列的语句仍按块取；
 - 实际设置的 ODBC 属性全集：`SQL_ATTR_ODBC_VERSION`（先试 `SQL_OV_ODBC3_80`，
   失败回退 `SQL_OV_ODBC3`）、`SQL_ATTR_AUTOCOMMIT`、`SQL_ATTR_ROW_ARRAY_SIZE`、
   `SQL_ATTR_ROWS_FETCHED_PTR`（构造语句时一次性绑定，故 `fetch()` 后直接读计数）、
@@ -421,7 +428,7 @@ ODBC adapter 内翻成 `SQL_C_*`；`uniorm-gen` 的默认映射决定生成实�
 | SQL 类型 | C++ 类型 |
 |---|---|
 | BIT | `bool` |
-| TINYINT / SMALLINT / INTEGER / BIGINT | `int16_t` / `int32_t` / `int64_t`（`int8_t` 在 `plain_sql_member` 的名单里，但 `sql_value` 没有这一选项，成员用它编译不过，`uniorm-gen` 也拒作覆写类型） |
+| TINYINT / SMALLINT / INTEGER / BIGINT | `int8_t` / `int16_t` / `int32_t` / `int64_t`（`sql_value` 不设 `int8` 选项，`make_sql_value` 把它 widen 成 `int32`，`value_cast<int8_t>` 经范围检查窄化回 `int8`；ODBC 列式批写为 `int8` 单列一字节槽。`uniorm-gen` 的覆写白名单仍只列 `int16_t..int64_t`，`int8_t` 暂不作覆写类型） |
 | REAL / FLOAT / DOUBLE | `double`（`float` 不是可绑定成员类型，单精度列一律落 `double`；`uniorm-gen` 对此告警） |
 | DECIMAL / NUMERIC | 见下方"DECIMAL 策略"（实体/投影随字段类型：`std::string` 或 `decimal_t` 均无损；动态行取精确定点字面量，`get<std::string>` 无损、`get<decimal_t>` 解析成值、`get<double>` 按需解析） |
 | CHAR / VARCHAR / LONGVARCHAR | `std::string` |
@@ -1117,7 +1124,8 @@ auto opt = db.query<User>()
 暂存槽宽取 `display_size`：字符列 `display_size × 4 + 1`（`display_size < 1024`
 时），二进制列 `display_size + 1`（`< 4096` 时），否则退回 4096 定宽——使一个块
 的缓存占用与列宽成比例；超槽或驱动回报 `SQL_NO_TOTAL` 的值退回
-`read_long_text`/`read_long_bytes` 整读。这些 `display_size` 来自一条查询**只
+`read_long_text`/`read_long_bytes` 整读（这类可能超槽的列已在 `bind_column` 处把
+语句降为逐行取，故整读读到的是该行而非块首行）。这些 `display_size` 来自一条查询**只
 描述一次**的 `stmt.column_meta()`：`projection::bind` 与 `entity_binding::bind`
 各取一轮结果元数据，再连同序号传给每个绑定——让绑定自己描述，C 个变长列就要付
 C 轮 `SQLDescribeCol`。每个绑定在构造期捕获字段在实体内的**字节偏移**，
@@ -1416,7 +1424,9 @@ public:
 
 `orm` 的连接路径：`orm(connection_string)` / `orm::connect(...)` 走注册表
 （key 为解析出的 `dsn=` + `uid=`（含 `user=`/`username=` 别名），大小写与空白
-归一后取 `dsn=<值>|uid=<值>`；首次见到的那串完整连接字符串成为该池的建连串），
+归一后取 `dsn=<值>|uid=<值>`；解析不出任何 `dsn`/`uid` token 的串——如裸 URI
+`postgresql://…`——改以整串为 key（`str=<串>`），免得不同的库塌成同一池；首次见到
+的那串完整连接字符串成为该池的建连串），
 缺省参数即上面的 `pool_options` 默认值；`orm(connection_spec)` /
 `orm::connect(spec)` 也走注册表，key 取 `spec=<scheme>|target=<值>|user=<值>`，
 password 与字符串路线一样不入 key（同一个地方、同一个用户共用一池）。**两种写法

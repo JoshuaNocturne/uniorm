@@ -46,6 +46,9 @@ private:
   // int64 column travels as decimal text and converts here.
   bool int64_as_text_ = false;
   std::size_t row_array_size_ = 100;
+  // Set when a bound column can overflow its slot, forcing a one-row fetch so
+  // SQLGetData reads the right row on drivers that ignore SQLSetPos.
+  bool row_by_row_ = false;
   struct param_slot {
     SQLLEN indicator = SQL_NULL_DATA;
     unsigned char bit = 0;
@@ -61,6 +64,7 @@ private:
   struct batch_col {
     backend::buffer_type type = backend::buffer_type::chars;
     std::vector<unsigned char> bit_vals;
+    std::vector<std::int8_t> i8_vals;
     std::vector<std::int16_t> i16_vals;
     std::vector<std::int32_t> i32_vals;
     std::vector<std::int64_t> i64_vals;

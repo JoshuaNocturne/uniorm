@@ -101,8 +101,12 @@ T value_cast(sql_value const& v) {
                        std::is_same_v<T, std::int32_t> ||
                        std::is_same_v<T, std::int64_t> ||
                        std::is_same_v<T, double>) {
-    if (auto* p = std::get_if<T>(&v))
-      return *p;
+    // sql_value holds no int8 (make_sql_value widens it to int32), so int8
+    // reaches its target only through the checked narrowing below.
+    if constexpr (!std::is_same_v<T, std::int8_t>) {
+      if (auto* p = std::get_if<T>(&v))
+        return *p;
+    }
     return detail::narrow_checked<T>(v);
   } else if constexpr (std::is_same_v<T, std::string>) {
     if (auto* p = std::get_if<std::string>(&v))

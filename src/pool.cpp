@@ -366,6 +366,10 @@ std::string connection_pool_registry::make_key(
     pos = (semi == std::string_view::npos) ? sv.size() : semi + 1;
   }
 
+  // A URI carries no ;DSN=/UID= tokens, so the parse reads nothing; keying
+  // every such string alike would share one pool across databases.
+  if (dsn.empty() && uid.empty())
+    return "str=" + connection_string;
   return "dsn=" + dsn + "|uid=" + uid;
 }
 

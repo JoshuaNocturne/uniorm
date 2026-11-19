@@ -254,6 +254,32 @@ void backend_statement::bind_column(
     int64_text_cols_.push_back(std::move(column));
     return;
   }
+  if (!row_by_row_ && (buffer.type == backend::buffer_type::chars ||
+                        buffer.type == backend::buffer_type::bytes)) {
+    SQLSMALLINT odbc_type = 0;
+    SQLULEN display_size = 0;
+    SQLRETURN rc =
+      SQLDescribeCol(stmt_.native(), static_cast<SQLUSMALLINT>(index), nullptr,
+        0, nullptr, &odbc_type, &display_size, nullptr, nullptr);
+    odbc::throw_if_error(
+      rc, SQL_HANDLE_STMT, stmt_.native(), "describe bound column width");
+    bool unbounded = display_size == 0 || odbc_type == SQL_LONGVARCHAR ||
+                     odbc_type == SQL_WLONGVARCHAR ||
+                     odbc_type == SQL_LONGVARBINARY;
+    // display_size counts characters for text and bytes for binary; *4 bounds
+    // the UTF-8 byte length of a text value.
+    std::size_t max_bytes = buffer.type == backend::buffer_type::chars
+                              ? static_cast<std::size_t>(display_size) * 4
+                              : static_cast<std::size_t>(display_size);
+    // SQLGetData reads only the driver's current row and not every driver
+    // honours SQLSetPos inside a block, so an overflow-prone column is fetched
+    // one row at a time.
+    if (unbounded || max_bytes >= buffer.capacity) {
+      row_by_row_ = true;
+      row_array_size_ = 1;
+      stmt_.set_row_array_size(1);
+    }
+  }
   stmt_.bind_column(static_cast<SQLUSMALLINT>(index), c_type_for(buffer.type),
     buffer.data, static_cast<SQLLEN>(buffer.capacity),
     reinterpret_cast<SQLLEN*>(buffer.indicator));
@@ -475,6 +501,9 @@ public:
     case backend::buffer_type::bit:
       col.bit_vals.resize(count, 0);
       break;
+    case backend::buffer_type::int8:
+      col.i8_vals.resize(count, 0);
+      break;
     case backend::buffer_type::int16:
       col.i16_vals.resize(count, 0);
       break;
@@ -505,6 +534,8 @@ public:
     switch (col.type) {
     case backend::buffer_type::bit:
       return col.bit_vals.data();
+    case backend::buffer_type::int8:
+      return col.i8_vals.data();
     case backend::buffer_type::int16:
       return col.i16_vals.data();
     case backend::buffer_type::int32:
@@ -659,8 +690,8 @@ std::vector<column_info> backend_statement::column_meta() const {
   return meta;
 }
 
-// SQLGetData addresses the driver's current row of the fetched block, which no
-// call here moves, so the row the caller names is the one the driver is on.
+// These columns are fetched one row at a time (bind_column), so SQLGetData's
+// current row is always the row the caller asks for.
 std::string backend_statement::read_long_text(
   std::size_t column, std::size_t /*row*/) {
   return get_data_char(stmt_, static_cast<SQLUSMALLINT>(column));
@@ -677,6 +708,7 @@ void backend_statement::reset() {
   batch_cols_.shrink_to_fit();
   batch_writer_.reset();
   int64_text_cols_.clear();
+  row_by_row_ = false;
   stmt_.reset();
 }
 

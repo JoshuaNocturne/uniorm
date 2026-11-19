@@ -139,6 +139,8 @@ char const* k_chunk_table = "uniorm_it_chunk";
 char const* k_said_table = "uniorm_it_said";
 char const* k_narrow_table = "uniorm_it_narrow";
 char const* k_i64_table = "uniorm_it_i64";
+char const* k_tiny_table = "uniorm_it_tiny";
+char const* k_longtext_table = "uniorm_it_longtext";
 std::string const long_note(1000, 'x');
 
 // The face this run drives. One suite serves both backends, so everything the
@@ -1799,6 +1801,116 @@ void test_narrow_entity_update(orm& db) {
   db.execute_update(std::string("DROP TABLE ") + k_narrow_table);
 }
 
+// A batch of a one-byte integer column: an entity's int8_t member stages
+// through the columnar write's own slab, one byte per row. Read back whole,
+// because a count says nothing about which row landed as what.
+void test_tinyint_batch(orm& db) {
+  std::string tinyint_type;
+  switch (the_target.server_dialect.batch_write) {
+  case dialect::batch_family::mysql:
+  case dialect::batch_family::sql_server:
+    tinyint_type = "TINYINT";
+    break;
+  case dialect::batch_family::postgresql:
+    tinyint_type = "SMALLINT";
+    break;
+  default:
+    skip_reason = "no one-byte integer column is spelled for this server";
+    return;
+  }
+
+  struct tiny_row {
+    std::int64_t id = 0;
+    std::int8_t tier = 0;
+  };
+
+  db.execute_update(std::string("DROP TABLE IF EXISTS ") + k_tiny_table);
+  db.execute_update(std::string("CREATE TABLE ") + k_tiny_table + " (id " +
+                    the_target.integer_type + " NOT NULL PRIMARY KEY, tier " +
+                    tinyint_type + " NOT NULL)");
+  db.map<tiny_row>(k_tiny_table)
+    .primary_key("id", &tiny_row::id)
+    .column("tier", &tiny_row::tier);
+
+  std::int64_t const first = 8000;
+  std::int64_t const count = 300;
+  std::vector<tiny_row> rows;
+  for (std::int64_t offset = 0; offset < count; ++offset) {
+    tiny_row row;
+    row.id = first + offset;
+    row.tier = static_cast<std::int8_t>(offset % 127);
+    rows.push_back(row);
+  }
+  CHECK(db.insert(rows) == static_cast<std::size_t>(count));
+
+  auto read = db.query<tiny_row>()
+                .where(ge(&tiny_row::id, first))
+                .order_by(&tiny_row::id)
+                .all();
+  CHECK(read.size() == static_cast<std::size_t>(count));
+  for (std::size_t index = 0; index < read.size(); ++index) {
+    CHECK(read[index].id == rows[index].id);
+    CHECK(read[index].tier == rows[index].tier);
+  }
+
+  db.execute_update(std::string("DROP TABLE ") + k_tiny_table);
+}
+
+// A long-text column read back through a block fetch: each value past the
+// bound slot is read with SQLGetData on its own row of the block. A block
+// whose rows past the first all read the first row's value would still match
+// a count, so compare every body, across more than one block.
+void test_long_text_block(orm& db) {
+  std::string text_type;
+  switch (the_target.server_dialect.batch_write) {
+  case dialect::batch_family::postgresql:
+  case dialect::batch_family::mysql:
+  case dialect::batch_family::sql_server:
+    text_type = "TEXT";
+    break;
+  default:
+    skip_reason = "no long-text column is spelled for this server";
+    return;
+  }
+
+  struct note_row {
+    std::int64_t id = 0;
+    std::string body;
+  };
+
+  db.execute_update(std::string("DROP TABLE IF EXISTS ") + k_longtext_table);
+  db.execute_update(std::string("CREATE TABLE ") + k_longtext_table + " (id " +
+                    the_target.integer_type + " NOT NULL PRIMARY KEY, body " +
+                    text_type + " NOT NULL)");
+  db.map<note_row>(k_longtext_table)
+    .primary_key("id", &note_row::id)
+    .column("body", &note_row::body);
+
+  std::int64_t const first = 9000;
+  std::int64_t const count = 120;
+  std::vector<note_row> rows;
+  for (std::int64_t offset = 0; offset < count; ++offset) {
+    note_row row;
+    row.id = first + offset;
+    row.body = std::string(
+      static_cast<std::size_t>(8000 + offset % 100), char('a' + offset % 26));
+    rows.push_back(std::move(row));
+  }
+  CHECK(db.insert(rows) == static_cast<std::size_t>(count));
+
+  auto read = db.query<note_row>()
+                .where(ge(&note_row::id, first))
+                .order_by(&note_row::id)
+                .all();
+  CHECK(read.size() == static_cast<std::size_t>(count));
+  for (std::size_t index = 0; index < read.size(); ++index) {
+    CHECK(read[index].id == rows[index].id);
+    CHECK(read[index].body == rows[index].body);
+  }
+
+  db.execute_update(std::string("DROP TABLE ") + k_longtext_table);
+}
+
 void test_update(orm& db) {
   std::vector<User> users{ User{ 400, "ivy", std::int32_t{ 33 }, 1.0,
                              std::nullopt, std::nullopt },
@@ -3033,6 +3145,8 @@ int main() {
     guarded("test_batch_spellings", [&] { test_batch_spellings(db); });
     guarded(
       "test_narrow_entity_update", [&] { test_narrow_entity_update(db); });
+    guarded("test_tinyint_batch", [&] { test_tinyint_batch(db); });
+    guarded("test_long_text_block", [&] { test_long_text_block(db); });
     guarded("test_update", [&] { test_update(db); });
     guarded("test_remove", [&] { test_remove(db); });
     guarded("test_entity_update", [&] { test_entity_update(db); });

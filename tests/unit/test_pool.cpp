@@ -405,6 +405,27 @@ void test_registration_meets_the_maintainer() {
   CHECK(state->executes.load() >= 1);
 }
 
+// Two URI strings name two databases: neither carries the ;DSN=/UID= tokens
+// the ODBC key reads, so they must not collapse onto one pool and hand one
+// place's lease to the other.
+void test_registry_keys_uri_strings_apart() {
+  uniorm::connection_pool_registry& registry =
+    uniorm::connection_pool_registry::instance();
+  std::string const first = "poolfake://alice@host1/db";
+  std::string const second = "poolfake://bob@host2/other";
+  uniorm::pool_options opts = pool_options_for();
+  opts.size = 1;
+  registry.configure(first, opts);
+  registry.configure(second, opts);
+
+  uniorm::pooled_connection held = registry.acquire(first);
+  CHECK(bool(held));
+  // A second pool, not the full first one: this lease comes back at once
+  // rather than sitting out the first pool's acquire_timeout.
+  uniorm::pooled_connection other = registry.acquire(second);
+  CHECK(bool(other));
+}
+
 }  // namespace
 
 void test_pool() {
@@ -418,5 +439,6 @@ void test_pool() {
   test_orm_reconnects_by_spec();
   test_spec_pool_refills_from_the_spec();
   test_registry_waiter_does_not_stall_other_keys();
+  test_registry_keys_uri_strings_apart();
   test_registration_meets_the_maintainer();
 }

@@ -49,6 +49,29 @@ task<int> awaiting_failure(std::size_t& runs) {
   co_return co_await exploding(runs);
 }
 
+// One task awaited twice: the second drive is refused, and the refusal must
+// leave the finished task claimed. Unclaiming it would let a third drive run
+// the body again -- the double resume the claim exists to prevent.
+task<int> awaiting_one_task_twice(std::size_t& runs) {
+  auto inner = counted(runs, 5);
+  int first = co_await inner;
+  bool refused = false;
+  try {
+    int again = co_await inner;
+    (void)again;
+  } catch (uniorm::uniorm_error const&) {
+    refused = true;
+  }
+  bool still_refused = false;
+  try {
+    int third = co_await inner;
+    (void)third;
+  } catch (uniorm::uniorm_error const&) {
+    still_refused = true;
+  }
+  co_return (refused && still_refused) ? first : -1;
+}
+
 void test_making_a_task_runs_nothing() {
   std::size_t runs = 0;
   hand_pump pump;
@@ -159,6 +182,14 @@ void test_await_delivers_through_the_chain() {
   CHECK(failed_runs == 1);
 }
 
+void test_awaiting_one_task_twice_keeps_the_claim() {
+  uniorm::async::default_executor_size(1);
+  std::size_t runs = 0;
+  auto work = awaiting_one_task_twice(runs);
+  CHECK(work.block() == 5);
+  CHECK(runs == 1);
+}
+
 // One pool serves the whole process, and a count of zero would leave it with
 // nowhere to run a body: refused both before the pool exists and after.
 void test_the_default_pool_refuses_a_count_of_zero() {
@@ -185,6 +216,7 @@ void test_async_task() {
   test_failure_reaches_the_handler_unchanged();
   test_start_reports_only_a_failure();
   test_await_delivers_through_the_chain();
+  test_awaiting_one_task_twice_keeps_the_claim();
   test_the_default_pool_refuses_a_count_of_zero();
   test_driving_twice_is_refused();
 }

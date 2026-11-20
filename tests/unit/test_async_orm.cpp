@@ -10,6 +10,7 @@
 #include <exception>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <semaphore>
 #include <stdexcept>
 #include <string>
@@ -744,6 +745,37 @@ void test_the_fallback_rollback_waits_for_the_session_to_go_quiet() {
   CHECK(fixture.state->log == expected);
 }
 
+// A callback runs inside the operation it answers, while that operation still
+// holds the session's turn. Closing a transaction handle from there makes
+// ~transaction's fallback wait_idle() re-entrant: the only turn in flight is
+// the one this thread is inside, so it returns rather than waiting for itself.
+void test_a_callback_may_close_a_transaction_on_the_same_session() {
+  async_fixture fixture;
+  async::orm session(fixture.pool);
+  same_thread run;
+  session.run_on(run);
+  map_contacts(session);
+  script_two_contacts(*fixture.state);
+  std::string const select = session.sync().query<contact>().build_select();
+  fixture.state->log.clear();
+
+  std::optional<async::transaction> handle = session.begin().block();
+  CHECK(handle->active());
+  bool answered = false;
+  session.query<contact>(
+    select, [&](std::vector<contact>, std::exception_ptr failure) {
+      CHECK(!failure);
+      handle.reset();
+      answered = true;
+    });
+  CHECK(answered);
+  CHECK(!handle.has_value());
+  std::vector<std::string> const expected{ "autocommit off", select, "rollback",
+    "autocommit on" };
+  CHECK(fixture.state->log == expected);
+  CHECK(session.pending() == 0);
+}
+
 // Outliving the session is the other order, and it is legal too: the session
 // closes what it handed out on the way down, while the connection that has to
 // serve that rollback is still alive. What is left of the handle afterwards has
@@ -768,6 +800,23 @@ void test_a_transaction_handle_may_outlive_its_session() {
   std::vector<std::string> const expected{ "autocommit off",
     "UPDATE never closed", "rollback", "autocommit on" };
   CHECK(fixture.state->log == expected);
+}
+
+// An undriven task keeps a raw pointer into the session that made it, so a
+// later drive after the session is gone must refuse rather than touch freed
+// queue and executor memory.
+void test_an_undriven_task_may_outlive_its_session() {
+  async_fixture fixture;
+  auto orphan = [&fixture] {
+    async::orm session(fixture.pool);
+    same_thread run;
+    session.run_on(run);
+    fixture.state->log.clear();
+    return session.execute_update("UPDATE never driven");
+  }();
+  CHECK_THROWS(orphan.block(), uniorm::uniorm_error);
+  CHECK_THROWS(orphan.start(quiet), uniorm::uniorm_error);
+  CHECK(fixture.state->executed.empty());
 }
 
 // No run_on: the body goes to the default pool, and the destructor is what
@@ -1198,7 +1247,9 @@ void test_async_orm() {
   test_a_commit_waits_its_turn_behind_the_write_it_closes();
   test_an_uncommitted_transaction_rolls_back_when_it_goes_out_of_scope();
   test_the_fallback_rollback_waits_for_the_session_to_go_quiet();
+  test_a_callback_may_close_a_transaction_on_the_same_session();
   test_a_transaction_handle_may_outlive_its_session();
+  test_an_undriven_task_may_outlive_its_session();
   test_the_destructor_waits_for_handed_over_work();
   test_a_refused_hand_off_is_still_answered();
   test_a_throwing_handler_leaves_the_session_usable();

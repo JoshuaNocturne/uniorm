@@ -78,6 +78,14 @@ struct result_slot<void> {
 
 enum class task_drive { idle, blocked, detached, awaited };
 
+// Whether the session a task or transaction handle points back at is still
+// there. The session closes it in ~orm() while its own connection is alive, so
+// something that outlives the session has a safe flag to read before reaching
+// for the queue and executors the session owned.
+struct session_door {
+  std::atomic<bool> open = true;
+};
+
 // One per session: the FIFO that keeps a connection down to a single operation
 // in flight. It answers "who is next on this connection"; the executor's own
 // queue answers "which thread is free", and a request waiting here holds no
@@ -107,6 +115,27 @@ public:
 
   void wait_idle();
 
+  // Marks the queue whose operation this thread is running. A wait_idle() from
+  // inside that operation -- a callback that closes a transaction handle --
+  // then knows the only turn in flight is its own, and returns instead of
+  // waiting for itself. Save/restore so a chain resumed on one thread nests
+  // correctly.
+  class running_guard {
+  public:
+    explicit running_guard(operation_queue* gate) noexcept
+      : previous_(running_) {
+      running_ = gate;
+    }
+    ~running_guard() {
+      running_ = previous_;
+    }
+    running_guard(running_guard const&) = delete;
+    running_guard& operator=(running_guard const&) = delete;
+
+  private:
+    operation_queue* previous_;
+  };
+
 private:
   operation_queue() = default;
   friend class uniorm::async::orm;
@@ -123,6 +152,7 @@ private:
   std::atomic<std::size_t> limit_ = default_submit_limit;
   bool in_flight_ = false;
   bool draining_ = false;
+  static thread_local operation_queue* running_;
 };
 
 template <class T>
@@ -143,6 +173,7 @@ struct operation_core : result_slot<T>,
   operation_queue* queue = nullptr;
   executor* run_on = nullptr;
   executor* resume_on = nullptr;
+  std::shared_ptr<session_door> door;
   task_drive driven = task_drive::idle;
 
   operation_core() = default;
@@ -183,6 +214,13 @@ struct operation_core : result_slot<T>,
   // The session's FIFO decides when this body gets a thread. With no session
   // behind the task, it starts on the spot.
   void launch(executor* requested) {
+    // An undriven task is not in the queue, so ~orm() did not wait for it: the
+    // session it points back at may already be gone. Refuse before reaching for
+    // the queue and executors it owned, which a later drive would otherwise
+    // dereference freed.
+    if (door && !door->open) {
+      throw uniorm_error("async task: the session behind it is gone");
+    }
     if (queue) {
       auto self = this->shared_from_this();
       queue->push([self, requested] { self->begin(requested); });
@@ -199,7 +237,10 @@ struct operation_core : result_slot<T>,
       run_on ? *run_on : (requested ? *requested : default_executor());
     auto self = this->shared_from_this();
     try {
-      target.submit([self] { self->frame.resume(); });
+      target.submit([self] {
+        operation_queue::running_guard guard(self->queue);
+        self->frame.resume();
+      });
     } catch (...) {
       self->fail_before_start(std::current_exception());
     }
@@ -370,8 +411,10 @@ struct task_awaiter {
   // of unwinding out of whoever is running this frame.
   std::coroutine_handle<> await_suspend(std::coroutine_handle<> parent) const {
     core->continuation = parent;
+    // claim outside the try, as park()/detach() do: a "driven twice" refusal
+    // must not reach the catch, whose unclaim would reset the driven state.
+    core->claim(task_drive::awaited);
     try {
-      core->claim(task_drive::awaited);
       core->launch(nullptr);
     } catch (...) {
       // The queue refused this turn before it reached an executor, so the
@@ -443,12 +486,14 @@ private:
 
   // Stamped by the session that made the task: every drive action on it then
   // goes through that session's FIFO, which is why no operation body needs to
-  // know a queue exists.
-  void bind(detail::operation_queue* gate, executor* target,
-    executor* resumer) noexcept {
+  // know a queue exists. The door travels with it so a drive after the session
+  // is gone refuses instead of reaching into freed memory.
+  void bind(detail::operation_queue* gate, executor* target, executor* resumer,
+    std::shared_ptr<detail::session_door> door) noexcept {
     core_->queue = gate;
     core_->run_on = target;
     core_->resume_on = resumer;
+    core_->door = std::move(door);
   }
 
   // One claim, one hand-off. A hand-off the queue refused leaves the task
@@ -501,13 +546,6 @@ task<R> run_sync(std::function<R()> work) {
     co_return work();
   }
 }
-
-// Whether the session a transaction handle points back at is still there. The
-// session closes it in ~orm() while its own connection is still alive, so a
-// handle that outlives the session has something safe to read.
-struct session_door {
-  std::atomic<bool> open = true;
-};
 
 // The callback face of a session: the operation is the very call the coroutine
 // face hands the queue, so nothing here reaches the driver by a second path.
@@ -714,7 +752,7 @@ private:
   template <class R>
   task<R> enqueue(std::function<R()> work) {
     auto made = detail::run_sync<R>(std::move(work));
-    made.bind(&queue_, run_on_, resume_on_);
+    made.bind(&queue_, run_on_, resume_on_, door_);
     return made;
   }
 
@@ -769,7 +807,7 @@ private:
       }
     };
     auto work_done = detail::answered<R>(std::move(work), guard);
-    work_done.bind(&queue_, run_on_, resume_on_);
+    work_done.bind(&queue_, run_on_, resume_on_, door_);
     // A refused push leaves nothing in flight, and the frame -- with the
     // caller's callback inside it -- lands here: the session keeps nothing.
     work_done.start(settle_failure);

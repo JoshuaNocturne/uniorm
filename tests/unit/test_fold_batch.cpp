@@ -1057,4 +1057,12 @@ void test_fold_batch() {
     CHECK_THROWS(session.database.update(two_rows), uniorm_error);
     CHECK_THROWS(session.database.remove(two_rows), uniorm_error);
   }
+
+  // The result contract: current() before the first next() has no row to
+  // materialize, and says so rather than reading a row index that wrapped.
+  {
+    fold_session session{ "foldcurrentguard" };
+    result_set rows = session.database.execute("SELECT 1");
+    CHECK_THROWS(rows.current(), uniorm_error);
+  }
 }

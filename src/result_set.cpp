@@ -6,6 +6,7 @@
 
 #include "uniorm/backend/backend.hpp"
 #include "uniorm/detail/time.hpp"
+#include "uniorm/error.hpp"
 
 namespace uniorm {
 
@@ -243,6 +244,9 @@ bool result_set::next() {
 }
 
 row result_set::current() {
+  if (impl_->current_row_ == 0) {
+    throw uniorm_error("result_set: current() called before next()");
+  }
   std::vector<sql_value> values;
   values.reserve(impl_->slots.size());
   for (std::size_t i = 0; i < impl_->slots.size(); ++i) {

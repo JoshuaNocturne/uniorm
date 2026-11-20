@@ -322,6 +322,16 @@ std::vector<column_row> read_table_columns(
   return rows;
 }
 
+// MySQL-wire servers all expose INFORMATION_SCHEMA.STATISTICS. TiDB and
+// OceanBase report their own DBMS name yet speak the same catalog, so the
+// family is matched by substring rather than an exact MySQL/MariaDB name.
+bool mysql_wire_family(std::string const& folded_dbms) {
+  return folded_dbms.find("mysql") != std::string::npos ||
+         folded_dbms.find("mariadb") != std::string::npos ||
+         folded_dbms.find("tidb") != std::string::npos ||
+         folded_dbms.find("oceanbase") != std::string::npos;
+}
+
 // maodbc's SQLStatistics reports NON_UNIQUE unreliably on MariaDB 11, so the
 // MySQL-wire family takes uniqueness from the server's own catalog through
 // the ordinary result path rather than the catalog call.
@@ -475,7 +485,7 @@ std::vector<meta::foreign_key_row> odbc_schema_meta::foreign_keys(
 std::vector<meta::index_row> odbc_schema_meta::indexes(table_ref const& table) {
   auto dbms =
     uniorm::detail::fold_lower(info_text(conn_.native(), SQL_DBMS_NAME));
-  if (dbms == "mysql" || dbms == "mariadb") {
+  if (mysql_wire_family(dbms)) {
     return read_mysql_wire_indexes(conn_, table);
   }
   std::string cat(table.catalog);

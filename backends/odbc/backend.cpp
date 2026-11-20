@@ -24,6 +24,7 @@
 #include "compat.hpp"
 #include "environment.hpp"
 #include "error.hpp"
+#include "identifier.hpp"
 #include "native_types.hpp"
 #include "probe_cache.hpp"
 #include "uniorm/detail/time.hpp"
@@ -681,7 +682,10 @@ std::vector<column_info> backend_statement::column_meta() const {
       rc, SQL_HANDLE_STMT, stmt_.native(), "describe result column");
 
     column_info& info = meta[static_cast<std::size_t>(i)];
-    info.name.assign(reinterpret_cast<char const*>(name_buf), name_len);
+    SQLSMALLINT name_count = name_len < 0 ? 0 : name_len;
+    name_count = std::min<SQLSMALLINT>(
+      name_count, static_cast<SQLSMALLINT>(sizeof(name_buf) - 1));
+    info.name.assign(reinterpret_cast<char const*>(name_buf), name_count);
     info.type = sql_type_from_native(odbc_type);
     info.display_size = display_size;
     info.scale = decimals > 0 ? static_cast<std::size_t>(decimals) : 0;
@@ -790,7 +794,8 @@ void backend_connection::open(std::string_view connection_string) {
   // Oracle's ODBC driver rejects SQL_C_SBIGINT on bind and read alike; an
   // int64 column there travels as decimal text. The Oracle OCI backend is
   // unaffected, so this is keyed on the DBMS the ODBC driver talks to.
-  int64_as_text_ = dbms == "Oracle";
+  int64_as_text_ =
+    uniorm::detail::fold_lower(dbms).find("oracle") != std::string::npos;
 
   probe_conclusion bits;
   if (compat_entry const* entry =
@@ -849,7 +854,10 @@ std::string backend_connection::dbms_name() const {
     SQLGetInfo(conn_.native(), SQL_DBMS_NAME, buffer, sizeof(buffer), &length);
   odbc::throw_if_error(
     rc, SQL_HANDLE_DBC, conn_.native(), "SQLGetInfo(SQL_DBMS_NAME)");
-  return std::string(buffer, static_cast<std::size_t>(length));
+  SQLSMALLINT count = length < 0 ? 0 : length;
+  count =
+    std::min<SQLSMALLINT>(count, static_cast<SQLSMALLINT>(sizeof(buffer) - 1));
+  return std::string(buffer, static_cast<std::size_t>(count));
 }
 
 // A shape gate that cannot read a version simply stays with the older shape,
@@ -862,7 +870,9 @@ std::string backend_connection::server_version() const {
   if (!SQL_SUCCEEDED(rc) || length < 0) {
     return {};
   }
-  return std::string(buffer, static_cast<std::size_t>(length));
+  auto const count = static_cast<std::size_t>(std::min<SQLSMALLINT>(
+    length, static_cast<SQLSMALLINT>(sizeof(buffer) - 1)));
+  return std::string(buffer, count);
 }
 
 std::unique_ptr<backend::statement_iface>

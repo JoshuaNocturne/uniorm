@@ -1,5 +1,6 @@
 #include "error.hpp"
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -28,7 +29,10 @@ std::vector<odbc_error::diagnostic> collect_diagnostics(
     odbc_error::diagnostic d;
     d.state.assign(reinterpret_cast<char const*>(state));
     d.native_code = native_code;
-    d.message.assign(reinterpret_cast<char const*>(message), message_length);
+    SQLSMALLINT message_count = message_length < 0 ? 0 : message_length;
+    message_count = std::min<SQLSMALLINT>(
+      message_count, static_cast<SQLSMALLINT>(sizeof(message) - 1));
+    d.message.assign(reinterpret_cast<char const*>(message), message_count);
     result.push_back(std::move(d));
   }
   return result;

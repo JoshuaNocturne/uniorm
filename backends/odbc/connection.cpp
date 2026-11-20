@@ -19,8 +19,8 @@ SQLCHAR* as_sql_chars(std::string_view s) {
 
 }  // namespace
 
-connection::connection(environment& env)
-  : handle_(env.native(), "connection") {}
+connection::connection(std::shared_ptr<environment> env)
+  : env_(std::move(env)), handle_(env_->native(), "connection") {}
 
 connection::~connection() {
   if (open_) {
@@ -36,7 +36,7 @@ connection::~connection() {
 }
 
 connection::connection(connection&& other) noexcept
-  : handle_(std::move(other.handle_)),
+  : env_(std::move(other.env_)), handle_(std::move(other.handle_)),
     open_(std::exchange(other.open_, false)) {}
 
 connection& connection::operator=(connection&& other) noexcept {
@@ -52,6 +52,7 @@ connection& connection::operator=(connection&& other) noexcept {
       }
     }
     handle_ = std::move(other.handle_);
+    env_ = std::move(other.env_);
     open_ = std::exchange(other.open_, false);
   }
   return *this;

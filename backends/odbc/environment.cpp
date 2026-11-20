@@ -35,8 +35,8 @@ environment::environment(environment&&) noexcept = default;
 
 environment& environment::operator=(environment&&) noexcept = default;
 
-environment& shared_environment() {
-  static environment env;
+std::shared_ptr<environment> shared_environment() {
+  static std::shared_ptr<environment> env = std::make_shared<environment>();
   return env;
 }
 

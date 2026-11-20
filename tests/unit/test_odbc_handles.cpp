@@ -1,3 +1,4 @@
+#include <memory>
 #include <string>
 #include <utility>
 
@@ -22,7 +23,8 @@ void test_odbc_handles() {
   odbc::environment moved = std::move(env);
   CHECK(moved.native() != nullptr);
 
-  odbc::connection conn(moved);
+  auto shared = std::make_shared<odbc::environment>();
+  odbc::connection conn(shared);
   CHECK(conn.native() != nullptr);
   CHECK(!conn.is_open());
 

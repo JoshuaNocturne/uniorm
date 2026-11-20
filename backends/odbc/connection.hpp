@@ -2,6 +2,7 @@
 
 // Private header: ODBC connection handle wrapper. Not installed.
 
+#include <memory>
 #include <string_view>
 
 #include "environment.hpp"
@@ -13,7 +14,7 @@ namespace uniorm::odbc {
 // RAII wrapper for SQLHDBC. Move-only.
 class UNIORM_ODBC_API connection {
 public:
-  explicit connection(environment& env);
+  explicit connection(std::shared_ptr<environment> env);
   ~connection();
 
   connection(connection&&) noexcept;
@@ -37,6 +38,7 @@ public:
   }
 
 private:
+  std::shared_ptr<environment> env_;
   detail::dbc_handle handle_;
   bool open_ = false;
 };

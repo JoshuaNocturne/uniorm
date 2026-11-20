@@ -942,6 +942,10 @@ void append_key_part(
         long long const ticks =
           static_cast<long long>(held.time_since_epoch().count());
         out.append(reinterpret_cast<char const*>(&ticks), sizeof(ticks));
+      } else if constexpr (std::is_same_v<held_type, double>) {
+        // Widening a double to long long collapses 1.5 and 1.9 onto one key;
+        // the raw eight bytes keep every distinct value distinct.
+        out.append(reinterpret_cast<char const*>(&held), sizeof(held));
       } else {
         // Numbers of one column arrive as one type, so a bool, an int16 and an
         // int64 of the same value never share a key here. Widening to the

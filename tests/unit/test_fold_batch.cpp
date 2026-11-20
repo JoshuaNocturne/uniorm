@@ -44,6 +44,13 @@ struct pair_row {
   std::string label;
 };
 
+// A floating key: the fraction is what tells two rows apart, so the dedup key
+// keeps the whole value rather than widening it to an integer.
+struct measure_row {
+  double key = 0;
+  std::string label;
+};
+
 // The shapes an array literal has to spell: no value, a value holding the
 // array's own punctuation, and a byte string the server reads in hex.
 struct note_row {
@@ -163,6 +170,8 @@ std::string render(sql_value const& value) {
       } else if constexpr (std::is_same_v<held_type, timestamp>) {
         return std::to_string(
           static_cast<long long>(held.time_since_epoch().count()));
+      } else if constexpr (std::is_same_v<held_type, double>) {
+        return std::to_string(held);
       } else {
         return std::to_string(static_cast<long long>(held));
       }
@@ -322,6 +331,9 @@ struct fold_session {
       .primary_key("grp", &pair_row::grp)
       .primary_key("index", &pair_row::index)
       .column("label", &pair_row::label);
+    database.map<measure_row>("measures")
+      .primary_key("key", &measure_row::key)
+      .column("label", &measure_row::label);
     database.map<wide_account>("wide_accounts")
       .primary_key("id", &wide_account::id)
       .column("col_a", &wide_account::col_a)
@@ -463,6 +475,28 @@ void test_fold_batch() {
     CHECK(session.state->executes.front().text == group_updated);
     std::vector<std::string> const group_binds{ "1:4", "2:2", "3:last" };
     CHECK(session.state->executes.front().binds == group_binds);
+  }
+
+  // A floating key keeps its fraction: two rows whose keys differ only below
+  // the decimal point are two tuples, not one. Widening the key to an integer
+  // would collapse 1.5 and 1.9 onto one row and drop a write.
+  {
+    fold_session session{ "folddoublekey" };
+    session.state->server = "PostgreSQL";
+    std::vector<measure_row> const distinct{ { 1.5, "first" },
+      { 1.9, "last" } };
+    CHECK(session.database.update(distinct) == session.state->report);
+    CHECK(session.state->executes.size() == 1);
+    CHECK(folded_sets(session.state->executes.front().text) == 2);
+
+    // An equal key is still written once, with the later row's value.
+    session.state->executes.clear();
+    std::vector<measure_row> const repeated{ { 1.5, "first" },
+      { 1.5, "last" } };
+    CHECK(session.database.update(repeated) == session.state->report);
+    CHECK(folded_sets(session.state->executes.front().text) == 1);
+    std::vector<std::string> const deduped{ "1:1.500000", "2:last" };
+    CHECK(session.state->executes.front().binds == deduped);
   }
 
   // The MySQL-wire update: the written-to column is qualified, because an

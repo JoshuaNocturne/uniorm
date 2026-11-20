@@ -290,10 +290,12 @@ class environment {                    // SQLHENV
     environment();                     // ODBC 3.80，失败回退 3.x
     SQLHENV native() const noexcept;
 };
-environment& shared_environment();     // 进程内共享，首次使用时创建
+std::shared_ptr<environment> shared_environment();  // 进程内共享，首次使用时创建；
+                                       // 每个连接持一份副本，env 因此活过所有连接，
+                                       // 静态连接在共享句柄之后析构也不踩空
 
 class connection {                     // SQLHDBC，move-only
-    explicit connection(environment& env);
+    explicit connection(std::shared_ptr<environment> env);  // 持有副本
     void open(std::string_view connection_string);      // SQLDriverConnect
     void close();
     bool is_open() const noexcept;
@@ -553,7 +555,7 @@ struct column_info {
 // 行式绑定结果集；move-only，pimpl；由 connection::execute 创建
 class result_set {
     bool next();                   // 下一行；false = 结果耗尽
-    row current();                 // 物化当前行为动态 row
+    row current();                 // 物化当前行为动态 row；须先 next()，否则抛 uniorm_error
     std::size_t column_count() const;
     column_info const& column(std::size_t index) const;
 };
@@ -682,9 +684,13 @@ class connection {
   `SQL_RESET_PARAMS`）后复用，归还时不复位——复位推迟到下一次 acquire；
   使用中的句柄不在缓存内，同一 SQL 并发执行互不干扰（各自新建）
 - `execute_update` 执行完立即归还；`execute` 的 `result_set` 携带
-  check-in 闭包（`weak_ptr` 引用缓存状态），析构时归还——缓存先于
-  连接句柄销毁；缓存本身是 `shared_ptr`，故连接被移动后闭包仍有效，
-  连接已销毁时静默丢弃句柄
+  check-in 闭包，析构时归还。闭包握两样：缓存状态的 `weak_ptr`，以及
+  backend 连接的 `shared_ptr`（`connection::backend_` 因此也是 `shared_ptr`）。
+  缓存先于连接句柄销毁，且本身是 `shared_ptr`，故连接被移动后闭包仍有效。
+  result_set 允许活过产出它的 `connection`：语句句柄挂在连接之下
+  （ODBC 的 DBC、libpq 的 PGconn），闭包便握着 backend 不放，直到 result_set
+  析构——句柄先销毁、backend 后销毁，释放句柄时 parent 始终活着。代价是
+  `connection` 先走时，服务端资源要等 result_set 用完才真正断开
 - 归还时该 SQL 已有条目（并发 checkout 期间产生过新建）则丢弃；
   超容量从 LRU 尾部淘汰
 - `close()` 先清空缓存再断开，保证语句句柄先于 DBC 释放
@@ -827,7 +833,8 @@ std::size_t r = db.remove(people);   // 同上；无键列可推断且未给 whe
   个被提到的那一行）；核心因此在折叠前按**匹配列**去重——不是按主键，
   调用方点名别的列时匹配列就不是主键——把最后一行的值放进首次出现的槽位，
   那正是逐条写留下的值。计数因此按行而不是按元组：同一个 key 写两遍只记
-  一遍。去重比的是实体里的值，不在服务端眼里比：两行在核心看来不同、服务端
+  一遍。去重比的是实体里值的完整字节（浮点匹配列保留 double 的八字节、不宽化成
+  整数，1.5 与 1.9 因此是两个 key），不在服务端眼里比：两行在核心看来不同、服务端
   按自己的排序规则或类型补全看成一个 key（大小写不敏感的排序规则、
   `CHAR(n)` 补空格、`citext` 这一类），去重就拦不住，最终值由服务端挑；
   逐条写在这种输入上顺序恰好确定，也并没有说清要哪一组值
@@ -1392,7 +1399,7 @@ public:
     explicit connection_pool(pool_options);   // 使用 shared_environment()
     pooled_connection acquire();       // 懒创建；超时抛 pool_timeout；
                                        // 建连失败时归还名额并原样重抛；
-                                       // 空闲超过 max_idle_time 的连接直接丢弃
+                                       // 空闲超时或已死的连接退役、另借新的
     std::size_t capacity() const;
     std::size_t idle_count() const;
     unsigned long long heartbeats_executed() const;
@@ -1462,6 +1469,15 @@ password 与字符串路线一样不入 key（同一个地方、同一个用户�
   改由 worker 在下一趟 pass 开头清掉失效的 `weak_ptr`，因此一个死池的记录最多留一个
   心跳周期，维护过程始终不会触及已销毁的池
 
+`acquire()` 从空闲列表取连接时也问一句 `is_open()`：超时（`max_idle_time`）
+或已死的条目不交出去，而是在锁外销毁、归还名额（`created--`）后继续下一轮，
+必要时懒创建一条新的。`is_open()` 是 backend 自己的本地存活答案，不做往返：
+ODBC 读 `SQL_ATTR_CONNECTION_DEAD`（驱动一旦在某次调用上失败就知道连接死了；
+不支持该属性的驱动退回 open 标志，不谎报死亡），libpq 读 `PQstatus`。OCI 没有
+廉价的本地探针，`is_open()` 只看 open 标志——这是它的局限，静默死亡由心跳那次
+`OCIPing` 往返兜底。所以本地检查抓的是驱动已经察觉的死亡，两次心跳之间服务端
+悄悄重启这类要靠心跳发现。退役在锁外断开，因为 `SQLDisconnect` 可能阻塞在服务端上。
+
 v1 不做：动态伸缩。池须比所有借出的连接长寿。
 
 ### 4.11 异步表面（`async.hpp`）
@@ -1497,7 +1513,11 @@ worker 池的一条线程上。异步只回答三件事——这次同步调用�
 - `task<T>`（`:394`）：惰性，造出来时什么都不跑，被 drive 那一刻才 submit。三种
   drive 动作：`co_await`、`block()`（停住本线程等结果）、`start(handler)`（交出去
   继续走）。没被 drive 的 task 析构不留副作用；同一个 task 第二次 drive 抛
-  `uniorm_error`。堆上那块共享状态是 `detail::operation_core<T>`（`:135`），由
+  `uniorm_error`。**task 也可以活过会话**：没被 drive 的 task 不在队列里，`~orm()`
+  那道屏障因此没等过它，它揣着的队列与 executor 裸指针可能已随会话 freed；于是
+  launch（`:194`）开头先读会话发出处那把 `session_door`，门已关就抛
+  `uniorm_error`（"背后的会话没了"），与句柄同形，而不是踩进 freed 的队列锁。
+  堆上那块共享状态是 `detail::operation_core<T>`（`:135`），由
   `shared_ptr` 计数，结果与异常都住在它里面，协程帧挂在它上面、由它的析构销毁——
   于是等结果那条线程与最后拆帧那条线程碰不上。帧从不自毁。`start()` 的 handler
   抛出没人接：它是失败的最后一段，两处跑它的地方都不许抛，于是吞在
@@ -1547,7 +1567,7 @@ worker 池的一条线程上。异步只回答三件事——这次同步调用�
   那条连接的裸指针，而连接随 `uniorm::orm` 一起走，于是 `~orm()`
   （`src/async/async.cpp:161`）在连接还活着时先把没闭合的句柄逐个回滚；此后
   `commit()`/`rollback()` 报的是"背后的会话没了"，不是踩到悬空指针。这本账记在
-  会话发出处那把 `detail::session_door`（`:503`）与一份弱句柄清单上，句柄自己
+  会话发出处那把 `detail::session_door`（`:85`）与一份弱句柄清单上，句柄自己
   闭不上它。
 
 这六样在两条路上各自怎么搭手——`co_await`、`block()`、`start()` 与回调形各在哪
@@ -1566,6 +1586,9 @@ drive 动作当场抛 `submit_overflow`（`include/uniorm/error.hpp:34`——它
 `co_await` 是唯一一处没有调用点可抛的：那次 push 发生在 `await_suspend`
 （`:365`）里，它自己接住，把它折成这一次 await 的失败，于是溢出从 body 的
 `catch` 里出来、和驱动报的错走同一条路，不再穿过正在跑这一帧的那条线程。
+接住的只有 launch（入队）那一段：`claim` 在 try 外，与 `park()`/`detach()` 同形。
+"driven twice" 这种重复驱动的拒绝因此直接抛出，不被折成失败再 `unclaim`——否则
+driven 被重置回 idle，已完成的 task 会被第三次 drive 再跑一遍（双重 resume）。
 `drain()`（`async.cpp:63`）在每次 `start()` 前后放锁，`draining_` 是内联
 executor 那种重入的守卫；抛出过的 `start()` 已经答完了它那格、等不到
 `finish()`，于是 `drain()` 在它的 `catch`（`async.cpp:72`）里还回回合再往下走，
@@ -1587,6 +1610,17 @@ executor 那种重入的守卫；抛出过的 `start()` 已经答完了它那格
 返回，那一次 `block()` 可能还没醒，`start()` 的 handler 可能还没响。要在第一条
 路上等到交付，自己 `block()` 或 `co_await`。
 
+重入是这条屏障唯一不等的时候：`wait_idle()`（`async.cpp:61`）先读一枚 thread_local
+标记 `operation_queue::running_`——`running_guard` 在 body resume 前后套着
+（`begin()` 提交的那段闭包里），记本线程正在跑哪条队列的操作，save/restore 让一条
+链在同一线程上续起来时嵌套也对。若它正是本队列，说明在飞的那一格就是本线程自己
+这一格，等它就是等自己，于是直接返回。回调在 body 里响、且响在 `work()` 返回之后，
+连接此刻在驱动层是闲的，所以从回调里闭合一个事务句柄（`~transaction` 那次兜底
+`wait_idle()`）不会吊死，兜底回滚就在当前线程上接着做。非重入的调用 `running_`
+不等于本队列，屏障照旧等齐——这一改只动原来会吊死的那条路。会话从自己的操作回调里
+析构仍是禁形：屏障即便返回，`~orm()` 随后拆掉的队列正是 `finish()` 还要碰的那一个，
+"会话必须活过它交出去的操作"这条契约不因此放宽。
+
 锁管的只是队列自己那一格：`push()`、`finish()`、`pending()` 与 `wait_idle()`
 都在 `mutex_` 里走，所以 worker 交回合与另一条线程 drive 是串行的；bind 写进
 `operation_core` 的那几项也是靠入队这把锁发布给跑它的 worker 的。会话对象本身
@@ -1596,7 +1630,7 @@ executor 那种重入的守卫；抛出过的 `start()` 已经答完了它那格
 那把锁的量：写（`async.cpp:26`）与 `push()` 在锁里的读（`async.cpp:36`）都是
 relaxed atomic，于是读永远不会撕裂，但一次改写哪一刻生效不确定——和上面那两个
 旋钮一样，算配置期的一次性动作。跨线程的另一处是 `detail::session_door`
-（`:503`）：只有 `~orm()` 写它、句柄读它，两边可能不在一条线程上，因此它是
+（`:85`）：只有 `~orm()` 写它、句柄与 task 读它，两边可能不在一条线程上，因此它是
 atomic 而不是一个 bool。
 
 跑与回是两个方向：`run_on(executor&)` 说阻塞那一段去哪儿（默认核心池；调用方自带
@@ -1611,7 +1645,8 @@ atomic 而不是一个 bool。
 用例，写在注释里。
 
 四处阻塞点是承认的，不是漏掉的：目录读留在同步侧（经 `sync()`）、
-`~async::transaction` 那次兜底回滚、`~orm()` 里那次等待（它之后还要在当前线程上
+`~async::transaction` 那次兜底回滚（从本会话操作回调里触发时不阻塞——重入的
+`wait_idle()` 直接返回，见上）、`~orm()` 里那次等待（它之后还要在当前线程上
 回滚没闭合的句柄），以及它的公开出口 `orm::wait_all_operations()`。两处既有
 陷阱同账记过：size-1 池上重连
 会自锁（`orm::connect()` 在旧租约还握着时去 `acquire()`，§4.10），
@@ -1631,7 +1666,10 @@ inline 模板，不新增导出符号，也不新增安装头。把非模板的�
 符号。这笔账照样不动 ABI 版本：
 插件契约看的是 `connection_iface` 那一圈 vtable 槽，一处没动；`async::orm`、
 `async::transaction` 与 `detail::operation_queue` 都是这一版才出现的导出类型，
-没有已发布的布局可破坏，成员一个没多。换掉的只是失败的样子——新头配旧库如今
+没有已发布的布局可破坏：`operation_queue` 添的那枚 static thread_local 标记与嵌套
+RAII guard 都不改实例布局，`session_door` 那把 `shared_ptr` 添在头文件模板
+`operation_core` 上（不是导出类型），同样是首次出现的类型上的加法。换掉的只是失败
+的样子——新头配旧库如今
 在链接期就断，不会各自带着半份实现跑起来。测试分四层
 （§8）：前两层不需要任何库，第 3 层是集成用例里那一段——同一份夹具从同步与
 异步两侧各读一遍、逐字段相比，一份二进制跑三条腿；第 4 层（第 2 层那批用例
@@ -1739,7 +1777,8 @@ struct column_buffer { buffer_type type; void* data; std::size_t capacity;
 文本硬套完整的日期格式，会把时钟的位数读成年月日，折出一个非法日期。
 
 Oracle 的 ODBC 驱动（SQORA32）绑与读都不收 `SQL_C_SBIGINT` / `SQL_BIGINT`，
-于是 ODBC adapter 在 `SQL_DBMS_NAME == "Oracle"` 时把 int64 一律走十进制文本：
+于是 ODBC adapter 在 `SQL_DBMS_NAME` 含 "oracle"（折小写后按子串认，容忍大小写
+与尾随空格）时把 int64 一律走十进制文本：
 写侧（`bind_parameter` 与 `bind_batch_params`）按 `SQL_C_CHAR` / `SQL_VARCHAR`
 绑一个 32 字节定宽文本槽；读侧 `bind_column` 改绑 backend 自有的文本 staging
 （deque 保各列 staging 地址稳定），`fetch()` 逐行 `from_chars` 解析回调用方的
@@ -1940,7 +1979,21 @@ PQputCopyData(pg, ...);                     // 用户自行驱动原生操作
    ORA-03101，插、改、删同拒，故插件不走它。`server_version()` 从
    `OCIServerVersion` 的 banner 取 "Release " 之后那个数（开头的 "26ai" 是营销名，
    不是 release；没有 "Release " 就报空版本、退回种子元组），于是 §4.5.2 的 VALUES
-   行源闸在这条腿上 fire。剩下没接的是目录读取，它让
+   行源闸在这条腿上 fire。
+
+   结果列里的 `LONG` / `LONG RAW` 描述不出长度，定长 define 会把宽值截断
+   （indicator 报 -2、ORA-01406）。这一家把它们逐行取（`OCIStmtFetch2` 迭代 1）
+   进一块起初 65536 字节的缓冲，define 走 `OCIDefineByPos2`：长度按四字节回报
+   （两字节的 `OCIDefineByPos` 在 65535 处封顶），缓冲尺寸按八字节交。某行截断就
+   把缓冲放大四倍、重新 define、重执行查询（迭代 0），跳过已交回的行再取那一行，
+   直到装下；缓冲长到 `sb4` 上限仍装不下就抛。这条「重执行 + 按位置跳过」依赖
+   两次执行返回同样的行序：没有 `ORDER BY` 的查询 SQL 不保证行序，重执行换了
+   计划或走并行时，跳过已交回的行数后取到的未必还是原来那一行，可能读错、跳行
+   或重复。所以宽 LONG（超过起初 65536 字节、会触发增长重读）的查询要带
+   `ORDER BY` 把行序钉死；窄 LONG 不触发重执行，不受此限。一条语句只要含一个
+   LONG 列，整条就降为逐行取。CLOB / BLOB 仍走定位器整读，NCLOB 仍走最宽定长暂存。
+
+   剩下没接的是目录读取，它让
    `orm::schema()` 报 `capability_not_supported`
 2. **libpq**（PostgreSQL）——**已落地**：`backends/libpq/`，scheme `"postgresql"`，
    装成 `libuniorm_postgresql.so`，CI 为它单开一支作业（§8）。两条 `open` 原语都接：
@@ -2177,9 +2230,11 @@ backend（§5.2）；句柄层里那条 DSN 专用的 `SQLConnect` 通路失去�
 - `foreign_keys(ref)` → 一个列对一行（ODBC 侧为 `SQLForeignKeys`，按被引用表的
   键序），gen 按被引用表首次出现的顺序分组还原成约束
 - `indexes(ref)` → 一个索引一行（列序 + 唯一性）。ODBC 侧一般走
-  `SQLStatistics`；MySQL/MariaDB 这一族改读 `INFORMATION_SCHEMA.STATISTICS`
+  `SQLStatistics`；MySQL 线这一族改读 `INFORMATION_SCHEMA.STATISTICS`
   的 `NON_UNIQUE`——maodbc 的 `SQLStatistics` 在 MariaDB 11 上把唯一索引的
-  唯一性报丢，走普通结果路径读服务器自己的目录才稳。gen 按索引名排序
+  唯一性报丢，走普通结果路径读服务器自己的目录才稳。族名按子串认（折小写的
+  DBMS 名含 mysql / mariadb / tidb / oceanbase），TiDB、OceanBase 这类自报家名
+  却同走 MySQL 目录的服务器因此也落在这一支。gen 按索引名排序
 - `database_name()` → 缺省单元名（ODBC 侧即 `SQLGetInfo(SQL_DATABASE_NAME)`）
 
 每表四次读取。外键与索引都只以注释形式进生成物
@@ -2397,7 +2452,13 @@ bool log_enabled(log_level level);
   工作并复位 autocommit，复位抛异常则该连接被淘汰且名额扣回；四件套的池 key 只到
   scheme / target / user，换 password 仍是同一池，而同处同人的串写法另开一池；
   `orm` 也能从串换乘四件套（先交回借到的那条，两边各是一池）；被淘汰后补上的
-  连接仍按四件套配方打开——池留的是配方，不是替它拼好的串）、
+  连接仍按四件套配方打开——池留的是配方，不是替它拼好的串；空闲期间死掉的连接
+  ——假 backend 的 `is_open()` 报死——在 `acquire()` 被退役、另开一条新的，
+  名额扣回，断言用的是建连计数而非指针，免得分配器复用旧地址误判）、
+  `test_result_set_may_outlive_its_connection`（一个语句析构时读 parent 连接、
+  并按销毁顺序留痕的假 backend：`result_set` 活过产出它的 `connection` 时，
+  句柄先于 backend 销毁、读到的 parent 魔数仍对——check-in 闭包握着 backend
+  不放；撤掉这份共享所有权则连接先走，顺序与魔数两条都失败）、
   `test_log`（一份假 sink 收记录：`level` / `site` / `message` 三字原样到达；门限挡住
   拼装——被挡住的那次连 lambda 都不执行，用计数器钉住；空 sink 与未装 sink 都静默；
   sink 抛异常不影响调用方；再加两个真站点：回滚必抛的 backend 上 leaving-live 的

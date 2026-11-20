@@ -28,13 +28,21 @@ backend 有三家：默认构建的 ODBC，由构建开关控制的 Oracle OCI �
   `SQLBindParameter`），杜绝拼接注入
 - **透明的语句缓存**：按 SQL 文本的 LRU 缓存，重复执行免 prepare（观测：
   `statement_cache_hits()`/`misses()`/`statement_cache_size()`，
-  `clear_statement_cache()` 清空）
+  `clear_statement_cache()` 清空）。流式 `result_set` 可以活过产出它的
+  `connection`：check-in 闭包握着 backend 连接直到句柄释放，句柄永远对着活着的
+  parent 销毁（服务端资源要等 `result_set` 用完才断开）
 - **三种使用层次**：裸 SQL（`execute` / `execute_update` + `params`）、聚合投影
   （`db.query<Row>(sql)`，零注册）、实体映射（`db.query<T>()`）
 - **实体直接绑定**：`query<T>::all()/one()` 将结果列直接绑到实体字段
   （ODBC 那家是 `SQLBindCol`），跳过行物化。Oracle 的 ODBC 驱动不收
   `SQL_C_SBIGINT`，int64 列在那儿按十进制文本（`SQL_C_CHAR`）绑与读、由
   backend 转换；其余驱动仍走 `SQL_C_SBIGINT` 零拷贝
+- **LONG 整值读回**：Oracle 的 `LONG` / `LONG RAW` 列在描述时给不出长度，OCI
+  backend 因此逐行取它，缓冲不够就放大并重执行查询直到装下整个值，而不是截断到
+  一个定长 define 缓冲；长度按四字节回报（`OCIDefineByPos2`），超过 65535 字节
+  的值不会被截顶。这条增长重读是「重执行 + 按位置跳过」，依赖行序稳定：会触发
+  增长的宽 LONG 查询要带 `ORDER BY`，否则 SQL 不保证行序，跳过已交回的行后可能
+  取错那一行
 - **自定义类型映射**：特化 `uniorm::converter<T>` 即命名域类型所绑定的 SQL
   表示；strict 模式的 `validate()` 会拿它与活库的列类型比对
 - **精确定点小数值**：`uniorm::decimal_t` 存尾数 + scale，按值比较、逐值零分配；
@@ -157,7 +165,7 @@ uniorm::orm pieces(uniorm::connection_spec{
 auto rs = db.execute("SELECT id, name FROM users WHERE age > ?",
                      uniorm::params{18});
 while (rs.next()) {
-    uniorm::row r = rs.current();
+    uniorm::row r = rs.current();   // next() 之前调 current() 抛 uniorm_error
     // r.get<std::int64_t>(0), r.get<std::string>("name")
 }
 
@@ -408,8 +416,10 @@ std::size_t held = pool.capacity(); // 另有 idle_count() 与
 
 所有池共用**一条**后台调度线程，`heartbeat_interval` 非零的池会挂上去：它周期性
 对空闲连接执行心跳，心跳失败即丢弃，空闲超过 `max_idle_time` 的彻底释放——
-`acquire()` 交出连接前也会执行这条规则。归还的连接先被重置，重置失败就直接退休。
-池必须活得比所有还没归还的连接久。
+`acquire()` 交出连接前也会执行这条规则。`acquire()` 还会问 backend 自己的
+`is_open()`，把空闲期间死掉的连接退役：这是本地检查、不做往返（ODBC 的连接死亡
+属性、libpq 的 `PQstatus`；OCI 只有 open 标志，静默死亡交给心跳兜底）。归还的连接
+先被重置，重置失败就直接退休。池必须活得比所有还没归还的连接久。
 
 `orm("DSN=…")` 不需要你自备池：它从一个以 DSN + UID 为键的进程级注册表里借
 （解析不出 DSN/UID 的裸 URI 以整串为键，不同的库各成一池），每个池按默认
@@ -460,13 +470,19 @@ int main() {
   抛 `submit_overflow`，并把 task 留在未驱动状态，过一会儿再试是合法写法。
 - **失败只有一个出口。** `start()` 收一个 `on_failure`，它只为失败而响；
   `block()` 与 `co_await` 则把同一个 `exception_ptr` 重抛出来。
+- **活过会话是安全的。** 未驱动的 task 与事务句柄都可以活过造出它的那把 `orm`：
+  `~orm()` 趁连接还活着把没闭合的句柄逐个回滚；此后再 drive 那个 task，或对句柄
+  `commit()`/`rollback()`，抛的是 `uniorm_error`，而不是踩进会话已释放的队列与
+  executor。
 - **续体默认换线程。** 链条的下一环落在跑完那次读的 worker 上。
   `run_on(executor&)` 说阻塞的活去哪儿，`resume_on(executor&)` 说回到哪儿；
   一次性脚本两个都不必写。
 - **四处阻塞点是承认下来的，不是漏掉的：** 留在同步侧的目录读（`validate()`、
   `schema()`、`resolve_identifiers()`，经 `sync()` 调用）、
   `~async::transaction` 兜底那次回滚，以及 `~orm()` 对本会话交出工作的等待
-  （同一个等待的公开出口是 `wait_all_operations()`）。
+  （同一个等待的公开出口是 `wait_all_operations()`）。从本会话的操作回调里闭合一个
+  事务句柄是唯一的 re-entrant 情形：那次兜底等待认出在飞的那一格就是自己，直接返回，
+  回滚接着做，不会吊死。
 
 调一句、听一次，用不着上面那一串，所以 `insert` / `update` / `remove` /
 `query<T>` 各还有一层收回调的重载：

@@ -36,7 +36,10 @@ The full API reference is [docs/design.md](docs/design.md).
   interpolation
 - **Statement cache** — LRU keyed by SQL text; `statement_cache_hits()`,
   `statement_cache_misses()`, `statement_cache_size()`,
-  `clear_statement_cache()`
+  `clear_statement_cache()`. A streaming `result_set` may outlive the
+  `connection` that produced it: its check-in closure keeps the backend
+  connection alive until the statement is freed, so the handle always releases
+  against a live parent (server resources stay until the `result_set` is done)
 - **Three access levels** — raw SQL (`execute` / `execute_update` with
   `params`), aggregate projection (`db.query<Row>(sql)`, zero registration),
   entity mapping (`db.query<T>()`)
@@ -45,6 +48,15 @@ The full API reference is [docs/design.md](docs/design.md).
   materialization. Oracle's ODBC driver rejects `SQL_C_SBIGINT`, so int64
   columns there bind and read as decimal text (`SQL_C_CHAR`) and convert in
   the backend; other drivers keep the zero-copy `SQL_C_SBIGINT` path
+- **LONG values read whole** — an Oracle `LONG` / `LONG RAW` column describes
+  no length, so the OCI backend fetches it one row at a time into a buffer
+  that grows and re-executes the query until the value fits, instead of
+  truncating it to a fixed define buffer; the length comes back in four bytes
+  (`OCIDefineByPos2`), so a value past 65535 bytes is not capped. That growth
+  re-read re-executes and skips back by position, which assumes a stable row
+  order: a wide LONG query (one that triggers the growth) should carry
+  `ORDER BY`, since without it SQL guarantees no order and the skip could land
+  on the wrong row
 - **Custom type mapping** — specializing `uniorm::converter<T>` names the SQL
   representation a domain type binds as; strict `validate()` compares it
   against the live column type
@@ -177,7 +189,7 @@ uniorm::orm pieces(uniorm::connection_spec{
 auto rs = db.execute("SELECT id, name FROM users WHERE age > ?",
                      uniorm::params{18});
 while (rs.next()) {
-    uniorm::row r = rs.current();
+    uniorm::row r = rs.current();   // before next(), current() throws
     // r.get<std::int64_t>(0), r.get<std::string>("name")
 }
 
@@ -463,9 +475,13 @@ std::size_t held = pool.capacity(); // also idle_count() and
 Every pool shares **one** background scheduler thread, started for a pool whose
 `heartbeat_interval` is nonzero: it heartbeats idle connections, drops any whose
 heartbeat fails, and releases those idle beyond `max_idle_time` — which
-`acquire()` also enforces on what it hands out. A connection coming back is
-reset first; if that fails the pool retires it rather than handing out a dirty
-handle. The pool must outlive every connection still checked out from it.
+`acquire()` also enforces on what it hands out. `acquire()` additionally asks
+the backend's own `is_open()` and retires a connection that died while idle: a
+local check, not a round trip (ODBC's connection-dead attribute, libpq's
+`PQstatus`; OCI has only its open flag, so silent death there is left to the
+heartbeat). A connection coming back is reset first; if that fails the pool
+retires it rather than handing out a dirty handle. The pool must outlive every
+connection still checked out from it.
 
 `orm("DSN=…")` needs no pool of yours: it leases from a process-wide registry
 keyed on DSN and UID, each built with default `pool_options`. Call
@@ -518,13 +534,21 @@ What the shape guarantees:
   legal. `pending()` counts the queue.
 - **A failure has exactly one exit.** `start()` calls its `on_failure` for
   nothing else; `block()` and `co_await` rethrow the same `exception_ptr`.
+- **Outliving the session is safe.** An undriven task and a transaction handle
+  may both outlive the `orm` that made them: `~orm()` rolls back whatever handle
+  is still open while its connection is alive, and a later drive of the task —
+  or `commit()`/`rollback()` on the handle — throws `uniorm_error` instead of
+  reaching into the queue and executors the session owned.
 - **A continuation changes threads by default.** `run_on(executor&)` says where
   blocking work goes, `resume_on(executor&)` where it comes back to; a one-off
   script names neither.
 - **Four points block on purpose:** the catalog reads that stayed synchronous
   (`validate()`, `schema()`, `resolve_identifiers()`, reached through `sync()`),
   the rollback `~async::transaction` takes as a fallback, and the wait `~orm()`
-  performs — `wait_all_operations()` is the same wait by name.
+  performs — `wait_all_operations()` is the same wait by name. Closing a
+  transaction handle from inside a callback on the same session is the one
+  re-entrant case: that fallback wait sees the only turn in flight is its own and
+  returns, so the rollback goes ahead instead of deadlocking.
 
 The four CRUD names also take a plain callback, for a caller who wants one call
 and one answer:

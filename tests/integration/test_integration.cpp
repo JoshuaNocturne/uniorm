@@ -141,6 +141,9 @@ char const* k_narrow_table = "uniorm_it_narrow";
 char const* k_i64_table = "uniorm_it_i64";
 char const* k_tiny_table = "uniorm_it_tiny";
 char const* k_longtext_table = "uniorm_it_longtext";
+char const* k_long_table = "UNIORM_IT_LONG";
+char const* k_longraw_table = "UNIORM_IT_LONGRAW";
+char const* k_long_unordered_table = "UNIORM_IT_LONG_UNORD";
 std::string const long_note(1000, 'x');
 
 // The face this run drives. One suite serves both backends, so everything the
@@ -381,6 +384,159 @@ void test_number_text_ceiling(orm& db) {
   CHECK(text.back() == '1');
   CHECK(r.get<double>(label("spell")) > 0.0);
   db.execute_update(std::string("DROP TABLE ") + k_num_table);
+}
+
+// A LONG bounds no length at describe time, so a fixed define truncates a wide
+// value. The backend grows its buffer and re-executes until the value fits;
+// this reads values either side of that growth, mid-stream so the re-execute
+// has rows already handed back to skip, and a LONG RAW beside them.
+void test_long_column(orm& db) {
+  if (the_target.scheme != "oracle") {
+    skip_reason = "LONG and LONG RAW are Oracle's own spellings";
+    return;
+  }
+  try {
+    db.execute_update(std::string("DROP TABLE ") + k_long_table);
+  } catch (...) {
+  }
+  try {
+    db.execute_update(std::string("DROP TABLE ") + k_longraw_table);
+  } catch (...) {
+  }
+  db.execute_update(
+    std::string("CREATE TABLE ") + k_long_table + " (id NUMBER, payload LONG)");
+  db.execute_update(std::string("CREATE TABLE ") + k_longraw_table +
+                    " (id NUMBER, payload LONG RAW)");
+
+  auto pattern = [](std::size_t length) {
+    std::string out(length, 'a');
+    for (std::size_t index = 0; index < length; ++index) {
+      out[index] = static_cast<char>('a' + index % 26);
+    }
+    return out;
+  };
+
+  std::vector<std::pair<std::int64_t, std::string>> text_rows = {
+    { 1, pattern(100) },
+    { 2, pattern(40000) },
+    { 3, pattern(100000) },
+    { 4, pattern(300000) },
+    { 5, pattern(50) },
+  };
+  for (auto const& row : text_rows) {
+    db.execute_update(std::string("INSERT INTO ") + k_long_table +
+                        " (id, payload) VALUES (:1, :2)",
+      params{ row.first, row.second });
+  }
+  db.execute_update(std::string("INSERT INTO ") + k_long_table +
+                    " (id, payload) VALUES (6, NULL)");
+
+  connection& native = db.native_connection();
+  for (std::size_t array_size : { std::size_t(1), std::size_t(100) }) {
+    result_set rs = native.execute(
+      std::string("SELECT payload FROM ") + k_long_table + " ORDER BY id", {},
+      array_size);
+    for (auto const& row : text_rows) {
+      CHECK(rs.next());
+      std::string const got = rs.current().get<std::string>(0);
+      CHECK(got.size() == row.second.size());
+      CHECK(got == row.second);
+    }
+    CHECK(rs.next());
+    CHECK(rs.current().is_null(0));
+    CHECK(!rs.next());
+  }
+
+  std::vector<std::byte> raw_small(40000);
+  std::vector<std::byte> raw_wide(100000);
+  for (std::size_t index = 0; index < raw_wide.size(); ++index) {
+    raw_wide[index] = static_cast<std::byte>(index % 256);
+    if (index < raw_small.size()) {
+      raw_small[index] = static_cast<std::byte>(index % 256);
+    }
+  }
+  db.execute_update(std::string("INSERT INTO ") + k_longraw_table +
+                      " (id, payload) VALUES (:1, :2)",
+    params{ std::int64_t{ 1 }, raw_small });
+  db.execute_update(std::string("INSERT INTO ") + k_longraw_table +
+                      " (id, payload) VALUES (:1, :2)",
+    params{ std::int64_t{ 2 }, raw_wide });
+  for (std::size_t array_size : { std::size_t(1), std::size_t(100) }) {
+    result_set rs = native.execute(
+      std::string("SELECT payload FROM ") + k_longraw_table + " ORDER BY id",
+      {}, array_size);
+    CHECK(rs.next());
+    CHECK(rs.current().get<std::vector<std::byte>>(0) == raw_small);
+    CHECK(rs.next());
+    CHECK(rs.current().get<std::vector<std::byte>>(0) == raw_wide);
+    CHECK(!rs.next());
+  }
+
+  db.execute_update(std::string("DROP TABLE ") + k_long_table);
+  db.execute_update(std::string("DROP TABLE ") + k_longraw_table);
+}
+
+// The same growth re-read with no ORDER BY. It still re-executes and skips back
+// by position, so each row is checked by its id rather than its place: the
+// assertion holds whatever order the server picks, and a skip that landed on
+// the wrong row shows up as a repeated or missing id instead of a silent pass.
+// SQL guarantees no order here, so this exercises the path; the ORDER BY rule
+// in the LONG docs is what keeps it correct on a server that reorders.
+void test_long_column_unordered(orm& db) {
+  if (the_target.scheme != "oracle") {
+    skip_reason = "LONG is Oracle's own spelling";
+    return;
+  }
+  try {
+    db.execute_update(std::string("DROP TABLE ") + k_long_unordered_table);
+  } catch (...) {
+  }
+  db.execute_update(std::string("CREATE TABLE ") + k_long_unordered_table +
+                    " (id NUMBER, payload LONG)");
+
+  auto pattern = [](std::size_t length) {
+    std::string out(length, 'a');
+    for (std::size_t index = 0; index < length; ++index) {
+      out[index] = static_cast<char>('a' + index % 26);
+    }
+    return out;
+  };
+  // Widths either side of the 65536 growth threshold, the wide ones late so the
+  // re-execute has rows already handed back to skip.
+  std::vector<std::pair<std::int64_t, std::size_t>> const widths = {
+    { 1, 100 },
+    { 2, 40000 },
+    { 3, 50 },
+    { 4, 100000 },
+    { 5, 300000 },
+    { 6, 200 },
+  };
+  for (auto const& entry : widths) {
+    db.execute_update(std::string("INSERT INTO ") + k_long_unordered_table +
+                        " (id, payload) VALUES (:1, :2)",
+      params{ entry.first, pattern(entry.second) });
+  }
+
+  std::vector<std::pair<std::int64_t, std::string>> seen;
+  result_set rs = db.native_connection().execute(
+    std::string("SELECT id, payload FROM ") + k_long_unordered_table, {}, 100);
+  while (rs.next()) {
+    row const current = rs.current();
+    seen.emplace_back(
+      current.get<std::int64_t>(0), current.get<std::string>(1));
+  }
+  CHECK(seen.size() == widths.size());
+  for (auto const& entry : widths) {
+    std::size_t matches = 0;
+    for (auto const& got : seen) {
+      if (got.first == entry.first) {
+        ++matches;
+        CHECK(got.second == pattern(entry.second));
+      }
+    }
+    CHECK(matches == 1);
+  }
+  db.execute_update(std::string("DROP TABLE ") + k_long_unordered_table);
 }
 
 void test_decimal_mapped(orm& db) {
@@ -3118,6 +3274,9 @@ int main() {
     guarded("test_dynamic_rows", [&] { test_dynamic_rows(db); });
     guarded("test_decimal_dynamic", [&] { test_decimal_dynamic(db); });
     guarded("test_number_text_ceiling", [&] { test_number_text_ceiling(db); });
+    guarded("test_long_column", [&] { test_long_column(db); });
+    guarded(
+      "test_long_column_unordered", [&] { test_long_column_unordered(db); });
     guarded("test_decimal_mapped", [&] { test_decimal_mapped(db); });
     guarded(
       "test_zero_block_fetch_size", [&] { test_zero_block_fetch_size(db); });

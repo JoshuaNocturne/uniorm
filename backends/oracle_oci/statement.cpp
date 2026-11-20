@@ -49,10 +49,12 @@ char* caller_at(column_slot const& slot, std::size_t row) {
 }
 
 // How many bytes of a staged row can be read. OCI reports the value's own
-// length, which a staging buffer too small for it never held: a LONG beyond
-// the widest define OCI takes is the one value this backend hands over short.
+// length, which a staging buffer too small for it never held; the cap keeps a
+// length reported past the buffer from reading beyond it. A LONG reports its
+// length in four bytes, the two-byte array capping at 65535.
 std::size_t staged_length(column_slot const& slot, std::size_t row) {
-  std::size_t const length = slot.lengths[row];
+  std::size_t const length =
+    slot.long_column ? slot.long_lengths[row] : slot.lengths[row];
   return length > slot.row_size ? slot.row_size : length;
 }
 
@@ -133,10 +135,10 @@ stage_kind pick_stage(
 std::size_t stage_width(
   described_column const& column, std::size_t requested_capacity) {
   if (needs_wide_staging(column.dty)) {
-    // A LONG, or an NCLOB fetched as plain text, truncates to the buffer it
-    // was defined with and its described width says nothing about the value,
-    // so offer the widest buffer OCI takes; a row beyond that is the
-    // read_long_text() fallback's problem.
+    // An NCLOB fetched as plain text truncates to the buffer it was defined
+    // with and its described width says nothing about the value, so offer the
+    // widest buffer OCI takes; a row beyond that is the read_long_text()
+    // fallback's problem. A LONG takes its own growing buffer instead.
     return max_scalar_width > requested_capacity ? max_scalar_width
                                                  : requested_capacity;
   }
@@ -389,8 +391,17 @@ void oci_statement::bind_column(
     break;
   case stage_kind::text:
   case stage_kind::binary:
-    slot.row_size = stage_width(slot.described, buffer.capacity);
-    slot.bytes.resize(rows * slot.row_size);
+    if (is_long_column(slot.described.dty)) {
+      slot.long_column = true;
+      has_long_ = true;
+      slot.row_size = long_width_;
+      slot.bytes.resize(slot.row_size);
+      slot.long_lengths.assign(1, 0);
+      slot.return_codes.assign(1, 0);
+    } else {
+      slot.row_size = stage_width(slot.described, buffer.capacity);
+      slot.bytes.resize(rows * slot.row_size);
+    }
     break;
   case stage_kind::timestamp: {
     // One datetime descriptor per row: OCI hands a TIMESTAMP array as an
@@ -431,14 +442,12 @@ void oci_statement::apply_define(std::size_t position, column_slot& slot) {
     dty = SQLT_ODT;
     break;
   case stage_kind::text:
-    value = slot.bytes.data();
-    size = static_cast<sb4>(slot.row_size);
-    dty = SQLT_CHR;
-    break;
   case stage_kind::binary:
+    dty = slot.kind == stage_kind::text ? SQLT_CHR : SQLT_BIN;
     value = slot.bytes.data();
-    size = static_cast<sb4>(slot.row_size);
-    dty = SQLT_BIN;
+    if (!slot.long_column) {
+      size = static_cast<sb4>(slot.row_size);
+    }
     break;
   case stage_kind::timestamp:
     value = slot.stamps.data();
@@ -454,14 +463,25 @@ void oci_statement::apply_define(std::size_t position, column_slot& slot) {
   }
 
   OCIDefine* handle = nullptr;
+  if (slot.long_column) {
+    // ByPos2 reports the length in four bytes and takes an eight-byte size: a
+    // LONG past 65535 would otherwise come back capped at the two-byte
+    // ceiling, and one row needs no array strides.
+    throw_if_error(
+      OCIDefineByPos2(stmt_.get(), &handle, conn_.error(),
+        static_cast<ub4>(position), value, static_cast<sb8>(slot.row_size), dty,
+        slot.nulls.data(), slot.long_lengths.data(), slot.return_codes.data(),
+        OCI_DEFAULT),
+      conn_.error(), "define result column " + std::to_string(position));
+    slot.define = detail::define_handle::adopt(handle);
+    return;
+  }
   throw_if_error(
     OCIDefineByPos(stmt_.get(), &handle, conn_.error(),
       static_cast<ub4>(position), value, size, dty, slot.nulls.data(),
       slot.lengths.data(), nullptr, OCI_DEFAULT),
     conn_.error(), "define result column " + std::to_string(position));
   slot.define = detail::define_handle::adopt(handle);
-  // The strides that turn one define into an array of them: the value steps
-  // by the row's own size, the two status arrays by their element widths.
   throw_if_error(OCIDefineArrayOfStruct(handle, conn_.error(),
                    static_cast<ub4>(size), sizeof(sb2), sizeof(ub2), 0),
     conn_.error(), "array-define result column " + std::to_string(position));
@@ -845,7 +865,10 @@ bool oci_statement::fetch() {
     rows_fetched_ = 0;
     return false;
   }
-  sword const status = OCIStmtFetch2(stmt_.get(), conn_.error(),
+  if (has_long_) {
+    return fetch_long();
+  }
+  sword status = OCIStmtFetch2(stmt_.get(), conn_.error(),
     static_cast<ub4>(row_array_size_), OCI_FETCH_NEXT, 0, OCI_DEFAULT);
   // A block smaller than the row array arrives with this status: it says the
   // cursor is spent, not that the block is empty. Asking it again is an error.
@@ -865,6 +888,66 @@ bool oci_statement::fetch() {
   }
   materialize(rows_fetched_);
   return true;
+}
+
+// A LONG is fetched one row at a time into a buffer that grows until the value
+// fits. A row that truncates is re-read after the buffer grows: OCI offers no
+// way to enlarge a define mid-cursor, so the query is re-executed and the rows
+// already handed back are skipped to reach it again.
+bool oci_statement::fetch_long() {
+  for (;;) {
+    sword const status = OCIStmtFetch2(
+      stmt_.get(), conn_.error(), 1, OCI_FETCH_NEXT, 0, OCI_DEFAULT);
+    if (status == OCI_NO_DATA) {
+      exhausted_ = true;
+      rows_fetched_ = 0;
+      return false;
+    }
+    throw_if_error(status, conn_.error(), "fetch a LONG row");
+    bool truncated = false;
+    for (column_slot const& slot : slots_) {
+      if (slot.long_column && slot.nulls[0] == -2) {
+        truncated = true;
+      }
+    }
+    if (truncated) {
+      regrow_long();
+      run(OCI_DEFAULT, 0);
+      for (std::size_t skipped = 0; skipped < long_consumed_; ++skipped) {
+        sword const skip = OCIStmtFetch2(
+          stmt_.get(), conn_.error(), 1, OCI_FETCH_NEXT, 0, OCI_DEFAULT);
+        if (skip == OCI_NO_DATA) {
+          exhausted_ = true;
+          rows_fetched_ = 0;
+          return false;
+        }
+        throw_if_error(skip, conn_.error(), "skip a row already fetched");
+      }
+      continue;
+    }
+    ++long_consumed_;
+    rows_fetched_ = 1;
+    materialize(1);
+    return true;
+  }
+}
+
+void oci_statement::regrow_long() {
+  constexpr std::size_t ceiling =
+    static_cast<std::size_t>((std::numeric_limits<sb4>::max)());
+  if (long_width_ >= ceiling) {
+    throw oci_error(
+      "fetch a LONG value wider than " + std::to_string(ceiling) + " bytes",
+      {});
+  }
+  long_width_ = std::min(long_width_ * 4, ceiling);
+  for (column_slot& slot : slots_) {
+    if (slot.long_column) {
+      slot.row_size = long_width_;
+      slot.bytes.resize(slot.row_size);
+      apply_define(slot.position, slot);
+    }
+  }
 }
 
 void oci_statement::materialize(std::size_t rows) {
@@ -1228,6 +1311,9 @@ void oci_statement::reset() {
   metadata_read_ = false;
   awaiting_execute_ = false;
   exhausted_ = false;
+  has_long_ = false;
+  long_width_ = 65536;
+  long_consumed_ = 0;
   rows_fetched_ = 0;
   affected_ = 0;
 }

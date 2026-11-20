@@ -64,6 +64,13 @@ struct column_slot {
   std::vector<char> bytes;
   std::size_t row_size = 0;
 
+  // A LONG or LONG RAW: the describe bounds no length for it, so it is fetched
+  // one row at a time into a buffer that grows and re-executes until the value
+  // fits. Its length comes back in four bytes, not the two lengths[] holds.
+  bool long_column = false;
+  std::vector<ub4> long_lengths;
+  std::vector<ub2> return_codes;
+
   // OCI's own per-row status arrays, translated into target.indicator.
   std::vector<sb2> nulls;
   std::vector<ub2> lengths;
@@ -208,6 +215,9 @@ private:
   std::size_t block_rows();
   void apply_define(std::size_t position, column_slot& slot);
   void materialize(std::size_t rows);
+  // A LONG row, fetched alone into a buffer that grows until the value fits.
+  bool fetch_long();
+  void regrow_long();
   void fill_cell(column_slot& slot, std::size_t row);
   void put_text(
     column_slot& slot, std::size_t row, char const* data, std::size_t length);
@@ -243,6 +253,12 @@ private:
   // The cursor answered OCI_NO_DATA. Asking it again is an error, not a
   // second empty block.
   bool exhausted_ = false;
+  // A bound LONG forces single-row fetches into a buffer that grows on
+  // truncation; long_consumed_ counts the rows already handed back, which a
+  // re-execute must skip to reach the row that did not fit.
+  bool has_long_ = false;
+  std::size_t long_width_ = 65536;
+  std::size_t long_consumed_ = 0;
 };
 
 }  // namespace uniorm::oracle_oci

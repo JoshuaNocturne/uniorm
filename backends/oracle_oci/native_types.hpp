@@ -146,6 +146,20 @@ inline bool needs_wide_staging(ub2 dty) {
   }
 }
 
+// A LONG or LONG RAW: the one inline value whose length the describe cannot
+// bound, so it is fetched into a buffer that grows until the value fits.
+inline bool is_long_column(ub2 dty) {
+  switch (dty) {
+  case SQLT_LNG:
+  case SQLT_LVC:
+  case SQLT_LBI:
+  case SQLT_LVB:
+    return true;
+  default:
+    return false;
+  }
+}
+
 // Whether a wide column carries text or bytes, which decides what a
 // continuation read of it returns. A BFILE points at an OS file of bytes.
 inline bool is_wide_text(ub2 dty) {

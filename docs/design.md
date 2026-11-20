@@ -1611,12 +1611,12 @@ executor 那种重入的守卫；抛出过的 `start()` 已经答完了它那格
 路上等到交付，自己 `block()` 或 `co_await`。
 
 重入是这条屏障唯一不等的时候：`wait_idle()`（`async.cpp:61`）先读一枚 thread_local
-标记 `operation_queue::running_`——`running_guard` 在 body resume 前后套着
+标记（经导出访问器 `operation_queue::running_slot()`）——`running_guard` 在 body resume 前后套着
 （`begin()` 提交的那段闭包里），记本线程正在跑哪条队列的操作，save/restore 让一条
 链在同一线程上续起来时嵌套也对。若它正是本队列，说明在飞的那一格就是本线程自己
 这一格，等它就是等自己，于是直接返回。回调在 body 里响、且响在 `work()` 返回之后，
 连接此刻在驱动层是闲的，所以从回调里闭合一个事务句柄（`~transaction` 那次兜底
-`wait_idle()`）不会吊死，兜底回滚就在当前线程上接着做。非重入的调用 `running_`
+`wait_idle()`）不会吊死，兜底回滚就在当前线程上接着做。非重入的调用 `running_slot()`
 不等于本队列，屏障照旧等齐——这一改只动原来会吊死的那条路。会话从自己的操作回调里
 析构仍是禁形：屏障即便返回，`~orm()` 随后拆掉的队列正是 `finish()` 还要碰的那一个，
 "会话必须活过它交出去的操作"这条契约不因此放宽。
@@ -1666,8 +1666,10 @@ inline 模板，不新增导出符号，也不新增安装头。把非模板的�
 符号。这笔账照样不动 ABI 版本：
 插件契约看的是 `connection_iface` 那一圈 vtable 槽，一处没动；`async::orm`、
 `async::transaction` 与 `detail::operation_queue` 都是这一版才出现的导出类型，
-没有已发布的布局可破坏：`operation_queue` 添的那枚 static thread_local 标记与嵌套
-RAII guard 都不改实例布局，`session_door` 那把 `shared_ptr` 添在头文件模板
+没有已发布的布局可破坏：`operation_queue` 那枚 thread_local 标记藏在导出访问器
+`running_slot()` 里（函数内 thread_local，而非 static thread_local 数据成员——
+MSVC 不许 dll-interface 类带线程存储数据，C2492），它与嵌套 RAII guard 都不改实例
+布局，`session_door` 那把 `shared_ptr` 添在头文件模板
 `operation_core` 上（不是导出类型），同样是首次出现的类型上的加法。换掉的只是失败
 的样子——新头配旧库如今
 在链接期就断，不会各自带着半份实现跑起来。测试分四层

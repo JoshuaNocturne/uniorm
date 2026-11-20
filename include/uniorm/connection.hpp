@@ -122,7 +122,10 @@ private:
     std::string key);
 
   // Declared before stmt_cache_ so cached statements are destroyed first.
-  std::unique_ptr<backend::connection_iface> backend_;
+  // Shared so a result_set's check-in closure can keep the backend connection
+  // alive past this object: a statement that outlives the connection still
+  // destroys against a live parent, and the closure survives a move.
+  std::shared_ptr<backend::connection_iface> backend_;
   // Shared so result_set check-in closures can hold weak references that
   // survive even if the connection is moved.
   std::shared_ptr<detail::statement_cache> stmt_cache_;

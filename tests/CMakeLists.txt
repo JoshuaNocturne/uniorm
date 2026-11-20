@@ -14,6 +14,7 @@ add_executable(uniorm_unit_tests
     unit/test_orm_validate.cpp
     unit/test_identifier_resolution.cpp
     unit/test_binding_order.cpp
+    unit/test_result_set_lifetime.cpp
     unit/test_backend_registry.cpp
     unit/test_pool.cpp
     unit/test_log.cpp

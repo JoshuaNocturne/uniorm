@@ -79,7 +79,11 @@ void connection::release_statement(
 std::function<void(std::unique_ptr<backend::statement_iface>)>
 connection::make_releaser(std::string key) {
   std::weak_ptr<detail::statement_cache> weak = stmt_cache_;
-  return [weak, key = std::move(key)](
+  // This closure lives in the result_set, which may outlive the connection, so
+  // it holds the backend alive: the statement is checked back in or destroyed
+  // before this keep drops, never against a parent connection already freed.
+  std::shared_ptr<backend::connection_iface> keep = backend_;
+  return [weak, keep, key = std::move(key)](
            std::unique_ptr<backend::statement_iface> stmt) noexcept {
     if (auto cache = weak.lock()) {
       cache->release(key, std::move(stmt));

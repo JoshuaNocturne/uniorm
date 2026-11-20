@@ -16,6 +16,7 @@ void test_array_probe();
 void test_orm_validate();
 void test_identifier_resolution();
 void test_binding_order();
+void test_result_set_may_outlive_its_connection();
 void test_backend_registry();
 void test_pool();
 void test_log();
@@ -60,6 +61,8 @@ int main() {
   test_identifier_resolution();
   std::printf("Running test_binding_order...\n");
   test_binding_order();
+  std::printf("Running test_result_set_may_outlive_its_connection...\n");
+  test_result_set_may_outlive_its_connection();
   std::printf("Running test_backend_registry...\n");
   test_backend_registry();
   std::printf("Running test_pool...\n");

@@ -19,7 +19,10 @@ executor::~executor() = default;
 
 namespace detail {
 
-thread_local operation_queue* operation_queue::running_ = nullptr;
+operation_queue*& operation_queue::running_slot() noexcept {
+  static thread_local operation_queue* running = nullptr;
+  return running;
+}
 
 std::size_t operation_queue::submit_limit() const noexcept {
   return limit_.load(std::memory_order_relaxed);
@@ -59,7 +62,7 @@ void operation_queue::finish() noexcept {
 }
 
 void operation_queue::wait_idle() {
-  if (running_ == this) {
+  if (running_slot() == this) {
     // This thread is inside an operation on this queue, so the only turn in
     // flight is its own: waiting for it would be waiting for ourselves. The
     // connection is quiet at the driver level here -- a callback runs after the

@@ -123,11 +123,11 @@ public:
   class running_guard {
   public:
     explicit running_guard(operation_queue* gate) noexcept
-      : previous_(running_) {
-      running_ = gate;
+      : previous_(running_slot()) {
+      running_slot() = gate;
     }
     ~running_guard() {
-      running_ = previous_;
+      running_slot() = previous_;
     }
     running_guard(running_guard const&) = delete;
     running_guard& operator=(running_guard const&) = delete;
@@ -152,7 +152,10 @@ private:
   std::atomic<std::size_t> limit_ = default_submit_limit;
   bool in_flight_ = false;
   bool draining_ = false;
-  static thread_local operation_queue* running_;
+  // The marker is a thread-local behind an exported accessor, not a static
+  // thread_local member: MSVC rejects thread storage on a dll-interface class
+  // (C2492). Only the function crosses the boundary; the data stays in the DLL.
+  static operation_queue*& running_slot() noexcept;
 };
 
 template <class T>

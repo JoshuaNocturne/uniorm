@@ -25,6 +25,7 @@ public:
   int rollback_calls = 0;
   int commit_calls = 0;
   bool autocommit = true;
+  bool dead = false;
   int spec_opens = 0;
   int string_opens = 0;
   std::string spec_target;
@@ -38,7 +39,7 @@ public:
   }
   void close() override {}
   bool is_open() const noexcept override {
-    return true;
+    return !dead;
   }
   void set_autocommit(bool enabled) override {
     autocommit = enabled;
@@ -69,6 +70,7 @@ public:
 
 recording_connection* current = nullptr;
 bool fail_next_rollback = false;
+int fake_created = 0;
 
 uniorm::pool_options pool_options_for() {
   uniorm::pool_options opts;
@@ -84,6 +86,7 @@ void register_fake_backend() {
     auto conn = std::make_unique<recording_connection>();
     conn->fail_rollback = fail_next_rollback;
     current = conn.get();
+    ++fake_created;
     return conn;
   });
 }
@@ -125,6 +128,26 @@ void test_release_retires_an_unusable_connection() {
     CHECK(current->rollback_calls == 0);  // a brand new connection
   }
   fail_next_rollback = false;
+}
+
+// A connection the server killed while it sat idle must not be handed to the
+// next borrower: acquire asks the backend's own liveness answer and retires a
+// dead one, opening a fresh connection in its place.
+void test_acquire_retires_a_connection_that_died_idle() {
+  uniorm::connection_pool pool(pool_options_for());
+  {
+    uniorm::pooled_connection lease = pool.acquire();
+    CHECK(lease.is_open());
+  }  // handed back, so it sits idle
+  CHECK(pool.idle_count() == 1);
+  current->dead = true;  // the server died while this connection was idle
+
+  int const before = fake_created;
+  uniorm::pooled_connection fresh = pool.acquire();
+  CHECK(bool(fresh));
+  CHECK(fresh.is_open());
+  CHECK(fake_created == before + 1);  // retired the dead one, opened a fresh
+  CHECK(pool.idle_count() == 0);
 }
 
 // The facade's introspection is the connection's, so a backend answering none
@@ -432,6 +455,7 @@ void test_pool() {
   register_fake_backend();
   test_release_drops_the_previous_lease();
   test_release_retires_an_unusable_connection();
+  test_acquire_retires_a_connection_that_died_idle();
   test_schema_reports_a_backend_without_introspection();
   test_registry_leases_by_spec();
   test_spec_pool_does_not_share_a_string_pool();

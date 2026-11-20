@@ -26,7 +26,19 @@ public:
   void open(std::string_view connection_string);
   void close();
   bool is_open() const noexcept {
-    return open_;
+    if (!open_) {
+      return false;
+    }
+    // The driver's own dead flag, read locally with no round trip: it knows a
+    // connection died once a call on it has failed. A driver without this
+    // attribute falls back to the open flag rather than reporting false death.
+    SQLUINTEGER dead = SQL_CD_FALSE;
+    SQLRETURN rc = SQLGetConnectAttr(
+      native(), SQL_ATTR_CONNECTION_DEAD, &dead, sizeof(dead), nullptr);
+    if (!SQL_SUCCEEDED(rc)) {
+      return open_;
+    }
+    return dead == SQL_CD_FALSE;
   }
 
   void set_autocommit(bool enabled);

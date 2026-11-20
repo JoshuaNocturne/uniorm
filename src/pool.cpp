@@ -211,16 +211,25 @@ pooled_connection connection_pool::acquire() {
     std::chrono::steady_clock::now() + impl_->options.acquire_timeout;
   while (true) {
     if (!impl_->idle.empty()) {
-      pool_detail::shared_state::idle_entry e = std::move(impl_->idle.back());
-      impl_->idle.pop_back();
-      if (!impl_->expired(e)) {
+      {
+        pool_detail::shared_state::idle_entry e = std::move(impl_->idle.back());
+        impl_->idle.pop_back();
+        bool const expired = impl_->expired(e);
         lock.unlock();
-        return pooled_connection(this, std::move(e.conn));
+        // A connection that died while idle is retired, not handed on.
+        // is_open() is the backend's own liveness answer, read off the mutex: a
+        // local check (ODBC's dead attribute, libpq's PQstatus), not a round
+        // trip.
+        if (!expired && e.conn.is_open()) {
+          return pooled_connection(this, std::move(e.conn));
+        }
+        // e is destroyed here, off the mutex: closing a connection can block on
+        // the server, and the pool lock must not be held across that.
       }
+      lock.lock();
       --impl_->created;
-      lock.unlock();
       impl_->cv.notify_one();  // slot freed; a waiter may create a fresh one
-      continue;  // e is destroyed here (connection closed)
+      continue;  // the lock is held again for the next turn
     }
     if (impl_->created < impl_->options.size) {
       ++impl_->created;

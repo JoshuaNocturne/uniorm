@@ -33,6 +33,8 @@ out/
 *~
 .cache/
 .clangd/
+TEST.md
+TEST_INSTANCE.md
 
 # OS noise
 .DS_Store

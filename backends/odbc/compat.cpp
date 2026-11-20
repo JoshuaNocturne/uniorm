@@ -29,8 +29,9 @@ std::uint32_t read_group(std::string_view text, std::size_t& position) {
 // unmeasured.
 constexpr compat_entry compat_table[] = {
   // maodbc 3.1.12 measured locally (probe N=2..1000, integration green via the
-  // array path); 3.1.23 measured on CI against MariaDB 11. The 3.2 line OOMs on
-  // array INSERT, so unmeasured versions stay on the prior below.
+  // array path); 3.1.23 measured on CI against MariaDB 11. Unmeasured versions
+  // stay on the prior below: array INSERT granted, array UPDATE/DELETE denied
+  // pending measurement.
   { "maodbc", { 3, 1, 12 }, { 3, 1, 13 }, "", {}, version_max, true, true, true,
     true },
   { "maodbc", { 3, 1, 23 }, { 3, 1, 24 }, "", {}, version_max, true, true, true,

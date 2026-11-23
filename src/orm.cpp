@@ -16,6 +16,7 @@
 #include "uniorm/result_set.hpp"
 #include "uniorm/transaction.hpp"
 #include <uniorm/connection.hpp>
+#include <uniorm/log.hpp>
 
 namespace uniorm {
 
@@ -1306,6 +1307,10 @@ struct batch_route {
   bool paramset_one = false;
   fold_shape shape;
   std::size_t chunk = 1;
+  // The condition that settled the route, in the words the record names it
+  // with. A caller reading one log line should see why an array the driver
+  // could have sent was not sent.
+  char const* reason = nullptr;
 };
 
 batch_route choose_batch_route(connection& conn, entity_meta const& entity,
@@ -1323,6 +1328,7 @@ batch_route choose_batch_route(connection& conn, entity_meta const& entity,
     // the driver reports for it, so the whole chunk goes in one execute and
     // write_chunk's collapse-to-one is deliberately bypassed.
     route.chunk = asked_chunk;
+    route.reason = "the caller asked for the array channel";
     return route;
   }
   // Fold when the caller asks for it, when the array path is unusable, or when
@@ -1336,6 +1342,14 @@ batch_route choose_batch_route(connection& conn, entity_meta const& entity,
     route.folded = true;
     route.shape = plan.shape;
     route.chunk = plan.chunk;
+    route.reason = policy == orm::batch_policy::folded
+                     ? "the caller asked for the folded route"
+                   : !array_ok
+                     ? "the driver cannot execute an array of parameter "
+                       "sets"
+                   : !conn.caps().array_rowcount_totals
+                     ? "the driver answers only one set's count"
+                     : "the driver sends one set per execute";
     return route;
   }
   if (policy == orm::batch_policy::folded) {
@@ -1344,10 +1358,56 @@ batch_route choose_batch_route(connection& conn, entity_meta const& entity,
   if (!array_ok) {
     route.paramset_one = true;
     route.chunk = 1;
+    route.reason =
+      "the driver cannot execute an array of parameter sets and this server "
+      "has no folded shape";
     return route;
   }
   route.chunk = write_chunk(conn, asked_chunk);
+  // Reaching here with the array wanted but not usable means this server has
+  // no folded shape to fall to: the record says so rather than claiming the
+  // array was chosen for carrying the whole block.
+  route.reason =
+    want_fold
+      ? "the array counts short or sends one set at a time, and this server has"
+        " no folded shape to fall to"
+      : "the array carries and counts the whole block";
   return route;
+}
+
+// One batch write's route, in words, before any row moves: what shape the
+// rows went in, how many an execute carried, and what settled the choice. No
+// value from any row is in the record, and the whole assembly is skipped
+// unless a sink is listening at this level.
+void log_batch_write(std::string_view operation, std::string_view branch,
+  batch_route const& route, std::size_t row_count) {
+  detail::log(log_level::debug, "core.batch", [&] {
+    std::string out("batch ");
+    out += operation;
+    out += ": ";
+    out += branch;
+    out += ", ";
+    out += std::to_string(row_count);
+    out += " rows at ";
+    out += std::to_string(route.chunk);
+    out += " per execute";
+    if (route.reason != nullptr) {
+      out += ": ";
+      out += route.reason;
+    }
+    return out;
+  });
+}
+
+// The words each branch of a batch write names itself with, which is the
+// shape the caller is left reading in a slow statement cache.
+std::string_view folded_branch_words(dialect const& d, batch_route const& r) {
+  if (r.shape.arrays) {
+    return "an array per column";
+  }
+  return d.batch_rows == dialect::batch_source::value_constructors
+           ? "a VALUES row source"
+           : "a seeded UNION ALL row source";
 }
 
 }  // namespace
@@ -1369,13 +1429,26 @@ std::size_t orm::insert_impl(connection& conn, entity_meta const& m,
   std::size_t inserted;
   if (!conn.caps().array_insert) {
     // The driver drops or rejects an array INSERT, so each row goes on its own.
+    log_batch_write("insert", "one row per execute",
+      batch_route{ .chunk = 1,
+        .reason = "the driver cannot execute an array "
+                  "of parameter sets" },
+      row_count);
     inserted = insert_rowwise(conn, m, rows, row_stride, row_count, 1);
   } else if (conn.caps().columnar_batch) {
     dialect const& d = conn.sql_dialect();
+    log_batch_write("insert", "one column buffer per parameter",
+      batch_route{ .chunk = chunk,
+        .reason = "the backend takes the batch column by column" },
+      row_count);
     inserted =
       columnar_batch_write(conn, m, build_insert_sql(d, m), all_columns(m),
         rows, row_stride, row_count, chunk, row_tally::bound_rows);
   } else {
+    log_batch_write("insert", "an array of parameter sets",
+      batch_route{ .chunk = chunk,
+        .reason = "the backend takes a batch as one bound set per row" },
+      row_count);
     inserted = insert_rowwise(conn, m, rows, row_stride, row_count, chunk);
   }
 
@@ -1426,18 +1499,23 @@ std::size_t orm::update_batch_impl(connection& conn, entity_meta const& m,
 
   std::size_t updated;
   if (route.folded) {
+    log_batch_write("update", folded_branch_words(d, route), route, row_count);
     updated = folded_batch_write(conn, m, d, fold_operation::update, set_cols,
       where_cols, distinct_key_rows(m, rows, row_stride, row_count, where_cols),
       rows, row_stride, route.chunk, route.shape);
   } else if (route.paramset_one) {
+    log_batch_write("update", "one row per execute", route, row_count);
     updated = update_rowwise(
       conn, m, set_cols, where_cols, rows, row_stride, row_count, 1);
   } else if (conn.caps().columnar_batch) {
+    log_batch_write(
+      "update", "one column buffer per parameter", route, row_count);
     updated = columnar_batch_write(conn, m,
       update_statement(m, d, set_cols, where_cols),
       concat_columns(set_cols, where_cols), rows, row_stride, row_count,
       route.chunk, row_tally::affected_rows);
   } else {
+    log_batch_write("update", "an array of parameter sets", route, row_count);
     updated = update_rowwise(
       conn, m, set_cols, where_cols, rows, row_stride, row_count, route.chunk);
   }
@@ -1475,17 +1553,22 @@ std::size_t orm::delete_batch_impl(connection& conn, entity_meta const& m,
 
   std::size_t deleted;
   if (route.folded) {
+    log_batch_write("remove", folded_branch_words(d, route), route, row_count);
     deleted = folded_batch_write(conn, m, d, fold_operation::remove, {},
       where_cols, distinct_key_rows(m, rows, row_stride, row_count, where_cols),
       rows, row_stride, route.chunk, route.shape);
   } else if (route.paramset_one) {
+    log_batch_write("remove", "one row per execute", route, row_count);
     deleted =
       delete_rowwise(conn, m, where_cols, rows, row_stride, row_count, 1);
   } else if (conn.caps().columnar_batch) {
+    log_batch_write(
+      "remove", "one column buffer per parameter", route, row_count);
     deleted = columnar_batch_write(conn, m, delete_statement(m, d, where_cols),
       where_cols, rows, row_stride, row_count, route.chunk,
       row_tally::affected_rows);
   } else {
+    log_batch_write("remove", "an array of parameter sets", route, row_count);
     deleted = delete_rowwise(
       conn, m, where_cols, rows, row_stride, row_count, route.chunk);
   }

@@ -13,6 +13,7 @@
 #include <uniorm/backend/backend.hpp>
 #include <uniorm/backend/registry.hpp>
 #include <uniorm/error.hpp>
+#include <uniorm/log.hpp>
 #include <uniorm/orm.hpp>
 #include <uniorm/params.hpp>
 #include <uniorm/pool.hpp>
@@ -31,6 +32,10 @@ struct account {
 struct batch_state {
   std::vector<std::size_t> batches;
   bool report_array_totals = true;
+  // The name the core reads a dialect off of: "batch" is no server it knows,
+  // so such a leg has no folded shape to route into.
+  std::string dbms = "batch";
+  bool array_executes = true;
 };
 
 // A non-columnar backend, which is what an OCI or libpq leg is: the core's
@@ -112,11 +117,13 @@ public:
   backend::capabilities caps() const noexcept override {
     return { /*columnar_batch=*/false,
       /*array_rowcount_totals=*/state_->report_array_totals,
-      /*array_single_send=*/true, /*array_insert=*/true,
-      /*array_update=*/true, /*array_delete=*/true };
+      /*array_single_send=*/true,
+      /*array_insert=*/state_->array_executes,
+      /*array_update=*/state_->array_executes,
+      /*array_delete=*/state_->array_executes };
   }
   std::string dbms_name() const override {
-    return "batch";
+    return state_->dbms;
   }
   std::unique_ptr<backend::statement_iface> create_statement() override {
     return std::make_unique<batch_statement>(state_);
@@ -162,6 +169,24 @@ void map_accounts(orm& database) {
   database.map<account>("accounts")
     .primary_key("id", &account::id)
     .column("name", &account::name);
+}
+
+std::vector<std::string>& records() {
+  static std::vector<std::string> messages;
+  return messages;
+}
+
+void take_record(log_record const& record) {
+  records().push_back(std::string(record.message));
+}
+
+// The last record the core wrote about the route a batch write took.
+std::string const& last_record() {
+  static std::string none;
+  if (records().empty()) {
+    return none;
+  }
+  return records().back();
 }
 
 }  // namespace
@@ -268,4 +293,113 @@ void test_batch_shape() {
     CHECK_THROWS(database.update(make_accounts(5)), uniorm_error);
     CHECK_THROWS(database.remove(make_accounts(5)), uniorm_error);
   }
+
+  // Each route says which channel it took, how many rows an execute carried
+  // and what decided it. The chunk is spelled out because a caller reading
+  // one line cannot otherwise tell an array the driver collapsed to one set
+  // from an array that went whole.
+  records().clear();
+  set_log_sink(take_record);
+  set_log_level(log_level::debug);
+  {
+    auto state = std::make_shared<batch_state>();
+    register_batch_backend(state, "routerecords");
+    connection_pool pool{ batch_options("routerecords") };
+    orm database(pool);
+    map_accounts(database);
+    database.paramset_size(2);
+
+    database.update(make_accounts(5));
+    CHECK(!records().empty());
+    CHECK(
+      last_record() ==
+      "batch update: an array of parameter sets, 5 rows at 2 per execute: the "
+      "array carries and counts the whole block");
+
+    database.insert(make_accounts(5));
+    CHECK(
+      last_record() ==
+      "batch insert: an array of parameter sets, 5 rows at 2 per execute: the "
+      "backend takes a batch as one bound set per row");
+
+    // A driver that answers one set's count for a whole array execute, on a
+    // server with no folded shape: the array still goes, at one set apiece.
+    state->report_array_totals = false;
+    database.update(make_accounts(5));
+    CHECK(
+      last_record() ==
+      "batch update: an array of parameter sets, 5 rows at 1 per execute: the "
+      "array counts short or sends one set at a time, and this server has no "
+      "folded shape to fall to");
+
+    // A driver that drops or rejects an array execute: the rows go one at a
+    // time, and an insert counts what it bound rather than what it touched.
+    state->array_executes = false;
+    database.batch_write_policy(orm::batch_policy::automatic);
+    database.insert(make_accounts(5));
+    CHECK(
+      last_record() ==
+      "batch insert: one row per execute, 5 rows at 1 per execute: the driver "
+      "cannot execute an array of parameter sets");
+
+    database.update(make_accounts(5));
+    CHECK(
+      last_record() ==
+      "batch update: one row per execute, 5 rows at 1 per execute: the driver "
+      "cannot execute an array of parameter sets and this server has no "
+      "folded shape");
+  }
+
+  // The same driver on a server that does have a folded shape: the rows go
+  // inside one statement instead, and the record names which of the shapes
+  // that statement is. The dialect is read off the server once, so this leg
+  // gets a connection of its own.
+  {
+    auto state = std::make_shared<batch_state>();
+    state->dbms = "Oracle";
+    state->report_array_totals = false;
+    register_batch_backend(state, "routefolded");
+    connection_pool pool{ batch_options("routefolded") };
+    orm database(pool);
+    map_accounts(database);
+    database.paramset_size(2);
+
+    database.remove(make_accounts(5));
+    CHECK(
+      last_record() ==
+      "batch remove: a seeded UNION ALL row source, 5 rows at 2 per execute: "
+      "the driver answers only one set's count");
+
+    state->report_array_totals = true;
+    database.batch_write_policy(orm::batch_policy::folded);
+    database.update(make_accounts(5));
+    CHECK(
+      last_record() ==
+      "batch update: a seeded UNION ALL row source, 5 rows at 2 per execute: "
+      "the caller asked for the folded route");
+
+    state->report_array_totals = false;
+    database.batch_write_policy(orm::batch_policy::columnar);
+    database.remove(make_accounts(5));
+    CHECK(
+      last_record() ==
+      "batch remove: an array of parameter sets, 5 rows at 2 per execute: the "
+      "caller asked for the array channel");
+  }
+
+  // Below the threshold no record is built at all.
+  {
+    auto state = std::make_shared<batch_state>();
+    register_batch_backend(state, "routegate");
+    connection_pool pool{ batch_options("routegate") };
+    orm database(pool);
+    map_accounts(database);
+    records().clear();
+    set_log_level(log_level::info);
+    database.update(make_accounts(5));
+    CHECK(records().empty());
+  }
+
+  set_log_sink({});
+  set_log_level(log_level::info);
 }

@@ -52,6 +52,7 @@ struct probe_model {
   bool open = true;
   std::string dbms = "MySQL";
   std::string create_error_state;
+  std::string created_sql;
   bool fail_update = false;
   bool die_on_update = false;
   bool silent_insert = false;
@@ -100,6 +101,7 @@ public:
 
   void execute() override {
     if (sql_.rfind("CREATE", 0) == 0) {
+      model_->created_sql = sql_;
       if (!model_->create_error_state.empty()) {
         throw statement_error(model_->create_error_state);
       }
@@ -389,6 +391,21 @@ void test_array_probe() {
     CHECK(result.update == probe_outcome::pass);
     CHECK(result.remove == probe_outcome::pass);
     CHECK(!model->table_exists);
+    // The name carries a per-process stamp beside the counter, so a second
+    // process -- or the crash residue of one -- cannot own the same table.
+    std::string const head = "CREATE TABLE uniorm_probe_";
+    CHECK(model->created_sql.rfind(head, 0) == 0);
+    std::string minted = model->created_sql.substr(head.size());
+    std::size_t const tail = minted.find(' ');
+    CHECK(tail != std::string::npos);
+    minted.resize(tail);
+    std::size_t const split = minted.find('_');
+    bool shaped =
+      split != std::string::npos && split > 0 && split + 1 < minted.size();
+    for (std::size_t index = 0; index < minted.size() && shaped; ++index) {
+      shaped = index == split || (minted[index] >= '0' && minted[index] <= '9');
+    }
+    CHECK(shaped);
   }
 
   // A set size below two is clamped up: an array probe needs an array.

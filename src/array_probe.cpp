@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -14,10 +15,17 @@ namespace uniorm::detail {
 namespace {
 
 // The oracle/none families have no session-scoped temporary the probe can rely
-// on, so their scratch is a permanent table no concurrent probe may share.
+// on, so their scratch is a permanent table no concurrent probe may share:
+// the per-process stamp keeps another process -- or the crash residue of one
+// -- from owning this name.
 std::string unique_table_name() {
   static std::atomic<std::size_t> counter{ 0 };
-  return "uniorm_probe_" + std::to_string(counter.fetch_add(1));
+  static std::size_t const process_stamp = [] {
+    std::random_device seed;
+    return seed() % 1000000;
+  }();
+  return "uniorm_probe_" + std::to_string(process_stamp) + "_" +
+         std::to_string(counter.fetch_add(1));
 }
 
 struct scratch_table {

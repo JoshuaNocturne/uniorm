@@ -175,7 +175,9 @@ std::size_t n = db.execute_update(
 ```
 
 `connection_spec` 把四件套交给 scheme 所属的那家 backend，因为只有它知道这些
-该怎么拼：ODBC 那家写成 `DSN=` / `UID=` / `PWD=`，该包花括号的值就包上。
+该怎么拼：ODBC 那家写成 `DSN=` / `UID=` / `PWD=`，该包花括号的值就包上；libpq
+那家把 IPv6 地址在它两套语法里都括起方括号，`fe80::1/app` 与 `[::1]:5432/app`
+到了服务端仍是地址，不会被从第一个冒号处当成"主机加端口"切断。
 `orm::connect(...)` 收同一个形状。它并不声称够用——backend 自己的关键字、端口、
 TLS 策略这些都仍归串管，而串是每个 backend 都要实现的原语。同一个库，一份用
 spec 建、一份用串建，是两个池。
@@ -582,13 +584,14 @@ ctest --test-dir build --output-on-failure
   形状都钉：种子元组、`VALUES` 构造器、一列一个数组），以及日志钩子自己那一组：记录送达、
   门限挡住拼装、没装 sink 时的静默、sink 抛异常不伤调用方，再加两个真接线
   点——`transaction` 析构，与归还时重置失败的池连接
-- **odbc_unit_tests**：私有 ODBC 句柄层、它的错误转换，以及目录行按名字再筛
-  那条判据（仅驱动管理器，无需 DSN）
+- **odbc_unit_tests**：私有 ODBC 句柄层、它的错误转换、目录行按名字再筛那条判据、
+  兼容表的匹配规则（一族多拼法、位数越出 `uint32` 钳住而不折回小值、上界敞开那条），
+  以及行式批量各列形状核对（仅驱动管理器，无需 DSN）
 - **oracle_oci_unit_tests**：Oracle backend 自己那一层——占位符改写、它的类型表，
   以及连接串怎么切分（仅客户端库，无需服务器）
 - **libpq_unit_tests**：libpq backend 自己那一层——占位符改写、哪种语句文本能折成
-  一条多组 VALUES 与折开长什么样、它的类型表，以及连接串怎么切分（仅客户端库，
-  无需服务器）
+  一条多组 VALUES 与折开长什么样、它的类型表，以及连接串怎么切分（含 IPv6 主机在
+  libpq 两套语法里各要补的方括号；仅客户端库，无需服务器）
 - **integration_tests**：需要可达的 ODBC DSN，读取环境变量 `UNIORM_IT_DSN`、
   `UNIORM_IT_USER`、`UNIORM_IT_PWD`（三者均须设置）；任一未设置或连不上时以
   ctest SKIP 处理

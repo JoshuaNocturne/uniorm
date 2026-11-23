@@ -325,9 +325,12 @@ class statement {                      // SQLHSTMT，move-only
     void bind_column(SQLUSMALLINT index, SQLSMALLINT c_type, SQLPOINTER value,
                      SQLLEN buffer_length, SQLLEN* indicator);
     void close_cursor();
-    // 复用前的复位：仅 SQLFreeStmt(SQL_CLOSE)（无游标时是 no-op，故缓存复用安全），
-    // 并把 row array / paramset size 落回 1。不做 SQL_UNBIND / SQL_RESET_PARAMS——
-    // SQLBindCol / SQLBindParameter 本身覆盖旧绑定。
+    // 复用前的复位：SQLFreeStmt(SQL_CLOSE) 关游标（无游标时是 no-op，故缓存复用
+    // 安全），随后 SQL_RESET_PARAMS 与 SQL_UNBIND 清掉驱动侧的绑定——批量那条把
+    // backend 持有的数组交给过驱动，SQL_CLOSE 留着这些指针，而缓冲已交还，句柄在
+    // 下一次绑定覆盖它们之前的任何使用都会读到回收过的堆。row array size 落回 1
+    // 行底线（不是连接的默认块大小）：一次能落几行由绑定方说了算，核心每次绑定
+    // 再按 orm::row_array_size() 重设；paramset size 同样落回 1。
     void reset();
     SQLHSTMT native() const noexcept;
 };
@@ -680,9 +683,9 @@ class connection {
 （`query<T>`）全部走 checkout/check-in 模型，公开出口即
 `connection::acquire_statement()` / `release_statement()`：
 
-- 缓存**只存空闲句柄**：取出时 `statement::reset()`（仅 `SQL_CLOSE` 关游标 +
-  row array / paramset size 回落 1；重绑覆盖旧绑定，故无需 `SQL_UNBIND` /
-  `SQL_RESET_PARAMS`）后复用，归还时不复位——复位推迟到下一次 acquire；
+- 缓存**只存空闲句柄**：取出时 `statement::reset()`（`SQL_CLOSE` 关游标 +
+  `SQL_RESET_PARAMS` / `SQL_UNBIND` 丢掉驱动侧仍指向已交还缓冲的绑定 +
+  row array / paramset size 回落 1）后复用，归还时不复位——复位推迟到下一次 acquire；
   使用中的句柄不在缓存内，同一 SQL 并发执行互不干扰（各自新建）
 - `execute_update` 执行完立即归还；`execute` 的 `result_set` 携带
   check-in 闭包，析构时归还。闭包握两样：缓存状态的 `weak_ptr`，以及
@@ -832,8 +835,11 @@ std::size_t r = db.remove(people);   // 同上；无键列可推断且未给 whe
   这条上限管不着它。前两家的 4000、Oracle 的 3000、SQL Server 的 2000 都读自服务端——
   psqlODBC 到 6000 参数
   还答得准、9000 就把连接丢了；Oracle 的 ODBC 驱动在 ~64 KB 文本之后回截断的语句；
-  SQL Server 本身一条语句上限 2100 参数。MySQL 线那个 4000 没在服务端读过。尾巴
-  一段行数不同、文本也就不同，因而是语句缓存里的另一条语句
+  SQL Server 本身一条语句上限 2100 参数。MySQL 线那个 4000 没在服务端读过：这条线
+  至今没有一条腿真跑过它这一家的折叠形状，未实测的驱动版本落回 insert-only 先验，
+  而那先验下的批量 update / delete 恰恰仍走折叠——第一个读数就该从这种腿取，取到
+  就该替换掉这个数。
+  尾巴一段行数不同、文本也就不同，因而是语句缓存里的另一条语句
 - 折叠写对一个 key 只落一次，落在哪一组值上由服务端挑（实测两种形状都挑源里第一
   个被提到的那一行）；核心因此在折叠前按**匹配列**去重——不是按主键，
   调用方点名别的列时匹配列就不是主键——把最后一行的值放进首次出现的槽位，
@@ -1988,6 +1994,12 @@ PQputCopyData(pg, ...);                     // 用户自行驱动原生操作
    不是 release；没有 "Release " 就报空版本、退回种子元组），于是 §4.5.2 的 VALUES
    行源闸在这条腿上 fire。
 
+   数组这条路的自动提交收尾是一次批量一次提交：`run_batch()` 全程用
+   `OCI_DEFAULT` 而不是 `OCI_COMMIT_ON_SUCCESS`，整批跑完才提交。中途失败时
+   （只有直接用 `statement_iface` 才走到——核心的批量入口自始包着外层事务）把
+   失败行之前已跑的那段提交掉，这与逐行各自提交时服务端本已落盘的部分同量，
+   异常照常抛；那一段提交本身再失败，warn 级日志说明其去留未知。
+
    结果列里的 `LONG` / `LONG RAW` 描述不出长度，定长 define 会把宽值截断
    （indicator 报 -2、ORA-01406）。这一家把它们逐行取（`OCIStmtFetch2` 迭代 1）
    进一块起初 65536 字节的缓冲，define 走 `OCIDefineByPos2`：长度按四字节回报
@@ -2005,6 +2017,9 @@ PQputCopyData(pg, ...);                     // 用户自行驱动原生操作
 2. **libpq**（PostgreSQL）——**已落地**：`backends/libpq/`，scheme `"postgresql"`，
    装成 `libuniorm_postgresql.so`，CI 为它单开一支作业（§8）。两条 `open` 原语都接：
    整串按 libpq 自己的 conninfo 语法交给 `PQconnectdb`，四件套拼成它命名各值的关键词。
+   `host[:port]/dbname` 这种裸写法里的 IPv6 地址按 libpq 两套语法的规矩补上方括号再交
+   出去：多个冒号属于地址本身，不带括号时端口只从闭括号之后那一个冒号起算，裸地址在
+   URI 形式里也先括好，免得主机被从第一个冒号截断、把地址的尾巴当成库名。
    列式通道它不交——一批行从行式通道进来，`run_batch()` 再自己铺一次：insert 那一行
    VALUES 组被重复成一条多组语句（细节见本节末），铺不回去的仍旧一行一条 execute。
    `array_rowcount_totals` 交 `true`，因为整批的行数要么由服务端一次答出，要么是它
@@ -2018,7 +2033,11 @@ PQputCopyData(pg, ...);                     // 用户自行驱动原生操作
    `DateStyle = 'ISO, MDY'` 与 `bytea_output = 'hex'`：读的形状是照这两件假设的，
    钉不住就宁可拒绝这条会话。语句按 `uniorm_stmt_<n>` 这条各自唯一的名字
    `PQprepare`，参数类型从 `PQdescribePrepared` 读回；会话把名字弄丢了（SQLSTATE
-   26000）就把名字重做一次、再执行一次。`?` 翻成 `$n` 的那趟改写跳过字面量、定界名、
+   26000）就把名字重做一次、再执行一次。名字在这条会话上已被占着（SQLSTATE 42P05）
+   时同样重做一次：连接池把后端会话在进程之间转手，池那头留下的旧名与本进程的计数
+   撞得上，于是这一次 prepare 换成带进程随机戳的名字（`uniorm_stmt_<n>_<stamp>`，
+   戳取 `std::random_device`，每进程一个）——占着老名的是别人的会话，自己的语句
+   不该为此失败。`?` 翻成 `$n` 的那趟改写跳过字面量、定界名、
    dollar-quoted 体、嵌套块注释与 `E''`，成对的 `??` 则是留给服务端自己那批 `?` 算符
    （jsonb、几何）的写法。
 
@@ -2101,6 +2120,13 @@ update/delete 两位的折叠路。
 半开版本区间 `[min,max)` 匹配，most-specific-first，命中即取该条目四位
 （`array_insert/update/delete` + `array_rowcount_totals`）。表由效果级实测种下，是
 已知组合的先验；未命中 → 三位可执行性留 `false`、totals 留 `true`（保守 deny）。
+
+族串以 `'|'` 并列同一家人的多种拼法：Unix 上是库名短写（`maodbc`、`myodbc`、
+`psqlodbc`），Windows 上驱动自报的是产品名（`MariaDB ODBC`、`MySQL ODBC`、
+`PostgreSQL ANSI` 一类），两条都归到同一条先验，不会因为换了操作系统就落回
+保守位。版本按位读到数字尽头，越出 `uint32` 的位数钳在上限，畸形长串不再折回小值
+而错配窄区间；条目上界写 `version_max` 表示这一支到顶敞开（含该端点），不是把
+上界当成又一个排除点。
 
 表分两层：**已实测可执行的版本钉在族先验之前，未实测的版本落回保守先验**。已钉授权
 皆 `insert✓/update✓/delete✓/totals✓`：`maodbc 3.1.12`（本机 MariaDB 10.6.4，探针
@@ -2539,6 +2565,9 @@ bool log_enabled(log_level level);
   对 `userxorders` 不算——后者正是 pattern 里 `_` 的通配，两侧任一为空则留）、
   `test_odbc_batch_types`（行式批量列的形状核对是纯函数：均匀列夹 NULL 行放行，
   int32 撞 int64、整数撞文本都在绑定前抛 `backend_error`）、
+  `test_odbc_compat`（兼容表的匹配纯函数：`'|'` 并列的 Windows 自报产品名与 Unix
+  库名短写落到同一条先验，位数越出 `uint32` 钳在上限而不折回小值，上界写
+  `version_max` 的那条对最大的版本仍敞开）、
   `test_odbc_error_is_backend_error`（`odbc_error` 就是 `backend_error`，
   无需二次翻译）；
   `uniorm_oracle_oci_unit_tests` 链接 Oracle 那一家——`test_oracle_oci_sql_text`

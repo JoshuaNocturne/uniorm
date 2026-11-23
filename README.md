@@ -200,7 +200,10 @@ std::size_t n = db.execute_update(
 
 The `connection_spec` is handed to the backend that owns the scheme, because
 only that backend knows how its pieces must be spelled: the ODBC one writes
-`DSN=` / `UID=` / `PWD=` and braces a value that needs it.
+`DSN=` / `UID=` / `PWD=` and braces a value that needs it; the libpq one
+brackets an IPv6 host in both of its grammars, so `fe80::1/app` and
+`[::1]:5432/app` reach the server as addresses rather than as a host chopped
+at the first colon.
 `orm::connect(...)` takes the same shape. It claims no completeness — a
 backend's own keyword, a port, a TLS policy all belong to the string form,
 which stays the primitive every backend implements. A spec and a string that
@@ -666,12 +669,16 @@ ctest --test-dir build --output-on-failure
   sink, and two real emit points — a transaction destructor and a pool
   connection whose reset failed
 - **odbc_unit_tests** — the private ODBC handle layer, its error translation,
-  the catalog's name re-filter (driver manager only, no DSN required)
+  the catalog's name re-filter, the compat table's matching (family aliases, a
+  version group that overflows clamps instead of wrapping, an open-ended upper
+  bound), and the row-wise batch's column-shape check (driver manager only, no
+  DSN required)
 - **oracle_oci_unit_tests** — the placeholder rewrite, Oracle's type table,
   connect-string splitting (client library only, no server required)
 - **libpq_unit_tests** — the placeholder rewrite, which statement texts fold
   into one multi-row VALUES list and how the fold expands, PostgreSQL's type
-  table, connect-string splitting (client library only, no server required)
+  table, connect-string splitting including the brackets an IPv6 host needs in
+  either of libpq's two grammars (client library only, no server required)
 - **integration_tests** — needs a reachable ODBC DSN; reads `UNIORM_IT_DSN`,
   `UNIORM_IT_USER`, `UNIORM_IT_PWD` (all required), and ctest SKIPs when any is
   unset or the database is unreachable

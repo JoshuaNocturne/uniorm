@@ -186,6 +186,17 @@ void connection::commit() {
   if (!transaction_open_) {
     return;
   }
+  // COMMIT inside an aborted transaction is served as a roll back and answers
+  // success: the server's reply cannot tell the caller its rows were dropped.
+  if (PQtransactionStatus(conn_) == PQTRANS_INERROR) {
+    run_transaction_command("ROLLBACK", "roll back transaction");
+    transaction_open_ = false;
+    throw pq_error(
+      "commit transaction", { pq_error::diagnostic{ "25P02", 0,
+                              "transaction is aborted: COMMIT would have "
+                              "rolled the work away instead "
+                              "of keeping it" } });
+  }
   run_transaction_command("COMMIT", "commit transaction");
   transaction_open_ = false;
 }

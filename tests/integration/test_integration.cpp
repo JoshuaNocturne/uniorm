@@ -1349,6 +1349,33 @@ void test_transaction(orm& db) {
   CHECK(db.query<User>().count() == 3);
 }
 
+// An aborted PostgreSQL transaction answers COMMIT with success after rolling
+// the work away; the client has to hear that nothing was kept.
+void test_commit_after_aborted_transaction(orm& db) {
+  if (the_target.scheme != "postgresql") {
+    skip_reason = "the aborted-transaction commit is PostgreSQL's own shape";
+    return;
+  }
+  db.execute_update("DELETE FROM uniorm_it_user WHERE id >= 650");
+  {
+    transaction tx = db.begin();
+    db.execute_update("INSERT INTO uniorm_it_user (id, name, age, balance)"
+                      " VALUES (?, ?, ?, ?)",
+      params{ std::int64_t{ 650 }, std::string("kept"), nullptr, 0.0 });
+    bool refused = false;
+    try {
+      db.execute_update("INSERT INTO uniorm_it_missing_table (id) VALUES (1)");
+    } catch (...) {
+      refused = true;
+    }
+    CHECK(refused);
+    CHECK_THROWS(tx.commit(), uniorm_error);
+  }
+  CHECK(
+    db.query<User>().where(ge(&User::id, std::int64_t{ 650 })).count() == 0);
+  db.execute_update("DELETE FROM uniorm_it_user WHERE id >= 650");
+}
+
 // auto_commit is the connection's commit mode, so it governs every write here:
 // off, nothing is durable until commit(); on, each statement is.
 void test_auto_commit_scope(orm& db, std::string const& conn_string) {
@@ -3296,6 +3323,8 @@ int main() {
 
     guarded("test_query_builder", [&] { test_query_builder(db); });
     guarded("test_transaction", [&] { test_transaction(db); });
+    guarded("test_commit_after_aborted_transaction",
+      [&] { test_commit_after_aborted_transaction(db); });
     guarded("test_auto_commit_scope",
       [&] { test_auto_commit_scope(db, conn_string); });
     guarded("test_insert", [&] { test_insert(db); });

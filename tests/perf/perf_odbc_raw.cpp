@@ -581,6 +581,12 @@ std::vector<perf::bench_result> run_raw_benchmarks(
           if (SQLFetch(query.stmt) != SQL_SUCCESS) {
             perf::fail("raw one() answered with no row");
           }
+          // One row is all this case reads, so the cursor is still open when
+          // the next repetition comes: maodbc answers a SQLExecute on one
+          // with 24000 Invalid cursor state, while the connector the other
+          // legs use silently re-runs the statement.
+          odbc_check(SQLCloseCursor(query.stmt), SQL_HANDLE_STMT, query.stmt,
+            "close cursor after raw one()");
         },
         runs),
       &results);

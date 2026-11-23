@@ -23,6 +23,16 @@ void test_libpq_conninfo_keeps_a_written_target() {
   // port: the scheme form takes it bracketed so the URI reader agrees.
   CHECK(libpq::conninfo_of("fe80::1/app") == "postgresql://[fe80::1]/app");
   CHECK(libpq::conninfo_of("[::1]:5432/app") == "postgresql://[::1]:5432/app");
+
+  // Credentials before the host carry a colon of their own, and the core
+  // hands the tail over with the scheme already off it: bracketing the whole
+  // head would hide the port's real terminator inside the address.
+  CHECK(libpq::conninfo_of("joshua:pw@localhost:5432/app") ==
+        "postgresql://joshua:pw@localhost:5432/app");
+  CHECK(libpq::conninfo_of("joshua:pw@fe80::1/app") ==
+        "postgresql://joshua:pw@[fe80::1]/app");
+  CHECK(libpq::conninfo_of("joshua:pw@[::1]:5432/app") ==
+        "postgresql://joshua:pw@[::1]:5432/app");
 }
 
 void test_libpq_conninfo_from_pieces() {

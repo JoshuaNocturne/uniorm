@@ -66,20 +66,28 @@ void split_port(std::string_view& host, std::string_view& port) {
 }
 
 // libpq names an IPv6 address with brackets in both of its grammars; a bare
-// one read without them would lose everything after the first colon.
+// one read without them would lose everything after the first colon. Only the
+// host half of the head can be such an address: credentials sit before it and
+// carry a colon of their own, so a head read whole looks like an address and
+// gets bracketed whole, which the URI reader then hands to the port.
 std::string bracket_bare_ipv6(std::string_view target) {
   std::size_t const slash = target.rfind('/');
-  std::string_view const head =
-    slash == std::string_view::npos ? target : target.substr(0, slash);
-  std::size_t const first_colon = head.find(':');
-  if (first_colon == std::string_view::npos || head.front() == '[' ||
-      head.find(':', first_colon + 1) == std::string_view::npos) {
+  std::size_t const head_end =
+    slash == std::string_view::npos ? target.size() : slash;
+  std::size_t const at = target.rfind('@', head_end);
+  std::size_t const host_start = at == std::string_view::npos ? 0 : at + 1;
+  std::string_view const host =
+    target.substr(host_start, head_end - host_start);
+  std::size_t const first_colon = host.find(':');
+  if (first_colon == std::string_view::npos || host.front() == '[' ||
+      host.find(':', first_colon + 1) == std::string_view::npos) {
     return std::string(target);
   }
-  std::string out = "[" + std::string(head) + "]";
-  if (slash != std::string_view::npos) {
-    out.append(target.substr(slash));
-  }
+  std::string out(target.substr(0, host_start));
+  out.push_back('[');
+  out.append(host);
+  out.push_back(']');
+  out.append(target.substr(head_end));
   return out;
 }
 

@@ -785,6 +785,10 @@ std::size_t r = db.remove(people);   // 同上；无键列可推断且未给 whe
   chunk 同样取满。insert 不读这把开关。选路集中在 `src/orm.cpp` 的
   `choose_batch_route`，`update_batch_impl` / `delete_batch_impl` 共用；开关经批量
   模板传进这两个静态入口（与 `paramset_size_` 同路）
+- 走成哪条通路是要被看见的：`batch_route` 除了形状与 chunk 还带一句"是什么条件把它
+  定下来的"，每条批量写在动手前把通道、行数、chunk 与那句话拼成一条 `debug` 记录交给
+  `core.batch`（§7.1）。排查一次"这批为什么慢/为什么数不对"的人只读一行就知道是驱动不
+  认数组、还是数得偏小、还是调用方自己点的名
 - **折叠语句**：一个 chunk 一条语句。行不再靠数组展开，而是读成一个派生表
   `uo_batch_rows`，行源有三种形状：
   - **种子元组**：种子一段 `SELECT <列> FROM <表> WHERE 1 = 0` 给出列名与列类型
@@ -872,7 +876,8 @@ std::size_t r = db.remove(people);   // 同上；无键列可推断且未给 whe
   一条走种子元组。选路开关的三种取值由 `test_fold_batch.cpp` 与
   `test_batch_shape.cpp` 钉住：`folded` 越过 caps 仍折叠、服务端无折叠形状时抛
   `uniorm_error`，`columnar` 在报偏小数的 fake 上一次 execute 带整块、返回值就是
-  那一组的数
+  那一组的数。同一份 fake 认得出自己是对哪台服务端（`dbms` 一项），于是每条通路的
+  `core.batch` 记录原文也能在这里逐条钉住，不必连库；默认门限（`info`）下一条都不产生
 - 实测（PostgreSQL 18 容器）：psqlODBC 逐组 execute 是 74.9 / 81.8 ms 一行
   （1000 行 UPDATE / DELETE），折叠成 0.313 / 0.296 ms 一行；libpq 逐组是
   43.6 / 38.4，折叠成 0.408 / 0.304。perf 那两条腿各取 best of 3：ODBC 2000 行
@@ -2422,7 +2427,7 @@ bool log_enabled(log_level level);
 - **默认一个字都不产生**：没有 sink 时发射点只是一次 relaxed load，字符串不拼、
   驱动侧的额外读取也不做，所以接线点可以放在返回码检查这种每次调用都走一遍的位置。
 - **`site` 是 `<area>.<part>`**：`core.transaction`、`core.pool`、`core.async`、
-  `odbc.diagnostics`、`oci.diagnostics`、`libpq.statement`。过滤、加前缀、决定去处都是
+  `core.batch`、`odbc.diagnostics`、`oci.diagnostics`、`libpq.statement`。过滤、加前缀、决定去处都是
   接收方的事，库不格式化、不戳时间、不管输出落在哪儿。
 - **级别按谁该管分**：`error` 是调用方的操作死在那儿；`warn` 是库自己咽下并绕开的失败；
   `info` 是生产上值得一看的状态变化；`debug` 是一条语句的机械过程；`trace` 到行与列。
@@ -2451,8 +2456,16 @@ bool log_enabled(log_level level);
 - 服务端把自己忘了：libpq 会话不再持有那份 parse 而重新 prepare（§5）；OCI 批处理半途
   失败后替已跑的那几行补的提交又被拒，那几行落没落库从此没人知道。
 - 描述没说完的形状：Oracle 描述一个精确数值列时 `OCI_ATTR_PRECISION` / `OCI_ATTR_SCALE`
-  读不出来，`number_shape` 就按 decimal 收（`oci.statement`，`debug`——这是唯一的 `debug`
-  站点，正常客户端读得到这两项，所以它只在描述真的没答上来时响）。
+  读不出来，`number_shape` 就按 decimal 收（`oci.statement`，`debug`——正常客户端读得到
+  这两项，所以它只在描述真的没答上来时响）。
+- 一批行走的通路：每次批量写（insert / update / remove）在动手前发一条 `debug`
+  （`core.batch`），一句话里带上走的是哪个通道（参数数组、一列一个数组、`VALUES` 行源、
+  种子元组行源、一列 buffer 一份参数、一行一次 execute）、这次一共几行、一次 execute 带
+  几行，再把定下这条通路的条件说清——调用方点了名、驱动不认参数数组、驱动对整数组只答一
+  组的计数、数组数得偏小而这台服务端没有折叠形状可退。行数是行数、chunk 是 chunk，绑定值
+  与参数一个字都不进；拼装整个发生在门限之后，门限高于 `debug` 或没装 sink 时一次字符串
+  都不拼。选路只看 caps 与方言，不看数据，所以同一套行在两家的通道可以不同，这条记录就是
+  用来让人看见"为什么这次没走数组"的。
 
 已经以异常交给调用方的失败不再补记录；日志设施自己那几处 `catch` 也不补，对记录再记
 记录是自我递归。

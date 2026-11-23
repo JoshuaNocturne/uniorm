@@ -26,10 +26,11 @@ The full API reference is [docs/design.md](docs/design.md).
   backend
 - **An optional log hook** (`log.hpp`) — the application sets one sink and the
   library hands it records (`level`, `site`, `message`) for what it absorbs
-  instead of throwing: a driver's `SQL_SUCCESS_WITH_INFO` diagnostics, a
-  rollback that failed in a destructor, a pool connection retired by a failed
-  heartbeat, a libpq session that lost a parse, a session the server would not
-  let go. Nothing is produced until a sink is set, and a bound value never
+  instead of throwing, and for the choices it makes in the caller's place: a
+  driver's `SQL_SUCCESS_WITH_INFO` diagnostics, a rollback that failed in a
+  destructor, a pool connection retired by a failed heartbeat, a libpq session
+  that lost a parse, a session the server would not let go, the route a batch
+  write took. Nothing is produced until a sink is set, and a bound value never
   reaches one
 - **Prepared statements + bind variables** — user values always go through the
   backend's bind call (`SQLBindParameter` on ODBC), never string
@@ -409,6 +410,13 @@ that array write, rather than silently dropping rows. Insert ignores the policy
 — it never folds and counts the rows it bound. The same knob is forwarded on
 `async::orm`.
 
+Whichever route a batch write takes, it says so before any row moves: one
+`debug` record on the `core.batch` site naming the channel, the row count, how
+many rows one execute carried, and the condition that settled the choice — an
+unexecutable array write, an array execute that answers one set's count, or the
+caller's own `folded` / `columnar` asking. The record carries no value from any
+row, and below a `debug` threshold nothing is assembled (see Logging).
+
 **The columnar path on psqlODBC returns a short count.** psqlODBC reports one
 parameter set's row count for an execute that ran the whole array, so a batch
 `update` / `remove` forced to `columnar` returns that single set's count instead
@@ -598,11 +606,13 @@ uniorm::set_log_level(uniorm::log_level::debug);  // the default is info
 The library carries no logger and links none: it hands one sink the failures it
 absorbs rather than throws — a driver's warning, a roll back a destructor could
 not finish, a worker's closure that threw with nobody to catch it, a log off or
-a `DEALLOCATE` the server refused — and the sink decides where they go. Until a
+a `DEALLOCATE` the server refused — and the work it chose about, such as which
+route a batch write took, and the sink decides where they go. Until a
 sink is set nothing is produced — assembling a message is never paid for, and a
 driver's diagnostic read is never made. A record names its `site` (`core.pool`,
-`core.async`, `odbc.diagnostics`, `oci.statement`, `libpq.statement`, …) and
-says what happened, in one sentence; a bound value never reaches it. The sink is
+`core.async`, `core.batch`, `odbc.diagnostics`, `oci.statement`,
+`libpq.statement`, …) and says what happened, in one sentence; a bound value
+never reaches it. The sink is
 called from whichever thread the work happened on, destructors included, so it
 has to hold up under concurrency; an exception out of it is dropped, and a
 failure already handed over as an exception is not also logged.
@@ -666,8 +676,8 @@ ctest --test-dir build --output-on-failure
   row-source shapes: seeded tuples, the `VALUES` constructor, and one array per
   column — and the log hook's own cases:
   delivery, the threshold gating assembly, silence with no sink, a throwing
-  sink, and two real emit points — a transaction destructor and a pool
-  connection whose reset failed
+  sink, the words each batch route records for itself, and two real emit points
+  — a transaction destructor and a pool connection whose reset failed
 - **odbc_unit_tests** — the private ODBC handle layer, its error translation,
   the catalog's name re-filter, the compat table's matching (family aliases, a
   version group that overflows clamps instead of wrapping, an open-ended upper

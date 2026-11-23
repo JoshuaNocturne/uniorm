@@ -20,10 +20,11 @@ backend 有三家：默认构建的 ODBC，由构建开关控制的 Oracle OCI �
   `backend::capability_not_supported` 到达
 - **内部统一 UTF-8**：字符串一律以窄字节递交（ODBC 那家是 `SQL_C_CHAR`）；
   与服务端编码的转换留在 backend 里，不在本库
-- **可选的日志钩子**（`log.hpp`）：应用设一个 sink，库把自己咽下而没有抛出的失败
-  递成记录（`level` / `site` / `message`）——驱动的 `SQL_SUCCESS_WITH_INFO` 诊断、
+- **可选的日志钩子**（`log.hpp`）：应用设一个 sink，库把自己咽下而没有抛出的失败、
+  以及替调用方做了的决定，递成记录（`level` / `site` / `message`）——驱动的
+  `SQL_SUCCESS_WITH_INFO` 诊断、
   析构里失败的回滚、被心跳判死而退役的池连接、libpq 会话丢了的那份 parse、服务端
-  不肯放手的会话。没装 sink 时一个字都不产生，绑定值也永远不进记录
+  不肯放手的会话、一批行走的批量通路。没装 sink 时一个字都不产生，绑定值也永远不进记录
 - **预编译 + 绑定变量**：用户值一律走 backend 的绑定调用（ODBC 那家是
   `SQLBindParameter`），杜绝拼接注入
 - **透明的语句缓存**：按 SQL 文本的 LRU 缓存，重复执行免 prepare（观测：
@@ -359,6 +360,11 @@ db.batch_write_policy(uniorm::orm::batch_policy::automatic);  // 默认
 不了这类数组写时抛 `uniorm_error`，而不是静默丢行。insert 不受这个开关影响——它
 从不折叠，数的是自己绑定的行数。`async::orm` 上转发同一个开关。
 
+一批行走的是哪条通路，库在动手前先说一句：`core.batch` 的一条 `debug` 记录，里
+面有通道名、这次几行、一次 execute 带几行，以及把选择定下来的那个条件——驱动执
+行不了这类数组写、数组 execute 只答一组的计数、还是调用方自己点了 `folded` /
+`columnar`。记录里没有搬动的值，门限不到 `debug` 时一个字都不拼。
+
 **psqlODBC 走列式时返回值偏小。** psqlODBC 对一次跑完整块数组的 execute 只报
 一个参数组的行数，所以强制 `columnar` 的批量 `update` / `remove` 返回的是那一组
 的数，而不是实际写下的行数：行全都写进去了，错的只是返回值。`automatic` 避开了
@@ -526,9 +532,10 @@ uniorm::set_log_level(uniorm::log_level::debug);  // 默认是 info
 
 库里不带日志设施，也不链接任何日志库：它只把一个 sink 收进去，把自己咽下的失败
 递成记录——驱动的告警、析构里没做完的回滚、没人接的 worker 闭包、被服务端拒掉的登出
-与 `DEALLOCATE`——去哪儿由接收方决定。没装 sink 之前什么都不产生——拼装消息的钱不花，
+与 `DEALLOCATE`——也把自己替调用方做了的选择递成记录，比如一批行走了哪条批量通路。
+去哪儿由接收方决定。没装 sink 之前什么都不产生——拼装消息的钱不花，
 驱动侧那次额外的诊断读取也不做。记录报出自己的 `site`（`core.pool`、`core.async`、
-`odbc.diagnostics`、`oci.statement`、`libpq.statement`……）和一句话的事实，绑定值一个
+`core.batch`、`odbc.diagnostics`、`oci.statement`、`libpq.statement`……）和一句话的事实，绑定值一个
 字都不进。sink 会在事发的那条线程上被调用，析构也算，所以要能并发；它抛出的异常被
 丢弃，已经以异常交给调用方的失败不再补一条记录。`uniorm::set_log_sink({})` 把它关掉。
 
@@ -582,7 +589,8 @@ ctest --test-dir build --output-on-failure
   backend 库，公共 API 一旦泄漏驱动类型即编译失败。它还收纳生成器的配置与
   输出用例、折叠批量语句在这台机器上没有活服务端可跑的各家文本（三种行源
   形状都钉：种子元组、`VALUES` 构造器、一列一个数组），以及日志钩子自己那一组：记录送达、
-  门限挡住拼装、没装 sink 时的静默、sink 抛异常不伤调用方，再加两个真接线
+  门限挡住拼装、没装 sink 时的静默、sink 抛异常不伤调用方、每条批量通路各自那条
+  记录的原文，再加两个真接线
   点——`transaction` 析构，与归还时重置失败的池连接
 - **odbc_unit_tests**：私有 ODBC 句柄层、它的错误转换、目录行按名字再筛那条判据、
   兼容表的匹配规则（一族多拼法、位数越出 `uint32` 钳住而不折回小值、上界敞开那条），

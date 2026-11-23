@@ -81,9 +81,20 @@ std::string get_data_char(odbc::statement& stmt, SQLUSMALLINT column) {
     }
     odbc::throw_if_error(
       rc, SQL_HANDLE_STMT, stmt.native(), "read long character data");
-    out.append(chunk, std::strlen(chunk));
+    // The spec lets a driver fill the whole buffer with no terminator when
+    // the rest of the value is exactly as wide; strlen would then read past
+    // the end of the array. Bound the scan by the buffer itself.
+    char const* stop =
+      static_cast<char const*>(std::memchr(chunk, '\0', sizeof(chunk)));
+    std::size_t const written =
+      stop != nullptr ? static_cast<std::size_t>(stop - chunk) : sizeof(chunk);
+    out.append(chunk, written);
     if (rc != SQL_SUCCESS_WITH_INFO) {
       return out;
+    }
+    if (written == 0) {
+      throw backend::backend_error(
+        "odbc", "SQLGetData stopped making progress reading long data", {});
     }
   }
 }

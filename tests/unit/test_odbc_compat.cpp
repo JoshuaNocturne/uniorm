@@ -116,11 +116,39 @@ void test_odbc_compat() {
   CHECK(odbc::compat_lookup("MAODBC.SO", version(3, 1, 12), "MariaDB",
           version(10, 6, 0)) != nullptr);
 
-  // The unbounded sentinel admits both a zero version and a huge one.
+  // A Windows self-report names the product, not the Unix library, and the
+  // family carries both spellings.
+  {
+    auto const* entry = odbc::compat_lookup("MariaDB ODBC 3.1 Driver",
+      version(3, 1, 24), "MariaDB", version(11, 0, 0));
+    CHECK(entry != nullptr);
+    CHECK(entry->array_insert);
+    CHECK(!entry->array_update);
+  }
+  {
+    auto const* entry = odbc::compat_lookup(
+      "MySQL ODBC 8.0 Driver", version(8, 0, 32), "MySQL", version(8, 0, 0));
+    CHECK(entry != nullptr);
+    CHECK(entry->array_insert);
+    CHECK(!entry->array_update);
+  }
+  {
+    auto const* entry = odbc::compat_lookup(
+      "PostgreSQL Unicode", version(13, 2, 0), "PostgreSQL", version(18, 6, 0));
+    CHECK(entry != nullptr);
+    CHECK(entry->array_insert);
+    CHECK(!entry->array_rowcount_totals);
+  }
+
+  // The unbounded sentinel admits both a zero version and a huge one, and
+  // a runaway digit run saturates into the sentinel instead of wrapping.
+  CHECK(odbc::parse_version("99999999999") == version(UINT32_MAX, 0, 0));
   CHECK(odbc::compat_lookup("maodbc.so", version(0, 0, 0), "MariaDB",
           version(0, 0, 0)) != nullptr);
   CHECK(odbc::compat_lookup("maodbc.so", version(UINT32_MAX - 1, 0, 0),
           "MariaDB", version(0, 0, 0)) != nullptr);
+  CHECK(odbc::compat_lookup("maodbc.so", version(UINT32_MAX, 0, 0), "MariaDB",
+          version(0, 0, 0)) != nullptr);
 
   // An unknown combo is a miss: the caller falls back to conservative deny.
   CHECK(odbc::compat_lookup("freetds.so", version(1, 0, 0),

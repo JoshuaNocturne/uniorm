@@ -1,6 +1,7 @@
 #include "compat.hpp"
 
 #include <cstddef>
+#include <limits>
 #include <string>
 
 #include "identifier.hpp"
@@ -12,13 +13,17 @@ namespace {
 constexpr version_triple version_max{ UINT32_MAX, 0, 0 };
 
 std::uint32_t read_group(std::string_view text, std::size_t& position) {
-  std::uint32_t value = 0;
+  std::uint64_t value = 0;
+  constexpr std::uint64_t ceiling = std::numeric_limits<std::uint32_t>::max();
   while (
     position < text.size() && text[position] >= '0' && text[position] <= '9') {
-    value = value * 10 + static_cast<std::uint32_t>(text[position] - '0');
+    value = value * 10 + static_cast<std::uint64_t>(text[position] - '0');
+    if (value > ceiling) {
+      value = ceiling;
+    }
     ++position;
   }
-  return value;
+  return static_cast<std::uint32_t>(value);
 }
 
 // The conservative prior for combos nothing has measured: MySQL-wire
@@ -32,28 +37,51 @@ constexpr compat_entry compat_table[] = {
   // array path); 3.1.23 measured on CI against MariaDB 11. Unmeasured versions
   // stay on the prior below: array INSERT granted, array UPDATE/DELETE denied
   // pending measurement.
-  { "maodbc", { 3, 1, 12 }, { 3, 1, 13 }, "", {}, version_max, true, true, true,
+  { "maodbc|maria", { 3, 1, 12 }, { 3, 1, 13 }, "", {}, version_max, true, true,
+    true, true },
+  { "maodbc|maria", { 3, 1, 23 }, { 3, 1, 24 }, "", {}, version_max, true, true,
+    true, true },
+  { "maodbc|maria", {}, version_max, "", {}, version_max, true, false, false,
     true },
-  { "maodbc", { 3, 1, 23 }, { 3, 1, 24 }, "", {}, version_max, true, true, true,
-    true },
-  { "maodbc", {}, version_max, "", {}, version_max, true, false, false, true },
   // myodbc 26.10.0 measured on CI against MySQL 8.4: every op passes, whole
   // tally. Older unmeasured versions stay on the insert-only prior.
-  { "myodbc", { 26, 10, 0 }, { 26, 10, 1 }, "", {}, version_max, true, true,
-    true, true },
-  { "myodbc", {}, version_max, "", {}, version_max, true, false, false, true },
-  { "psqlodbc", {}, version_max, "", {}, version_max, true, true, true, false },
+  { "myodbc|mysql", { 26, 10, 0 }, { 26, 10, 1 }, "", {}, version_max, true,
+    true, true, true },
+  { "myodbc|mysql", {}, version_max, "", {}, version_max, true, false, false,
+    true },
+  { "psqlodbc|postgres", {}, version_max, "", {}, version_max, true, true, true,
+    false },
   // Keyed on the DBMS, not the driver name: the ODBC driver's batch self-report
   // is unreliable, the server name is solid.
   { "", {}, version_max, "oracle", {}, version_max, false, false, false, true },
 };
 
-bool family_matches(std::string_view family, std::string_view folded_name) {
-  return family.empty() || folded_name.find(family) != std::string_view::npos;
+bool family_matches(std::string_view families, std::string_view folded_name) {
+  if (families.empty()) {
+    return true;
+  }
+  // '|' separates the spellings one family goes by: the shared library name
+  // on Unix, the self-reported product name on Windows.
+  std::size_t start = 0;
+  while (true) {
+    std::size_t const bar = families.find('|', start);
+    std::string_view const family = families.substr(start,
+      bar == std::string_view::npos ? std::string_view::npos : bar - start);
+    if (folded_name.find(family) != std::string_view::npos) {
+      return true;
+    }
+    if (bar == std::string_view::npos) {
+      return false;
+    }
+    start = bar + 1;
+  }
 }
 
 bool in_range(version_triple version, version_triple low, version_triple high) {
-  return version >= low && version < high;
+  // The ceiling sentinel means "no upper end", so the version it names is
+  // inside the range too; a plain half-open test would drop the sentinel
+  // value itself, which saturation and driver versions may both reach.
+  return version >= low && (version < high || high == version_max);
 }
 
 }  // namespace

@@ -28,8 +28,8 @@ struct version_triple {
 UNIORM_ODBC_API version_triple parse_version(std::string_view text);
 
 struct compat_entry {
-  std::string_view
-    driver_family;  // substring of folded SQL_DRIVER_NAME; "" = any
+  std::string_view driver_family;  // substrings of folded SQL_DRIVER_NAME
+                                   // separated by '|'; "" = any
   version_triple driver_min;
   version_triple
     driver_max;  // half-open [min, max); UINT32_MAX major = unbounded

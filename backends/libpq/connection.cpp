@@ -37,15 +37,50 @@ void append_keyword(
   conninfo.push_back('\'');
 }
 
-// The target's host and port: a port is what follows the last colon, and
-// nothing else in this grammar carries one.
+// The target's host and port. Brackets spell an address that carries colons
+// of its own: inside them lives an IPv6 address, and only a colon past the
+// closing bracket introduces a port. A bare host with more than one colon is
+// an IPv6 address and no port -- its last colon belongs to the address, and
+// a port on such a target needs the bracketed spelling.
 void split_port(std::string_view& host, std::string_view& port) {
-  std::size_t const colon = host.rfind(':');
+  if (!host.empty() && host.front() == '[') {
+    std::size_t const close = host.find(']');
+    if (close != std::string_view::npos) {
+      std::string_view const rest = host.substr(close + 1);
+      if (!rest.empty() && rest.front() == ':') {
+        port = rest.substr(1);
+      }
+      host = host.substr(0, close + 1);
+      return;
+    }
+  }
+  std::size_t const colon = host.find(':');
   if (colon == std::string_view::npos) {
+    return;
+  }
+  if (host.find(':', colon + 1) != std::string_view::npos) {
     return;
   }
   port = host.substr(colon + 1);
   host = host.substr(0, colon);
+}
+
+// libpq names an IPv6 address with brackets in both of its grammars; a bare
+// one read without them would lose everything after the first colon.
+std::string bracket_bare_ipv6(std::string_view target) {
+  std::size_t const slash = target.rfind('/');
+  std::string_view const head =
+    slash == std::string_view::npos ? target : target.substr(0, slash);
+  std::size_t const first_colon = head.find(':');
+  if (first_colon == std::string_view::npos || head.front() == '[' ||
+      head.find(':', first_colon + 1) == std::string_view::npos) {
+    return std::string(target);
+  }
+  std::string out = "[" + std::string(head) + "]";
+  if (slash != std::string_view::npos) {
+    out.append(target.substr(slash));
+  }
+  return out;
 }
 
 }  // namespace
@@ -61,7 +96,7 @@ std::string conninfo_of(std::string_view tail) {
       tail.find('=') != std::string_view::npos) {
     return std::string(tail);
   }
-  return "postgresql://" + std::string(tail);
+  return "postgresql://" + bracket_bare_ipv6(tail);
 }
 
 std::string conninfo_of(
@@ -83,8 +118,12 @@ std::string conninfo_of(
     database = target.substr(slash + 1);
   }
   split_port(host, port);
+  std::string host_value(host);
+  if (host_value.find(':') != std::string::npos && host_value.front() != '[') {
+    host_value = "[" + host_value + "]";
+  }
   std::string conninfo;
-  append_keyword(conninfo, "host", host);
+  append_keyword(conninfo, "host", host_value);
   append_keyword(conninfo, "port", port);
   append_keyword(conninfo, "dbname", database);
   append_keyword(conninfo, "user", user);

@@ -18,6 +18,11 @@ void test_libpq_conninfo_keeps_a_written_target() {
         "postgresql://localhost:5432/app");
   CHECK(libpq::conninfo_of("postgres://u@h/db?connect_timeout=2") ==
         "postgres://u@h/db?connect_timeout=2");
+
+  // A bare host with two colon runs is an address, not an address and a
+  // port: the scheme form takes it bracketed so the URI reader agrees.
+  CHECK(libpq::conninfo_of("fe80::1/app") == "postgresql://[fe80::1]/app");
+  CHECK(libpq::conninfo_of("[::1]:5432/app") == "postgresql://[::1]:5432/app");
 }
 
 void test_libpq_conninfo_from_pieces() {
@@ -37,6 +42,14 @@ void test_libpq_conninfo_from_pieces() {
   // pieces a word list cannot carry inside a URI-free string.
   CHECK(libpq::conninfo_of("host=h port=1", "u", "p") ==
         "host=h port=1 user=u password=p");
+
+  // IPv6 reaches libpq bracketed: only a colon past the closing bracket
+  // carries a port, and a bare multi-colon host is taken whole.
+  CHECK(libpq::conninfo_of("[::1]:5432/app", "j", "") ==
+        "host=[::1] port=5432 dbname=app user=j");
+  CHECK(libpq::conninfo_of("fe80::1/app", "j", "") ==
+        "host=[fe80::1] dbname=app user=j");
+  CHECK(libpq::conninfo_of("::1", "", "") == "host=[::1]");
 }
 
 void test_libpq_conninfo_quotes_a_value_that_needs_it() {

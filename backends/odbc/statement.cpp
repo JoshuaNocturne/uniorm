@@ -89,14 +89,22 @@ void statement::close_cursor() {
 void statement::reset() {
   // SQL_CLOSE (unlike SQLCloseCursor) is a no-op when no cursor is open,
   // which makes reset() safe on statements reused from the cache.
-  // We only need SQL_CLOSE here because:
-  // - SQLBindParameter automatically replaces existing parameter bindings
-  // - SQLBindCol automatically replaces existing column bindings
-  // So SQL_RESET_PARAMS and SQL_UNBIND are redundant.
+  // SQL_CLOSE leaves bindings in place though, and a batch bind handed the
+  // driver arrays the backend owns: reset releases those buffers, so the
+  // bindings would name recycled heap until the next bind replaces every
+  // one of them. Dropping the bindings outright closes that window.
   SQLRETURN rc = SQLFreeStmt(native(), SQL_CLOSE);
   throw_if_error(rc, SQL_HANDLE_STMT, native(), "close statement cursor");
+  rc = SQLFreeStmt(native(), SQL_RESET_PARAMS);
+  throw_if_error(rc, SQL_HANDLE_STMT, native(), "reset parameter bindings");
+  rc = SQLFreeStmt(native(), SQL_UNBIND);
+  throw_if_error(rc, SQL_HANDLE_STMT, native(), "unbind result columns");
 
-  // Reset row array size to 1 for next use
+  // Row array size goes back to the one-row floor, not to the connection's
+  // default fetch block: whoever binds columns says how many rows at a time
+  // it can land, and the core re-applies its default through
+  // set_row_array_size at every bind. Until then, one row is the only size
+  // no binding can overflow.
   if (row_array_size_ != 1) {
     row_array_size_ = 1;
     rc = SQLSetStmtAttr(

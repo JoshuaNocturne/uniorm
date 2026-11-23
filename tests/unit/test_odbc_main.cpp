@@ -5,6 +5,7 @@ void test_odbc_catalog_name_matches();
 void test_odbc_dsn_string();
 void test_odbc_error_is_backend_error();
 void test_odbc_compat();
+void test_odbc_batch_types();
 void test_odbc_probe_cache();
 
 int main() {
@@ -13,6 +14,7 @@ int main() {
   test_odbc_dsn_string();
   test_odbc_error_is_backend_error();
   test_odbc_compat();
+  test_odbc_batch_types();
   test_odbc_probe_cache();
 
   int failures = uniorm::test::failure_count();

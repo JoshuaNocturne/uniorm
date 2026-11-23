@@ -5,9 +5,11 @@
 #include <charconv>
 #include <cstdio>
 #include <cstring>
+#include <string>
 #include <system_error>
 #include <unordered_map>
 #include <utility>
+#include <variant>
 
 #ifdef _WIN32
 #define NOMINMAX
@@ -297,10 +299,34 @@ void backend_statement::bind_column(
     reinterpret_cast<SQLLEN*>(buffer.indicator));
 }
 
+void check_batch_column_types(std::vector<params> const& rows) {
+  if (rows.empty()) {
+    return;
+  }
+  for (std::size_t column = 0; column < rows[0].size(); ++column) {
+    std::size_t shape = std::variant_npos;
+    for (std::size_t row = 0; row < rows.size(); ++row) {
+      auto const& value = rows[row].at(column);
+      if (std::holds_alternative<std::monostate>(value)) {
+        continue;
+      }
+      if (shape == std::variant_npos) {
+        shape = value.index();
+      } else if (shape != value.index()) {
+        throw backend::backend_error("odbc",
+          "batch column " + std::to_string(column + 1) +
+            " carries values of two shapes at row " + std::to_string(row + 1),
+          {});
+      }
+    }
+  }
+}
+
 void backend_statement::bind_batch_params(std::vector<params> const& rows) {
   if (rows.empty()) {
     return;
   }
+  check_batch_column_types(rows);
   std::size_t const n = rows.size();
   std::size_t const num_cols = rows[0].size();
 

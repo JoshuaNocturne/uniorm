@@ -80,6 +80,7 @@ if(UNIORM_BACKEND_ODBC)
         unit/test_odbc_handles.cpp
         unit/test_odbc_catalog.cpp
         unit/test_odbc_compat.cpp
+        unit/test_odbc_batch_types.cpp
         unit/test_odbc_probe_cache.cpp
     )
     # White-box test of the backend's own layer: link uniorm::odbc for the

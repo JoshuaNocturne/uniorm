@@ -100,6 +100,12 @@ private:
 UNIORM_ODBC_API std::string dsn_string(
   std::string_view target, std::string_view user, std::string_view password);
 
+// A batch column takes its binding shape from the first non-NULL value of
+// that column and each later row is read back as that shape alone, so a
+// value of another shape would reach the server as a silent NULL. This
+// refuses the mix instead.
+UNIORM_ODBC_API void check_batch_column_types(std::vector<params> const& rows);
+
 class UNIORM_ODBC_API backend_connection : public backend::connection_iface {
 public:
   backend_connection();

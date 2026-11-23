@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <random>
 #include <string_view>
 #include <utility>
 #include <variant>
@@ -38,6 +39,32 @@ bool holds_no_parse(PGresult const* answer) {
   }
   char const* const state = PQresultErrorField(answer, PG_DIAG_SQLSTATE);
   return state != nullptr && std::strcmp(state, "26000") == 0;
+}
+
+// The server's word for a prepared name somebody else already holds. Under a
+// transaction pooler the session in front of us is not ours alone: another
+// client's counter can reach this server session carrying the same name.
+bool name_taken(PGresult const* answer) {
+  if (answer == nullptr) {
+    return false;
+  }
+  char const* const state = PQresultErrorField(answer, PG_DIAG_SQLSTATE);
+  return state != nullptr && std::strcmp(state, "42P05") == 0;
+}
+
+// The renamed second attempt must be a name no other process mints: their
+// counters march the same way ours does, so the stamp -- drawn once per
+// process -- is what tells the two apart.
+std::size_t process_stamp() {
+  static std::size_t const stamp = [] {
+    std::random_device seed;
+    return seed() % 1000000;
+  }();
+  return stamp;
+}
+
+std::string stamped_name() {
+  return next_statement_name() + "_" + std::to_string(process_stamp());
 }
 
 char* byte_at(column_slot const& slot, std::size_t row) {
@@ -212,8 +239,18 @@ void pq_statement::make_ready() {
     prepared_ = false;
   }
   param_types_.clear();
-  detail::result_holder made{ PQprepare(session(), statement_name_.c_str(),
-    rewritten_.c_str(), static_cast<int>(placeholder_count_), nullptr) };
+  PGresult* made_raw = PQprepare(session(), statement_name_.c_str(),
+    rewritten_.c_str(), static_cast<int>(placeholder_count_), nullptr);
+  if (PQresultStatus(made_raw) != PGRES_COMMAND_OK && name_taken(made_raw)) {
+    // A pooler parked another client's name on this server session. Deal-
+    // locating it would cut that client's cache out from under it, so the
+    // way through is a name that is nobody else's.
+    PQclear(made_raw);
+    statement_name_ = stamped_name();
+    made_raw = PQprepare(session(), statement_name_.c_str(), rewritten_.c_str(),
+      static_cast<int>(placeholder_count_), nullptr);
+  }
+  detail::result_holder made{ made_raw };
   throw_if_failed(made.get(), "prepare a statement", { PGRES_COMMAND_OK });
   prepared_ = true;
   read_parameter_types();

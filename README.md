@@ -472,6 +472,12 @@ std::size_t held = pool.capacity(); // also idle_count() and
                                     // heartbeats_executed()
 ```
 
+On the libpq backend `commit()` reads the session's state rather than
+trusting the answer to `COMMIT`: PostgreSQL serves a `COMMIT` that lands on
+an already-aborted transaction as a roll back and still reports success. In
+that state uniorm issues the `ROLLBACK` and throws, so a `commit()` that
+returns clean means the work was actually kept.
+
 Every pool shares **one** background scheduler thread, started for a pool whose
 `heartbeat_interval` is nonzero: it heartbeats idle connections, drops any whose
 heartbeat fails, and releases those idle beyond `max_idle_time` — which

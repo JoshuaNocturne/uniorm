@@ -414,6 +414,10 @@ std::size_t held = pool.capacity(); // 另有 idle_count() 与
                                     // heartbeats_executed()
 ```
 
+libpq 那一家的 `commit()` 读会话状态，不认 `COMMIT` 的答话：PostgreSQL 会把落在
+已中断事务上的 `COMMIT` 当回滚执行、照样答成功。这种状态下 uniorm 改发
+`ROLLBACK` 并抛错——干净返回的 `commit()` 意味着工作真的保住了。
+
 所有池共用**一条**后台调度线程，`heartbeat_interval` 非零的池会挂上去：它周期性
 对空闲连接执行心跳，心跳失败即丢弃，空闲超过 `max_idle_time` 的彻底释放——
 `acquire()` 交出连接前也会执行这条规则。`acquire()` 还会问 backend 自己的

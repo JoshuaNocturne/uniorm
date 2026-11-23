@@ -171,7 +171,8 @@ uniorm/
 │   │                            # test_async_orm.cpp，另加 uniorm-gen 的
 │   │                            # 纯逻辑用例）与
 │   │                            # uniorm_odbc_unit_tests（句柄 RAII、错误派生、
-│   │                            # 目录行再筛的判据）、uniorm_oracle_oci_unit_tests
+│   │                            # 目录行再筛的判据、行式批量的形状核对）、
+│   │                            # uniorm_oracle_oci_unit_tests
 │   │                            # （占位符改写、它自己的类型表、连接串怎么切分）
 │   ├── integration/             # 需活连接：test_integration.cpp 一份源码出两个
 │   │                            # ctest 名字，UNIORM_IT_BACKEND 决定它走 ODBC 还是
@@ -348,7 +349,7 @@ OCI 插件取 `OCIServerVersion` banner 里 "Release " 之后那个数），
 - indicator buffer 一律用 `SQLLEN`，规避 32/64 位截断问题；
 - 字符串列与参数一律按窄字符绑定（`SQL_C_CHAR` / `SQL_VARCHAR`），库内不做编码
   转换；WVARCHAR 等宽 SQL 类型能取到值，是驱动自己做了字符集转换（策略见 §4.2）；
-- 长数据（长 VARCHAR / BLOB）v1 策略：绑定固定缓冲，截断（indicator 为负——`SQL_NO_TOTAL` 或 `SQL_NTS`——或超出缓冲）时经 `SQLGetData` 循环重取**完整值**整体替换——MariaDB Connector/ODBC 在截断续读时返回的是全量值而非剩余部分，追加式拼接会重复计数据；
+- 长数据（长 VARCHAR / BLOB）v1 策略：绑定固定缓冲，截断（indicator 为负——`SQL_NO_TOTAL` 或 `SQL_NTS`——或超出缓冲）时经 `SQLGetData` 循环重取**完整值**整体替换——MariaDB Connector/ODBC 在截断续读时返回的是全量值而非剩余部分，追加式拼接会重复计数据；续读块里可用的部分是第一个 NUL 之前，驱动把剩余恰填满一整块时可以不再写结尾 NUL，故取用按缓冲宽度界定，不拿 `strlen` 当断点；`SQL_SUCCESS_WITH_INFO` 而这一块没交出新字节即抛（驱动不再推进，原地循环等不到尽头）。带内嵌 NUL 的文本值只要走上这条续读通道就断在第一个 NUL；整值落在缓冲内、驱动又给出正长度的，照 indicator 原样取回，NUL 也算数据；
 - 块取行下 `SQLGetData` 只读驱动当前行，而并非每家驱动都认块内 `SQLSetPos`
   （MariaDB Connector/ODBC 返回成功却不定位，块内非首行的长值会读成首行的）。故凡
   声明宽度可能超出绑定槽的变长列——字符列 `display_size × 4`、二进制列
@@ -737,7 +738,11 @@ std::size_t r = db.remove(people);   // 同上；无键列可推断且未给 whe
     行数），这里不绕——`insert()` 数的是提交的行数，`update()` / `remove()` 又
     被下面那两条能力位送进折叠，两笔账都不经它；
   - **行式**：`bind_batch_params(std::vector<params>)` 把行式 `sql_value` 转置成列
-    数组，逐块重绑
+    数组，逐块重绑。转置前逐列先核一遍形状：这条通道按每列第一个非 NULL 值定缓冲
+    类型，其后各行只按那一种取值，换了形状的值会取空、留在预置的 NULL indicator 上
+    悄悄写成 NULL，所以一条列里出现两种非 NULL 形状即在绑定前抛 `backend_error`
+    （带列号与行号）；NULL 行是本通道缺值的写法，不算换形状。实体入口每列类型由
+    成员定，天然均匀，这条闸拦的是直接用 backend 接口的批量；
 - 顺序上先写缓冲后绑定：部分驱动（MariaDB ODBC）在 `SQLBindParameter` 时就会读缓冲内容
 - `orm::auto_commit()`（默认 true）就是**连接的 autocommit 属性**，管住这个 orm 的
   所有写：开着时单实体 `update`/`remove`、`execute`/`execute_update` 与批量都是
@@ -2017,6 +2022,13 @@ PQputCopyData(pg, ...);                     // 用户自行驱动原生操作
    dollar-quoted 体、嵌套块注释与 `E''`，成对的 `??` 则是留给服务端自己那批 `?` 算符
    （jsonb、几何）的写法。
 
+   事务收尾不信服务端的答话，读它自己的状态：PostgreSQL 把落在已中断事务
+   （`PQTRANS_INERROR`）上的 `COMMIT` 当回滚执行、照样回 `COMMIT OK`，所以
+   `commit()` 先查 `PQtransactionStatus`，中断态下改发 `ROLLBACK` 把会话落回
+   干净、再抛带 `25P02` 的 `pq_error`——干净返回的 `commit()` 永远意味着工作
+   真的保住了。`rollback()` 在无已开事务而状态为中断时也补发一次 `ROLLBACK`，
+   不留 aborted 状态给下一笔语句。
+
    目录读取经 `pg_catalog` 答出（`schema_catalog.hpp/.cpp` 的 `pq_schema_meta`）：
    `tables` / `exact_tables` 读 `pg_class`+`pg_namespace`，只留 `relkind` 为 `r`/`p`
    的普通表与分区表，挡掉 `pg_catalog`/`information_schema`/`pg_toast%`/`pg_temp%`；
@@ -2118,7 +2130,9 @@ Oracle ODBC 报 `0` 而部分版本曾全静默 no-op）。`SQL_PARAM_ARRAY_ROW_
 失败）；execute 成功 + SELECT 正确 → `pass`；成功但行状态不符 → `fail`（抓 Oracle
 静默 no-op）。`rowcount_totals` 在 UPDATE 验证时顺带测得（N 个命中行 `affected==N` →
 true）。scratch DDL 按方言族选（mysql/postgresql 临时表、sql_server `#` 表、
-oracle/none 永久唯一名 + RAII DROP），3 列只绑 int32/string。小样本 caveat：3 列/N=8
+oracle/none 永久名——进程随机底数加进程内计数器拼出，另一个进程或它崩溃的残留
+占不到同名表，否则第二条会话的建表先撞死、探针把一份本来有的能力悄悄判否；加
+RAII DROP），3 列只绑 int32/string。小样本 caveat：3 列/N=8
 不能证明所有形状与参数集大小安全，集成 suite 是后盾。
 
 **CI 校验（方向 A）。** `tests/probe/probe_array_dml.cpp` 白盒构造
@@ -2523,6 +2537,8 @@ bool log_enabled(log_level level);
   `{` / `}` 或首尾空白的值裹花括号、括号内的 `}` 写作 `}}`）、
   `test_odbc_catalog`（目录行再筛的那条判据是纯函数：只差大小写算同名，`user_orders`
   对 `userxorders` 不算——后者正是 pattern 里 `_` 的通配，两侧任一为空则留）、
+  `test_odbc_batch_types`（行式批量列的形状核对是纯函数：均匀列夹 NULL 行放行，
+  int32 撞 int64、整数撞文本都在绑定前抛 `backend_error`）、
   `test_odbc_error_is_backend_error`（`odbc_error` 就是 `backend_error`，
   无需二次翻译）；
   `uniorm_oracle_oci_unit_tests` 链接 Oracle 那一家——`test_oracle_oci_sql_text`
@@ -2553,7 +2569,8 @@ bool log_enabled(log_level level);
 从不同数据/列名确认改选正确对象；临时同名表改变搜索路径后仍访问明确限定的表，
 无精确候选时报告歧义。每格实测拼法记一行 `note:`；测试代码已加入，真实运行结果
 以当次测试输出为准，不据旧 CI 结果推断本次通过）、事务
-commit/rollback/析构回滚、批量插入（含空 optional 写 NULL、1500 行跨 `paramset_size` 分批）、批量 update / 批量 remove（实体版按主键与全字段两种 WHERE，含一张复合主键表验证单实体与批量都按全部键列命中、非键行不被牵连，动态版 `orm::update(table)` / `orm::remove(table)`，以及 `query<T>::set/update/remove` 与无 WHERE / 无 SET / WHERE 字段未映射的守卫抛错）、语句缓存（hit/miss 计数、流式 result_set 借出期间并发 miss、清空）、跨层错误上报（驱动失败以 `backend_error` 捕获，核对 `backend_name()`
+commit/rollback/析构回滚（libpq 那一家另钉一条：提交撞上已中断事务时先回滚再抛错，
+一行都不落盘；不是 PostgreSQL 的腿自己报 skip）、批量插入（含空 optional 写 NULL、1500 行跨 `paramset_size` 分批）、批量 update / 批量 remove（实体版按主键与全字段两种 WHERE，含一张复合主键表验证单实体与批量都按全部键列命中、非键行不被牵连，动态版 `orm::update(table)` / `orm::remove(table)`，以及 `query<T>::set/update/remove` 与无 WHERE / 无 SET / WHERE 字段未映射的守卫抛错）、语句缓存（hit/miss 计数、流式 result_set 借出期间并发 miss、清空）、跨层错误上报（驱动失败以 `backend_error` 捕获，核对 `backend_name()`
 与 SQLSTATE 诊断）、连接池借还与超时、连接池维护（心跳保活计数、空闲超时驱逐、失败心跳丢弃；"排空"一律轮询等待而非单次采样，因为正被心跳的连接仍计入 `idle_count()`）；
   异步段七条（除第五条与第六条那两把故意从空会话起步的，其余都跑在同一份注册配方
   上——`map_entities(Session&)` 那一个模板对着手里那把对象写，两个面共用；各自只

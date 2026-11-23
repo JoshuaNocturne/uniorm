@@ -123,8 +123,11 @@ dialect dialect::detect(std::string_view dbms_name) {
     detected.ansi_pagination = false;
     detected.table_qualification = qualification::catalog;
     detected.batch_write = batch_family::mysql;
-    // No ceiling here was read off a server: this family's folded shape is
-    // the one the core has not run against a live MySQL or MariaDB yet.
+    // This 4000 was never read off a server: no live MySQL or MariaDB has
+    // run this family's folded shape under test. An unmeasured driver
+    // version falls to the insert-only prior, whose batch update and delete
+    // do route through the fold -- such a leg is where the number gets its
+    // first reading, and a measurement should replace it.
     detected.fold_parameter_ceiling = 4000;
   } else if (lower.find("postgresql") != std::string::npos) {
     // The same habit one server over, in the other direction: an unquoted

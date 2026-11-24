@@ -2571,7 +2571,11 @@ bool log_enabled(log_level level);
   `orm` 也能从串换乘四件套（先交回借到的那条，两边各是一池）；被淘汰后补上的
   连接仍按四件套配方打开——池留的是配方，不是替它拼好的串；空闲期间死掉的连接
   ——假 backend 的 `is_open()` 报死——在 `acquire()` 被退役、另开一条新的，
-  名额扣回，断言用的是建连计数而非指针，免得分配器复用旧地址误判）、
+  名额扣回，断言用的是建连计数而非指针，免得分配器复用旧地址误判；八条线程抢
+  四条连接各二百五十轮，钩的是每条租约恰好各一次的成对动作——调用方把连接取进
+  手动提交、池在归还时先回滚——同一条连接落到两人手里就会在计数上露出来，于是
+  断言并发持有数不越 `size` 也确实越过 1（从不重叠的跑法等于没压）、建连数不越
+  `size`、借出与归还两笔清平、超时零）、
   `test_result_set_may_outlive_its_connection`（一个语句析构时读 parent 连接、
   并按销毁顺序留痕的假 backend：`result_set` 活过产出它的 `connection` 时，
   句柄先于 backend 销毁、读到的 parent 魔数仍对——check-in 闭包握着 backend
@@ -2654,7 +2658,7 @@ bool log_enabled(log_level level);
   `test_oracle_oci_connection`（没有 target 直接拒；`user/pass@host:port/service` 按
   最后一个 `@` 切，连接描述符里不含 `@` 而口令可以，于是这一刀总是落在对的位置；出错
   时消息只带连接那半，用户名与口令一个字也不进去）；
-- **集成测试**（已实现，DSN/凭据由 `UNIORM_IT_DSN` / `UNIORM_IT_USER` / `UNIORM_IT_PWD` 指定，连接串按 `UNIORM_IT_BACKEND` 选中那一家的语法拼（默认 odbc，凭据以 `UID`/`PWD` 写进串里），同一份凭据也按四件套连一次——两条路线连到同一处才算对上，而且四件套那一侧不止跑一条语句：目录里认得出这张夹具表（backend 不答目录时这一段自己报 skip）、`orm` 能从串换乘过来、调用方自己拿四件套建的池也借得出连接，一个不存在的 target 则由这一家自己直接拒（ODBC 侧 `SQLDriverConnect` 不带提示，Oracle 侧不认识的 service 回 `ORA-12154`，CI 上都不会等输入）；连不上时 ctest SKIP）：execute/params 往返、动态行（含 `connection::execute` 显式块取行大小 0 退回逐行）、块大小顺带定下的读缓冲（`test_block_read_ahead`：600 行 VARCHAR(250)，同一张表按块 1 / 7 / 100 / 4000 / 2 各读一遍逐行比对，另走 `one()`、块 4 / 块 0 / 块 250 的 `result_set` 遍历与 `count()`，Oracle 那条腿还另接一次 `uniorm::log` sink，断言一趟正常读里不出现 `oci.statement` 的拒绝记录——那个数在 21.13 客户端上读不回来，这条记录是外部唯一看得见读缓冲有没有被接受的口子，见 §4.5.3）、DECIMAL 动态路径（`DECIMAL(20,4)` / `(20,0)` / `(38,0)` 取回精确定点字面量与 `column_info::scale`，按需解析成 double、scale-0 解析成 int64，带小数或超 int64 范围的字面量抛 `type_mismatch`，NULL 仍报 `is_null`）、DECIMAL 映射路径（`DECIMAL(20,4)` / 一个最宽标度列（精度按这一家收得下的写法）/ `(20,0)` 三列配 `decimal_t` 与 `std::optional<decimal_t>` 成员：批量插入与实体读回逐字核对 `to_literal`（含那个最宽标度列第 30 位为 1 的值——没有任何整型或 double 装得下它）、聚合投影、动态行 `get<decimal_t>`、以 `decimal_t` 为右值的 `where(gt(&T::amount, ...))` 落到同一字面量）、聚合投影（含长字符串与 timestamp）、注册实体读手写 SQL（列序打乱仍按列名配对，缺列报 `column_not_found`）、converter 往返（批量插入、实体物化含 NULL、
+- **集成测试**（已实现，DSN/凭据由 `UNIORM_IT_DSN` / `UNIORM_IT_USER` / `UNIORM_IT_PWD` 指定，连接串按 `UNIORM_IT_BACKEND` 选中那一家的语法拼（默认 odbc，凭据以 `UID`/`PWD` 写进串里），同一份凭据也按四件套连一次——两条路线连到同一处才算对上，而且四件套那一侧不止跑一条语句：目录里认得出这张夹具表（backend 不答目录时这一段自己报 skip）、`orm` 能从串换乘过来、调用方自己拿四件套建的池也借得出连接，一个不存在的 target 则由这一家自己直接拒（ODBC 侧 `SQLDriverConnect` 不带提示，Oracle 侧不认识的 service 回 `ORA-12154`，CI 上都不会等输入）；连不上时 ctest SKIP）：execute/params 往返、动态行（含 `connection::execute` 显式块取行大小 0 退回逐行）、块大小顺带定下的读缓冲（`test_block_read_ahead`：600 行 VARCHAR(250)，同一张表按块 1 / 7 / 100 / 4000 / 2 各读一遍逐行比对，另走 `one()`、块 4 / 块 0 / 块 250 的 `result_set` 遍历与 `count()`，Oracle 那条腿还另接一次 `uniorm::log` sink，断言一趟正常读里不出现 `oci.statement` 的拒绝记录——那个数在 21.13 客户端上读不回来，这条记录是外部唯一看得见读缓冲有没有被接受的口子，见 §4.5.3）、libpq 那一条腿的单批参数上限（`test_libpq_param_ceiling_split`：四列一行、16385 行、`paramset_size` 就按 16385 交，于是这一批是 65540 个参数——协议用两字节数一条语句的参数，整批只能成两条语句，切法是 8193 与 8192 两组而不是一整组带一行尾巴；断言插入计数与总数，再读切缝两侧各一行加首尾两行；把 `65535/列数` 那一步拆掉，这条腿就在 `execute a folded statement` 上抛）、DECIMAL 动态路径（`DECIMAL(20,4)` / `(20,0)` / `(38,0)` 取回精确定点字面量与 `column_info::scale`，按需解析成 double、scale-0 解析成 int64，带小数或超 int64 范围的字面量抛 `type_mismatch`，NULL 仍报 `is_null`）、DECIMAL 映射路径（`DECIMAL(20,4)` / 一个最宽标度列（精度按这一家收得下的写法）/ `(20,0)` 三列配 `decimal_t` 与 `std::optional<decimal_t>` 成员：批量插入与实体读回逐字核对 `to_literal`（含那个最宽标度列第 30 位为 1 的值——没有任何整型或 double 装得下它）、聚合投影、动态行 `get<decimal_t>`、以 `decimal_t` 为右值的 `where(gt(&T::amount, ...))` 落到同一字面量）、聚合投影（含长字符串与 timestamp）、注册实体读手写 SQL（列序打乱仍按列名配对，缺列报 `column_not_found`）、converter 往返（批量插入、实体物化含 NULL、
 `in` 谓词、投影、构建器 `set`/批量 update、动态行 `get<T>`）、orm validate（含 strict
 的列缺失/可空/类型族三条失败路径）、查询构建器全谓词与分页（末了拿 `build_select()`
 的文本比对这条连接自己那家方言的引号；再把策略声明成 `upper` 重发一次——表名跟着升

@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstddef>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -449,6 +450,159 @@ void test_registry_keys_uri_strings_apart() {
   CHECK(bool(other));
 }
 
+// A pool of four under eight callers: nothing may be in two hands at once, no
+// fifth connection may open, and no lease may go missing on the way back. The
+// two ends of a hold are the calls the lease itself drives -- a caller taking
+// the connection into manual mode, and the pool rolling that mode back before
+// it puts the connection idle -- so a connection handed to two borrowers at
+// the same time shows here as a second hold over one that was never given
+// back.
+class stress_connection : public uniorm::backend::connection_iface {
+public:
+  std::atomic<int> in_hands{ 0 };
+  std::atomic<int> takes{ 0 };
+  std::atomic<int> gives{ 0 };
+  std::atomic<bool> over_held{ false };
+  std::atomic<bool> over_released{ false };
+
+  void open(std::string_view) override {}
+  void open(uniorm::connection_spec const&) override {}
+  void close() override {}
+  bool is_open() const noexcept override {
+    return true;
+  }
+  void set_autocommit(bool enabled) override {
+    if (enabled) {
+      return;
+    }
+    // A second take over a connection nobody gave back is the same connection
+    // in two hands at once.
+    if (in_hands.fetch_add(1) != 0) {
+      over_held.store(true);
+    }
+    takes.fetch_add(1);
+  }
+  void commit() override {}
+  void rollback() override {
+    // The gauge reads zero already, so this lease came back twice.
+    if (in_hands.fetch_sub(1) <= 0) {
+      over_released.store(true);
+    }
+    gives.fetch_add(1);
+  }
+  uniorm::backend::capabilities caps() const noexcept override {
+    return {};
+  }
+  std::string dbms_name() const override {
+    return "stress";
+  }
+  std::unique_ptr<uniorm::backend::statement_iface>
+  create_statement() override {
+    return nullptr;
+  }
+  void* native_handle() noexcept override {
+    return nullptr;
+  }
+};
+
+struct stress_ledger {
+  std::mutex mutex;
+  std::vector<stress_connection*> made;
+  std::atomic<int> openings{ 0 };
+
+  void reset() {
+    std::lock_guard lock(mutex);
+    made.clear();
+    openings.store(0);
+  }
+  void note(stress_connection* conn) {
+    std::lock_guard lock(mutex);
+    made.push_back(conn);
+    openings.fetch_add(1);
+  }
+};
+
+stress_ledger& ledger() {
+  static stress_ledger state;
+  return state;
+}
+
+// More callers than connections, for long enough that a waiter has to queue
+// rather than find an idle one: eight threads against a pool of four, each
+// taking every lease it can back into manual mode so the return path runs the
+// same way every time.
+void test_pool_holds_its_size_under_threads() {
+  ledger().reset();
+  uniorm::backend::registry::instance().register_backend("poolstress", [] {
+    auto conn = std::make_unique<stress_connection>();
+    ledger().note(conn.get());
+    return conn;
+  });
+
+  uniorm::pool_options opts;
+  opts.target = "poolstress://x";
+  opts.size = 4;
+  opts.acquire_timeout = std::chrono::seconds(5);
+  opts.heartbeat_interval = std::chrono::milliseconds(0);
+
+  std::atomic<int> live{ 0 };
+  std::atomic<int> widest{ 0 };
+  std::atomic<int> timeouts{ 0 };
+  std::atomic<int> failures{ 0 };
+  std::size_t const threads = 8;
+  std::size_t const rounds = 250;
+
+  {
+    uniorm::connection_pool pool(opts);
+    std::vector<std::thread> workers;
+    for (std::size_t worker = 0; worker < threads; ++worker) {
+      workers.emplace_back([&] {
+        for (std::size_t round = 0; round < rounds; ++round) {
+          try {
+            uniorm::orm db(pool);
+            db.auto_commit(false);
+            int const now = live.fetch_add(1) + 1;
+            int seen = widest.load();
+            while (now > seen && !widest.compare_exchange_weak(seen, now)) {
+            }
+            live.fetch_sub(1);
+          } catch (uniorm::pool_timeout const&) {
+            timeouts.fetch_add(1);
+          } catch (...) {
+            failures.fetch_add(1);
+          }
+        }
+      });
+    }
+    for (std::thread& worker : workers) {
+      worker.join();
+    }
+
+    CHECK(timeouts.load() == 0);
+    CHECK(failures.load() == 0);
+    // The pool never issued more leases than it was sized for -- and two
+    // callers did hold one at a time, or this run overlapped nothing.
+    CHECK(widest.load() >= 2);
+    CHECK(widest.load() <= 4);
+    CHECK(ledger().openings.load() <= 4);
+    CHECK(int(pool.idle_count()) == ledger().openings.load());
+
+    int takes = 0;
+    int gives = 0;
+    for (stress_connection* conn : ledger().made) {
+      CHECK(conn->over_held.load() == false);
+      CHECK(conn->over_released.load() == false);
+      // Every connection came back the number of times it went out, and is
+      // nobody's at the end.
+      CHECK(conn->in_hands.load() == 0);
+      takes += conn->takes.load();
+      gives += conn->gives.load();
+    }
+    CHECK(takes == int(threads * rounds));
+    CHECK(gives == takes);
+  }
+}
+
 }  // namespace
 
 void test_pool() {
@@ -464,5 +618,6 @@ void test_pool() {
   test_spec_pool_refills_from_the_spec();
   test_registry_waiter_does_not_stall_other_keys();
   test_registry_keys_uri_strings_apart();
+  test_pool_holds_its_size_under_threads();
   test_registration_meets_the_maintainer();
 }

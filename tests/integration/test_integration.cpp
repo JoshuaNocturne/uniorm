@@ -764,6 +764,76 @@ void test_block_read_ahead(orm& db) {
   db.execute_update(std::string("DROP TABLE ") + table);
 }
 
+// The protocol counts a statement's parameters in two bytes, so a batch
+// carrying more than 65535 of them cannot reach the server as one statement.
+// Where to cut is decided inside the backend, out of the caller's view: the
+// leg hands over one array of more rows than one statement can carry and holds
+// the server to the whole of it -- every row, including the pair the cut falls
+// between, and the second text the uneven groups make.
+struct ceiling_split_row {
+  std::int64_t id;
+  std::int64_t a_value;
+  std::int64_t b_value;
+  std::string tag;
+};
+
+void test_libpq_param_ceiling_split(orm& db) {
+  if (the_target.scheme != "postgresql") {
+    return;
+  }
+  char const* table = "uniorm_it_ceiling";
+  // Four columns to a row, so one statement carries 65535/4 = 16383 rows and
+  // 16385 of them cannot go out as one. The backend cuts the batch into equal
+  // groups rather than a full one and a short tail, and an odd row count lands
+  // on 8193 and 8192: two different statement texts, which is the pair a
+  // repeating sweep would otherwise alternate between.
+  std::size_t const row_count = 16385;
+  std::vector<ceiling_split_row> written;
+  for (std::size_t index = 0; index < row_count; ++index) {
+    written.push_back(
+      ceiling_split_row{ std::int64_t(index) + 1, std::int64_t(index) * 3,
+        std::int64_t(index) % 97, "tag " + std::to_string(index) });
+  }
+
+  db.execute_update(std::string("DROP TABLE IF EXISTS ") + table);
+  db.execute_update(std::string("CREATE TABLE ") + table + " (id " +
+                    the_target.integer_type +
+                    " NOT NULL PRIMARY KEY, a_value " +
+                    the_target.integer_type + " NOT NULL, b_value " +
+                    the_target.integer_type + " NOT NULL, tag VARCHAR(32))");
+  db.map<ceiling_split_row>(table)
+    .primary_key("id", &ceiling_split_row::id)
+    .column("a_value", &ceiling_split_row::a_value)
+    .column("b_value", &ceiling_split_row::b_value)
+    .column("tag", &ceiling_split_row::tag);
+
+  std::size_t const asked_chunk = db.paramset_size();
+  db.paramset_size(row_count);
+  std::size_t const inserted = db.insert(written);
+  db.paramset_size(asked_chunk);
+  CHECK(inserted == row_count);
+  CHECK(db.query<ceiling_split_row>().count() == row_count);
+
+  // The first row, the last of each group, the first of the next one, and the
+  // tail: a dropped group, or a second group that replayed the first rows,
+  // shows up here rather than in the tally alone.
+  for (std::size_t index :
+    { std::size_t(0), std::size_t(8192), std::size_t(8193), row_count - 1 }) {
+    std::optional<ceiling_split_row> read =
+      db.query<ceiling_split_row>()
+        .where(eq(&ceiling_split_row::id, written[index].id))
+        .one();
+    CHECK(bool(read));
+    if (read) {
+      CHECK(read->a_value == written[index].a_value);
+      CHECK(read->b_value == written[index].b_value);
+      CHECK(read->tag == written[index].tag);
+    }
+  }
+
+  db.execute_update(std::string("DROP TABLE ") + table);
+}
+
 // Full 64-bit range through both read paths. Oracle's ODBC driver carries an
 // int64 as decimal text, so a value past 32 bits is the shape that exposes a
 // bind/read mapping which only ever saw small ids.
@@ -3465,6 +3535,8 @@ int main() {
     guarded(
       "test_zero_block_fetch_size", [&] { test_zero_block_fetch_size(db); });
     guarded("test_block_read_ahead", [&] { test_block_read_ahead(db); });
+    guarded("test_libpq_param_ceiling_split",
+      [&] { test_libpq_param_ceiling_split(db); });
     guarded("test_int64_full_range", [&] { test_int64_full_range(db); });
     guarded("test_projection", [&] { test_projection(db); });
     guarded("test_registered_read_by_label",

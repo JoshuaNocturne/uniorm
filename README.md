@@ -58,6 +58,12 @@ The full API reference is [docs/design.md](docs/design.md).
   order: a wide LONG query (one that triggers the growth) should carry
   `ORDER BY`, since without it SQL guarantees no order and the skip could land
   on the wrong row
+- **Read-ahead that follows the block** — on OCI a fetch of N rows only skips
+  the round trip when those N rows are already across the wire, so the fetch
+  block is also what the client is asked to hold: `OCI_ATTR_PREFETCH_ROWS` is
+  written as each cursor opens, floored at one default block so a one-row-at-a
+  time read stays survivable, and set to 1 for a `LONG` cursor. The other two
+  backends have no round trip per fetch to shorten, so nothing is asked there
 - **Custom type mapping** — specializing `uniorm::converter<T>` names the SQL
   representation a domain type binds as; strict `validate()` compares it
   against the live column type
@@ -374,6 +380,37 @@ db.update(ages);   // SET age only; name is untouched
 Two sizes are settable on the `orm` and clamped if you hand them a zero:
 `paramset_size` (default 1000) rows per bound execute, and `row_array_size`
 (default 100) rows per fetch on every read path.
+
+On the OCI backend that same block is also the read-ahead. A fetch of N rows
+only skips the round trip when those N rows are already across the wire, so the
+plugin writes `OCI_ATTR_PREFETCH_ROWS` on the statement handle as each cursor
+opens, at the block width with a floor of one default block — narrowing the
+block changes how rows are copied, it does not turn a read into one round trip
+per row. Wanting a row at a time off the wire is not offered. The byte limit
+is left where the client put it: writing 0 there is not switching it off, it
+is a smaller limit, and the same read came out a quarter slower at the default
+block with it, at the same peak. A `LONG` / `LONG RAW` cursor gets 1 row,
+since that path fetches a row at a time and re-executes on truncation, so
+held-ahead rows would only be rows the fetch throws away. Statement handles
+are cached and come back holding whatever their last cursor was given, so the
+row count is written on every open; a client that will not take it is logged
+at `debug` under `oci.statement`, not raised.
+
+The other two backends have nothing to shorten. One `PQexecPrepared` brings the
+whole result to the client, so libpq reads from memory; on ODBC the rows one
+fetch turns over *is* `SQL_ATTR_ROW_ARRAY_SIZE`, the block the driver is already
+told. Reading the same 20000-row table of 60-byte text through
+`db.query<Row>().all()` at block sizes 1 / 100 / 4000, one session, the best of
+four passes: 16 / 11 / 12 ms over MariaDB's ODBC driver and 115 / 111 / 91 ms
+over libpq — flat, the shape of a result already in memory. Over OCI the same
+three blocks read 1217 / 702 / 142 ms, against 83317 / 1752 / 147 ms when the
+block width is not carried to the client: the first cell is two hundred round
+trips instead of twenty thousand, and the last one is five round trips either
+way, which is why the widest block gains nothing. Wide rows flatten the curve —
+5000 rows of 3901 bytes read 1701 ms at block 100 and 1335 ms at block 4000 —
+and the read-ahead is paid for in memory: peak resident size went from 84 MiB
+after the write to 152 MiB across the read, where the same read with no
+read-ahead stops at 121 MiB, the result vector alone being some 20 MiB.
 
 A folded statement carries the whole chunk in its own text. Seeded tuples
 repeat one `UNION ALL` row per row, so `paramset_size` is only how far it may
@@ -705,10 +742,12 @@ ctest --test-dir build --output-on-failure
   case by case; row count via `UNIORM_PERF_ROWS` (default 10000); skip with
   `ctest -LE perf`
 - **perf_tests_oracle** — the same uniorm cases over the Oracle plugin beside
-  OCI called by hand, where its array rows stand beside the row prefetch the
-  plugin never asks for; the array shape that writes its row count on the bind
-  is refused by this client and server pair, so it goes unmeasured, and the
-  target is read as `host[:port]/service`
+  OCI called by hand, where its array rows stand beside a row prefetch set on
+  the statement handle by hand — the same attribute the plugin now writes for
+  its own reads off the fetch block, which these cases set to 1000 rows; the
+  array shape that writes its row count on the bind is refused by this client
+  and server pair, so it goes unmeasured, and the target is read as
+  `host[:port]/service`
 - **perf_tests_libpq** — the same uniorm cases over the libpq plugin beside
   libpq called by hand, where a batch is one prepared statement per row; the
   one statement carrying a thousand rows' VALUES lists stands on its own — the

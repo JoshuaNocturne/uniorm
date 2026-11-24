@@ -673,7 +673,8 @@ class connection {
 分批提交，两条通道并存——行式 `bind_batch_params(std::vector<params>)`
 （backend 内部转置成列存）与列式 `batch_writer_iface`（调用方直接写列缓冲，
 按 `caps().columnar_batch` 选用，ODBC 为 true）。逐行读写只是块大小为 1
-的退化情形。
+的退化情形。同一个块大小在 OCI 那家还兼作读缓冲——一次 fetch 交回 N 行，就要客户端
+手里先有 N 行，否则块再宽也是一次往返一块（§4.5.3）。
 
 #### 4.5.1 预编译语句缓存
 
@@ -897,6 +898,53 @@ std::size_t r = db.remove(people);   // 同上；无键列可推断且未给 whe
   MySQL 系服务端），也仍未读它的逐组状态
 - 因此 `column_meta` 除 `write`（populate）/`read`（行式值提取）/`make_binding`
   （查询直绑）外，还带列式通道要用的 `write_to_param_buffer` 与 `get_string_size`
+
+#### 4.5.3 读缓冲（prefetch）
+
+块大小说的是"一次 fetch 交回多少行"。在 OCI 这一家，同一个数还决定"客户端手里先备好
+多少行"：一次 fetch 交回 N 行，只有这 N 行已经过了线，它才不等往返。所以插件在游标打
+开前把 `OCI_ATTR_PREFETCH_ROWS` 写成本次的块宽——块 100 就是每 100 行一次往返，块
+4000 就是每 4000 行一次。没有第四个旋钮：ODBC 那边"一次 fetch 交回多少行"本来就是
+`SQL_ATTR_ROW_ARRAY_SIZE`，再挂一个"读缓冲"只是同一个数的第二个名字；libpq 那边一次
+`PQexecParams` / `PQexecPrepared` 就把整个结果取到客户端，那儿没有"每 fetch 一次往
+返"可缩短。
+
+块宽之外只有一处不是照抄：读缓冲的下限是一个默认块（100 行）。把块调小是为了让行一次
+少拷几格，不是为了把往返调成一轮一行——慢的是往返，不是拷贝形状。于是块 1 读 Oracle
+仍然每 100 行一次往返。反过来，要一行一次往返地流式读，现在没有开关。
+
+`OCI_ATTR_PREFETCH_MEMORY` 不动它：写 0 不是把字节上限取消，是换上一个更小的——同一
+个构建两个版本各测两轮，写它的那一档慢四分之一上下，而峰值驻留没差别。行数才是调用
+方说过的数，一个换不来东西的上限就不写。含 `LONG` / `LONG RAW` 的游标写 1：那一路
+逐行取、截断即重执行（§5.4），手里留着整块只会让重执行丢掉已交回的行。
+
+这条属性只认语句句柄：对着 `OCI_HTYPE_SVCCTX` / `OCI_HTYPE_SERVER` /
+`OCI_HTYPE_SESSION` / `OCI_HTYPE_ENV` 设它都被拒，且不落一条诊断。句柄是缓存着复用
+的，带着上一条游标拿到的数回来，所以每次打开游标都写一遍；写不上不报错，一条 debug
+级 `oci.statement` 记下客户端的答话（§5.4）。
+
+同一张 20000 行 × VARCHAR2(64) 的表，走 `db.query<Row>().all()`，两个构建在同一会话
+里前后量，每格取四轮的最小值、无旁路观察者；最后一行是把这条属性写从 plugin 里摘掉
+之后再跑同一趟用例：
+
+| backend | 块 1 | 块 100（默认） | 块 4000 |
+|---|---|---|---|
+| ODBC（MariaDB 10.6 / ma-3.1.12） | 16 ms | 11 ms | 12 ms |
+| libpq（PostgreSQL 18.6） | 115 ms | 111 ms | 91 ms |
+| OCI（26ai Free） | 1217 ms | 702 ms | 142 ms |
+| OCI，块宽不带读缓冲 | 83317 ms | 1752 ms | 147 ms |
+
+前两行在三个块之间几乎不动，正是"结果已在客户端"的形状。Oracle 那两行同一张表同一个
+块，差别只在读缓冲跟不跟着块走：块 1 那一格是两万次往返对两百次往返，差两个数量级。
+窄行上块 4000 比块 100 快五倍；换成宽行（5000 行 × 3901 字节）只差 21%（1701 ms
+与 1335 ms），那时线的宽度先到了。读缓冲确实吃内存：宽行那一趟带它读下来，进程峰值驻
+留从 84 MiB 涨到 152 MiB，不带它只涨到 121 MiB——装结果的 vector 自己就占二十来
+MiB。块 4000 那一格两边一样（142 对 147 ms）：整张表本来就只剩五次往返，读缓冲没有
+往返可省。
+
+含 `LONG` 的那一路实测看不出读缓冲有什么用：1000 行 LONG，不写它是 9516 / 10490 ms，
+写 4000 是 7326 / 10837 ms，两次的散布互相覆盖，差别在轮间噪声里——于是这一路按最保守
+的那个 1 写。这两个数是另一趟会话里取的，别拿它们跟上面那张表对表。
 
 ### 4.6 聚合 struct 投影（零注册路径）
 
@@ -1547,7 +1595,8 @@ worker 池的一条线程上。异步只回答三件事——这次同步调用�
   着，说的是"连里面的租约一起拿走"，现在没有用例走它。装 task 那一组
   （`connect`/`disconnect`/`execute_update`/实体批量三件/`query` 两式/
   `auto_commit`/`commit`/`rollback`/`begin`）、五个只改内存的配置面按名字转发
-  （`map`（`:575`）、`row_array_size`、`paramset_size`、`identifier_case`、
+  （`map`（`:575`）、`row_array_size`、`paramset_size`、
+  `identifier_case`、
   `batch_write_policy`，外加
   `auto_commit` 的读档——写它仍是一次操作）、`run_on`（`:601`）、`resume_on`
   （`:608`）、`submit_limit`（`:612`、`:614`）、`pending()`（`:617`），以及按值
@@ -2004,6 +2053,17 @@ PQputCopyData(pg, ...);                     // 用户自行驱动原生操作
    （只有直接用 `statement_iface` 才走到——核心的批量入口自始包着外层事务）把
    失败行之前已跑的那段提交掉，这与逐行各自提交时服务端本已落盘的部分同量，
    异常照常抛；那一段提交本身再失败，warn 级日志说明其去留未知。
+
+   读缓冲跟着块大小走，不另立一个数：游标打开前把 `OCI_ATTR_PREFETCH_ROWS` 写在这
+   条语句句柄上，取的就是本次的块宽（下限是一个默认块），行数才是调用方说过的数
+   （§4.5.3）。`OCI_ATTR_PREFETCH_MEMORY` 不动它：写 0 不是把字节上限取消，是换上
+   一个更小的，实测默认块那一档慢四分之一上下而峰值驻留没变——一个换不来东西的上
+   限就不写。属性只认语句句柄，`OCISvcCtx` / server / session / env 四种句柄上设它
+   都被拒且不落一条诊断。含 `LONG` / `LONG RAW` 的游标写 1：那一路本来就逐行取、
+   截断即重执行，行缓冲只会让 fetch 丢掉整块已取到的行。这个数每次打开游标都写，块
+   退回默认时也一样：语句句柄带着上一条游标的数回到缓存里，不写回去就是替下一条游
+   标留了一个没人要求的预取。设不上不报错——一条 debug 级 `oci.statement` 记下客户
+   端的答话。
 
    结果列里的 `LONG` / `LONG RAW` 描述不出长度，定长 define 会把宽值截断
    （indicator 报 -2、ORA-01406）。这一家把它们逐行取（`OCIStmtFetch2` 迭代 1）
@@ -2594,7 +2654,7 @@ bool log_enabled(log_level level);
   `test_oracle_oci_connection`（没有 target 直接拒；`user/pass@host:port/service` 按
   最后一个 `@` 切，连接描述符里不含 `@` 而口令可以，于是这一刀总是落在对的位置；出错
   时消息只带连接那半，用户名与口令一个字也不进去）；
-- **集成测试**（已实现，DSN/凭据由 `UNIORM_IT_DSN` / `UNIORM_IT_USER` / `UNIORM_IT_PWD` 指定，连接串按 `UNIORM_IT_BACKEND` 选中那一家的语法拼（默认 odbc，凭据以 `UID`/`PWD` 写进串里），同一份凭据也按四件套连一次——两条路线连到同一处才算对上，而且四件套那一侧不止跑一条语句：目录里认得出这张夹具表（backend 不答目录时这一段自己报 skip）、`orm` 能从串换乘过来、调用方自己拿四件套建的池也借得出连接，一个不存在的 target 则由这一家自己直接拒（ODBC 侧 `SQLDriverConnect` 不带提示，Oracle 侧不认识的 service 回 `ORA-12154`，CI 上都不会等输入）；连不上时 ctest SKIP）：execute/params 往返、动态行（含 `connection::execute` 显式块取行大小 0 退回逐行）、DECIMAL 动态路径（`DECIMAL(20,4)` / `(20,0)` / `(38,0)` 取回精确定点字面量与 `column_info::scale`，按需解析成 double、scale-0 解析成 int64，带小数或超 int64 范围的字面量抛 `type_mismatch`，NULL 仍报 `is_null`）、DECIMAL 映射路径（`DECIMAL(20,4)` / 一个最宽标度列（精度按这一家收得下的写法）/ `(20,0)` 三列配 `decimal_t` 与 `std::optional<decimal_t>` 成员：批量插入与实体读回逐字核对 `to_literal`（含那个最宽标度列第 30 位为 1 的值——没有任何整型或 double 装得下它）、聚合投影、动态行 `get<decimal_t>`、以 `decimal_t` 为右值的 `where(gt(&T::amount, ...))` 落到同一字面量）、聚合投影（含长字符串与 timestamp）、注册实体读手写 SQL（列序打乱仍按列名配对，缺列报 `column_not_found`）、converter 往返（批量插入、实体物化含 NULL、
+- **集成测试**（已实现，DSN/凭据由 `UNIORM_IT_DSN` / `UNIORM_IT_USER` / `UNIORM_IT_PWD` 指定，连接串按 `UNIORM_IT_BACKEND` 选中那一家的语法拼（默认 odbc，凭据以 `UID`/`PWD` 写进串里），同一份凭据也按四件套连一次——两条路线连到同一处才算对上，而且四件套那一侧不止跑一条语句：目录里认得出这张夹具表（backend 不答目录时这一段自己报 skip）、`orm` 能从串换乘过来、调用方自己拿四件套建的池也借得出连接，一个不存在的 target 则由这一家自己直接拒（ODBC 侧 `SQLDriverConnect` 不带提示，Oracle 侧不认识的 service 回 `ORA-12154`，CI 上都不会等输入）；连不上时 ctest SKIP）：execute/params 往返、动态行（含 `connection::execute` 显式块取行大小 0 退回逐行）、块大小顺带定下的读缓冲（`test_block_read_ahead`：600 行 VARCHAR(250)，同一张表按块 1 / 7 / 100 / 4000 / 2 各读一遍逐行比对，另走 `one()`、块 4 / 块 0 / 块 250 的 `result_set` 遍历与 `count()`，Oracle 那条腿还另接一次 `uniorm::log` sink，断言一趟正常读里不出现 `oci.statement` 的拒绝记录——那个数在 21.13 客户端上读不回来，这条记录是外部唯一看得见读缓冲有没有被接受的口子，见 §4.5.3）、DECIMAL 动态路径（`DECIMAL(20,4)` / `(20,0)` / `(38,0)` 取回精确定点字面量与 `column_info::scale`，按需解析成 double、scale-0 解析成 int64，带小数或超 int64 范围的字面量抛 `type_mismatch`，NULL 仍报 `is_null`）、DECIMAL 映射路径（`DECIMAL(20,4)` / 一个最宽标度列（精度按这一家收得下的写法）/ `(20,0)` 三列配 `decimal_t` 与 `std::optional<decimal_t>` 成员：批量插入与实体读回逐字核对 `to_literal`（含那个最宽标度列第 30 位为 1 的值——没有任何整型或 double 装得下它）、聚合投影、动态行 `get<decimal_t>`、以 `decimal_t` 为右值的 `where(gt(&T::amount, ...))` 落到同一字面量）、聚合投影（含长字符串与 timestamp）、注册实体读手写 SQL（列序打乱仍按列名配对，缺列报 `column_not_found`）、converter 往返（批量插入、实体物化含 NULL、
 `in` 谓词、投影、构建器 `set`/批量 update、动态行 `get<T>`）、orm validate（含 strict
 的列缺失/可空/类型族三条失败路径）、查询构建器全谓词与分页（末了拿 `build_select()`
 的文本比对这条连接自己那家方言的引号；再把策略声明成 `upper` 重发一次——表名跟着升
@@ -2661,8 +2721,10 @@ commit/rollback/析构回滚（libpq 那一家另钉一条：提交撞上已中�
   分批），加 `SQLBindCol` + `SQLFetch` 的全表扫描（对应实体直绑路径）与单行
   `LIMIT 1`（对应 `one()`）；OCI 那半逐行的 `OCIBindByPos` + `OCIStmtExecute`
   与数组行（列方向的一条缓冲 + 一次 `OCIStmtExecute(iters=N)`）各成一行——后者
-  正是 plugin 批量现在的形状，前者正是它铺不回去时的退路；plugin 没用上的原生形状
-  只剩 `OCI_ATTR_PREFETCH_ROWS` 单独成行。把行数写在绑定上的那一种数组 DML
+  正是 plugin 批量现在的形状，前者正是它铺不回去时的退路；写在语句句柄上的
+  `OCI_ATTR_PREFETCH_ROWS` 也单独成行——基线那一半手工设它，plugin 这一半由块
+  大小带出来（§4.5.3），perf 用例把块设成一千行，故 uniorm 那栏读的是预取一千行
+  的形状。把行数写在绑定上的那一种数组 DML
   （`maxarr_len` 非零加 `OCIBindArrayOfStruct`）在 21.13 client 对 26ai Free
   服务端这一对上答 ORA-03101，插、改、删同拒，故不入表；libpq 那半是一行一条
   `PQexecPrepared`，一条语句带一千行 VALUES 列表那种写法单独成行——前者正是

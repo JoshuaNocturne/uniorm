@@ -44,6 +44,10 @@ backend 有三家：默认构建的 ODBC，由构建开关控制的 Oracle OCI �
   的值不会被截顶。这条增长重读是「重执行 + 按位置跳过」，依赖行序稳定：会触发
   增长的宽 LONG 查询要带 `ORDER BY`，否则 SQL 不保证行序，跳过已交回的行后可能
   取错那一行
+- **读缓冲跟着块大小**：在 OCI 那家，一次 fetch 交回 N 行，只有这 N 行已经过了线
+  才不等往返，所以块宽同时就是问客户端库先备好多少行：每条游标打开前把
+  `OCI_ATTR_PREFETCH_ROWS` 写成块宽，下限是一个默认块，含 `LONG` 的游标写 1。
+  另外两家没有"每 fetch 一次往返"可缩短，在那儿不问任何东西
 - **自定义类型映射**：特化 `uniorm::converter<T>` 即命名域类型所绑定的 SQL
   表示；strict 模式的 `validate()` 会拿它与活库的列类型比对
 - **精确定点小数值**：`uniorm::decimal_t` 存尾数 + scale，按值比较、逐值零分配；
@@ -334,6 +338,27 @@ db.update(ages);   // 只 SET age；name 不动
 每次绑定执行多少行，`row_array_size`（默认 100）每条读取路径每次 fetch 物化
 多少行。
 
+在 OCI 那家，`row_array_size` 还兼作读缓冲。一次 fetch 交回 N 行，只有这 N 行已经
+过了线，它才不等往返，于是插件在游标打开前把块宽写进语句句柄的
+`OCI_ATTR_PREFETCH_ROWS`，下限是一个默认块（100 行）：把块调小改的是行怎么拷，不是
+把一次读变成一行一次往返。想一行一次往返地流式读，目前没有这条路。字节上限不动它：
+写 0 不是把上限取消，是换上一个更小的，同一个构建实测默认块那一档慢四分之一上下，
+峰值驻留却没变。含 `LONG` / `LONG RAW` 的游标写 1：那一路逐行取、截断即重执行，手里
+留着整块只会让重执行丢掉已经交回的行。语句句柄是缓存着复用的，带着上一条游标拿到的
+数回来，所以这个数每次打开游标都写一遍；写不上不抛，`oci.statement` 下一条 debug 级
+记录记下客户端的答话。
+
+另外两家没有往返可缩短：libpq 一次 `PQexecPrepared` 就把整个结果取到客户端，之后读
+的是内存；ODBC 每次 fetch 交回多少行本来就由 `SQL_ATTR_ROW_ARRAY_SIZE` 说给驱动。同
+一张 20000 行、60 字节文本的表走 `db.query<Row>().all()`，块大小 1 / 100 / 4000，
+同一会话、每格取四轮最小值：16 / 11 / 12 ms（MariaDB 的 ODBC 驱动）与 115 / 111 /
+91 ms（libpq）——平的，正是"结果已在手里"的形状。OCI 那一家同样三格是 1217 / 702 /
+142 ms，而块宽不带过线时是 83317 / 1752 / 147 ms：第一格是两百次往返，不是两万次；
+最后一格两边一样，因为那儿本来就只剩五次往返，没有可省的。宽行把这条曲线压平——
+5000 行 × 3901 字节，块 100 为 1701 ms，块 4000 为 1335 ms——读缓冲也一起把内存抬
+上去：写完峰值驻留 84 MiB 的进程，带着它读完涨到 152 MiB，不带它只到 121 MiB，其中
+装结果的 vector 自己就占二十来 MiB。
+
 折叠语句把整个 chunk 写进语句自己的文本。种子元组一行一组 `UNION ALL`，
 `paramset_size` 在那儿只是个上界：服务端一条语句的参数上限先把 chunk 夹住，
 一个 chunk 的尾巴因此是另一条语句。SQL Server 2008 及以上、Oracle 23ai 及以上
@@ -615,8 +640,9 @@ ctest --test-dir build --output-on-failure
   `UNIORM_PERF_ROWS` 指定（默认 10000）；可用 `ctest -LE perf` 跳过
 - **perf_tests_oracle**：同一份 uniorm 用例走 Oracle plugin，旁边是手工
   调用 OCI 的基线；plugin 批量现在用的那种数组行（一次 execute 迭代 N 次）
-  单独成行，它仍旧不要的按行 prefetch 也单独成行；把行数写在绑定上的那一种
-  数组 DML 在这一对 client 与服务端上被拒，故不入表；target 按
+  单独成行，手工写在语句句柄上的按行 prefetch 也单独成行（同一条属性，
+  plugin 现在按自己的块宽写它，这份用例把块设成一千行）；把行数写在绑定上的
+  那一种数组 DML 在这一对 client 与服务端上被拒，故不入表；target 按
   `host[:port]/service` 读
 - **perf_tests_libpq**：同一份 uniorm 用例走 libpq plugin，旁边是手工调用
   libpq 的基线——那里的批量就是一行一条 prepared statement；一条语句带

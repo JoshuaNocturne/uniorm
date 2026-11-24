@@ -854,11 +854,41 @@ void oci_statement::execute() {
   affected_ = run(conn_.autocommit() ? OCI_COMMIT_ON_SUCCESS : OCI_DEFAULT);
 }
 
+void oci_statement::ask_prefetch() {
+  // A block of N rows costs one round trip only when the client is told to
+  // hold N: without that, an OCI cursor moves one block per round trip however
+  // wide the block is, which is not what any other backend does. The floor
+  // keeps a caller who narrows the block to stream rows from paying a round
+  // trip per row — the block is the copy shape, not the wire shape. The byte
+  // limit is left alone: 0 on it is not "no byte limit", it is a smaller one,
+  // and the same read is a quarter slower with it. Written on every cursor
+  // open, because a handle returns to the cache holding whatever its last
+  // cursor was given.
+  std::size_t const wanted = std::max(row_array_size_, minimum_read_ahead_rows);
+  ub4 rows =
+    has_long_
+      ? 1  // a LONG cursor is fetched a row at a time and re-executed on
+           // truncation; a buffer there only holds rows the fetch throws away
+      : (wanted > static_cast<std::size_t>(std::numeric_limits<ub4>::max())
+            ? std::numeric_limits<ub4>::max()
+            : static_cast<ub4>(wanted));
+  sword const status = OCIAttrSet(stmt_.get(), OCI_HTYPE_STMT, &rows,
+    sizeof rows, OCI_ATTR_PREFETCH_ROWS, conn_.error());
+  if (status == OCI_SUCCESS) {
+    return;
+  }
+  uniorm::detail::log(uniorm::log_level::debug, "oci.statement", [&] {
+    return "the client would not take a " + std::to_string(rows) +
+           " row read-ahead for this cursor" + diagnostic_text(conn_.error());
+  });
+}
+
 bool oci_statement::fetch() {
   if (awaiting_execute_) {
     awaiting_execute_ = false;
     // Iterating once would execute the query *and* pull its first row into
     // the defines, and that row would never reach OCIStmtFetch2.
+    ask_prefetch();
     run(conn_.autocommit() ? OCI_COMMIT_ON_SUCCESS : OCI_DEFAULT, 0);
   }
   if (exhausted_) {
@@ -1170,7 +1200,7 @@ std::vector<column_info> oci_statement::column_meta() const {
 }
 
 void oci_statement::set_row_array_size(std::size_t size) {
-  row_array_size_ = size == 0 ? 100 : size;
+  row_array_size_ = size == 0 ? default_block_rows : size;
 }
 
 std::size_t oci_statement::rows_fetched() const {

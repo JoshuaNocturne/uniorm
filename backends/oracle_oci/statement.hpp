@@ -217,6 +217,9 @@ private:
   void materialize(std::size_t rows);
   // A LONG row, fetched alone into a buffer that grows until the value fits.
   bool fetch_long();
+  // The read-ahead this block needs, put on the handle while the cursor is
+  // still closed, which is where OCI will take it.
+  void ask_prefetch();
   void regrow_long();
   void fill_cell(column_slot& slot, std::size_t row);
   void put_text(
@@ -242,7 +245,15 @@ private:
   // carried by one execute, unless its columns will not stage.
   std::vector<params> batch_;
 
-  std::size_t row_array_size_ = 100;
+  // The block a caller is given for handing over a zero, which is the number
+  // the core puts on the orm.
+  static constexpr std::size_t default_block_rows = 100;
+  // One fetch turns over a block; the read-ahead never falls below a default
+  // block, so narrowing the block changes the copy shape and not the round
+  // trips.
+  static constexpr std::size_t minimum_read_ahead_rows = default_block_rows;
+
+  std::size_t row_array_size_ = default_block_rows;
   std::size_t rows_fetched_ = 0;
   std::size_t affected_ = 0;
   bool query_ = false;

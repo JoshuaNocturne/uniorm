@@ -323,8 +323,9 @@ struct native_statement {
       session.error, "array-define " + what);
   }
 
-  // Rows the server hands over per round trip, which the plugin never asks
-  // for and a client written against the library does.
+  // Rows the server hands over per round trip. A client written against the
+  // library asks for this; the plugin now derives the same number from the
+  // fetch block, which these cases set to the batch width too.
   void set_prefetch(std::size_t rows, std::string const& what) {
     ub4 count = static_cast<ub4>(rows);
     check(OCIAttrSet(stmt, OCI_HTYPE_STMT, &count, sizeof(count),

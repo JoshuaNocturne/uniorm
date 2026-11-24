@@ -28,6 +28,7 @@
 #include <uniorm/decimal.hpp>
 #include <uniorm/detail/time.hpp>
 #include <uniorm/dialect.hpp>
+#include <uniorm/log.hpp>
 #include <uniorm/mapping/registry.hpp>
 #include <uniorm/orm.hpp>
 #include <uniorm/pool.hpp>
@@ -605,6 +606,162 @@ void test_zero_block_fetch_size(orm& db) {
   }
   CHECK(rows == 3);
   CHECK(note_chars == long_note.size() + 5);  // "short" on the third row
+}
+
+// How many rows one fetch turns over is also how many the client is asked to
+// have in hand, so a block size is a buffer size and not a shape of its own:
+// every read path -- typed rows, a block walked with current(), a count -- must
+// answer the same rows at every block. The same SQL text reaches one cached
+// handle at all of them, which is where a read-ahead left over from the
+// previous block would show up.
+struct ahead_row {
+  std::int64_t id = 0;
+  std::string body;
+};
+
+std::vector<ahead_row> ahead_rows(std::int64_t first, std::int64_t count) {
+  std::vector<ahead_row> rows;
+  for (std::int64_t offset = 0; offset < count; ++offset) {
+    ahead_row row;
+    row.id = first + offset;
+    row.body = "row " + std::to_string(offset) + " " +
+               std::string(200, char('a' + offset % 26));
+    rows.push_back(std::move(row));
+  }
+  return rows;
+}
+
+void read_ahead_rows(orm& db, std::vector<ahead_row> const& written) {
+  std::size_t const count = written.size();
+  std::vector<ahead_row> const read =
+    db.query<ahead_row>()
+      .where(ge(&ahead_row::id, written[0].id))
+      .order_by(&ahead_row::id)
+      .all();
+  CHECK(read.size() == count);
+  for (std::size_t index = 0; index < count && index < read.size(); ++index) {
+    CHECK(read[index].id == written[index].id);
+    CHECK(read[index].body == written[index].body);
+  }
+}
+
+std::vector<std::string>& refusal_records() {
+  static std::vector<std::string> records;
+  return records;
+}
+
+// What the client answered when the read-ahead was put on the handle. The row
+// count will not read back off a statement handle on this client, so the
+// record it leaves when it will not take one is the half a leg can hold it to.
+// A sink is process-wide, so it goes back from a destructor and not from the
+// next statement: a read that throws must not leave this capture behind.
+std::size_t read_ahead_refusals(
+  orm& db, std::vector<ahead_row> const& written) {
+  struct scope {
+    scope() : saved(log_level_threshold()) {
+      set_log_level(log_level::debug);
+    }
+    ~scope() {
+      set_log_sink({});
+      set_log_level(saved);
+    }
+    log_level saved;
+  } const guard;
+  refusal_records().clear();
+  set_log_sink([](log_record const& record) {
+    if (record.site == "oci.statement" &&
+        record.message.find("read-ahead") != std::string_view::npos) {
+      refusal_records().push_back(std::string(record.message));
+    }
+  });
+  read_ahead_rows(db, written);
+  return refusal_records().size();
+}
+
+void test_block_read_ahead(orm& db) {
+  char const* table = "uniorm_it_ahead";
+  std::int64_t const first = 9700;
+  std::int64_t const count = 600;
+  std::vector<ahead_row> const written = ahead_rows(first, count);
+
+  db.execute_update(std::string("DROP TABLE IF EXISTS ") + table);
+  db.execute_update(std::string("CREATE TABLE ") + table + " (id " +
+                    the_target.integer_type + " NOT NULL PRIMARY KEY, body " +
+                    "VARCHAR(250) NOT NULL)");
+  db.map<ahead_row>(table)
+    .primary_key("id", &ahead_row::id)
+    .column("body", &ahead_row::body);
+  CHECK(db.insert(written) == static_cast<std::size_t>(count));
+
+  // A block wider than the table, one inside it, and one that divides it
+  // unevenly: the rows must not care which of the three is being held.
+  for (std::size_t block : { std::size_t(1), std::size_t(7), std::size_t(100),
+         std::size_t(4000), std::size_t(2) }) {
+    db.row_array_size(block);
+    read_ahead_rows(db, written);
+  }
+  db.row_array_size(uniorm::orm::default_row_array_size);
+
+  // Which number landed on the handle is not readable back off it, so the leg
+  // holds the client to its answer instead: a read at the block the caller
+  // named must not have been told no.
+  if (the_target.scheme == "oracle") {
+    CHECK(read_ahead_refusals(db, written) == 0);
+  }
+
+  // A read stopped at the first row runs on the same cursor as the whole-block
+  // one, and a block walked row by row reaches the rows the read-ahead has
+  // already moved across the wire.
+  std::optional<ahead_row> one =
+    db.query<ahead_row>().where(eq(&ahead_row::id, first + 7)).one();
+  CHECK(bool(one));
+  if (one) {
+    CHECK(one->body == written[7].body);
+  }
+  {
+    result_set walked_block = db.native_connection().execute(
+      std::string("SELECT id, body FROM ") + table + " ORDER BY id", params{},
+      4);
+    std::size_t walked = 0;
+    while (walked_block.next()) {
+      row current = walked_block.current();
+      CHECK(current.get<std::int64_t>(label("id")) == first + walked);
+      CHECK(current.get<std::string>(label("body")) == written[walked].body);
+      ++walked;
+    }
+    CHECK(walked == static_cast<std::size_t>(count));
+  }
+  // A zero block is a caller asking not to name one; the row-by-row answer
+  // must still be every row.
+  {
+    result_set single = db.native_connection().execute(
+      std::string("SELECT id FROM ") + table + " ORDER BY id", params{}, 0);
+    std::size_t walked = 0;
+    while (single.next()) {
+      ++walked;
+    }
+    CHECK(walked == static_cast<std::size_t>(count));
+  }
+  // A wide block on a statement whose rows come back a few at a time is where
+  // a read-ahead wider than the answer would be noticed: every row of one
+  // block has to reach its own slot, and no row may be handed over twice.
+  {
+    result_set wide = db.native_connection().execute(
+      std::string("SELECT id, body FROM ") + table + " ORDER BY id", params{},
+      250);
+    std::size_t walked = 0;
+    while (wide.next()) {
+      row current = wide.current();
+      CHECK(current.get<std::int64_t>(label("id")) == first + walked);
+      CHECK(current.get<std::string>(label("body")) == written[walked].body);
+      ++walked;
+    }
+    CHECK(walked == static_cast<std::size_t>(count));
+  }
+  CHECK(
+    db.query<ahead_row>().where(ge(&ahead_row::id, first)).count() == count);
+
+  db.execute_update(std::string("DROP TABLE ") + table);
 }
 
 // Full 64-bit range through both read paths. Oracle's ODBC driver carries an
@@ -3307,6 +3464,7 @@ int main() {
     guarded("test_decimal_mapped", [&] { test_decimal_mapped(db); });
     guarded(
       "test_zero_block_fetch_size", [&] { test_zero_block_fetch_size(db); });
+    guarded("test_block_read_ahead", [&] { test_block_read_ahead(db); });
     guarded("test_int64_full_range", [&] { test_int64_full_range(db); });
     guarded("test_projection", [&] { test_projection(db); });
     guarded("test_registered_read_by_label",

@@ -351,33 +351,68 @@ std::string trim(std::string_view s) {
   return std::string(s.substr(start, end - start + 1));
 }
 
+// Cut a connection string on the semicolons that sit outside a braced value,
+// so `DSN={a;b}` yields one token. Doubling a closing brace to spell one is
+// beyond this split, and a string whose last brace never closes cuts it short;
+// both come back with less than the whole string, which is the caller's
+// signal to stop trusting the parse.
+std::vector<std::string_view> split_tokens(
+  std::string_view sv, bool& reached_end) {
+  std::vector<std::string_view> tokens;
+  std::size_t depth = 0;
+  std::size_t start = 0;
+  for (std::size_t pos = 0; pos < sv.size(); ++pos) {
+    char const marker = sv[pos];
+    if (marker == '{') {
+      ++depth;
+    } else if (marker == '}') {
+      if (depth == 0) {
+        reached_end = false;
+        return tokens;
+      }
+      --depth;
+    } else if (marker == ';' && depth == 0) {
+      tokens.push_back(sv.substr(start, pos - start));
+      start = pos + 1;
+    }
+  }
+  if (depth != 0) {
+    reached_end = false;
+    return tokens;
+  }
+  tokens.push_back(sv.substr(start));
+  return tokens;
+}
+
 }  // namespace
 
 std::string connection_pool_registry::make_key(
   std::string const& connection_string) {
   std::string dsn, uid;
+  bool dsn_seen = false;
 
-  std::string_view sv(connection_string);
-  std::size_t pos = 0;
-  while (pos < sv.size()) {
-    auto semi = sv.find(';', pos);
-    auto token = (semi == std::string_view::npos) ? sv.substr(pos)
-                                                  : sv.substr(pos, semi - pos);
+  bool reached_end = true;
+  auto const tokens =
+    split_tokens(std::string_view(connection_string), reached_end);
+  for (auto token : tokens) {
     auto eq = token.find('=');
-    if (eq != std::string_view::npos) {
-      auto key = to_lower(trim(token.substr(0, eq)));
-      auto value = trim(token.substr(eq + 1));
-      if (key == "dsn")
-        dsn = value;
-      else if (key == "uid" || key == "user" || key == "username")
-        uid = value;
-    }
-    pos = (semi == std::string_view::npos) ? sv.size() : semi + 1;
+    if (eq == std::string_view::npos)
+      continue;
+    auto key = to_lower(trim(token.substr(0, eq)));
+    auto value = trim(token.substr(eq + 1));
+    if (key == "dsn") {
+      dsn = value;
+      dsn_seen = true;
+    } else if (key == "uid" || key == "user" || key == "username")
+      uid = value;
   }
 
-  // A URI carries no ;DSN=/UID= tokens, so the parse reads nothing; keying
-  // every such string alike would share one pool across databases.
-  if (dsn.empty() && uid.empty())
+  // Three shapes leave this parse unable to say where the string reaches: a
+  // URI carries no DSN= token at all, a DSN-less string (DRIVER={...};UID=u)
+  // names its server in tokens we do not read, and an unbalanced brace cuts
+  // the value in the wrong place. Keying those by whatever was read would hand
+  // one pool to places that differ, so the whole string is the key.
+  if (!dsn_seen || !reached_end)
     return "str=" + connection_string;
   return "dsn=" + dsn + "|uid=" + uid;
 }

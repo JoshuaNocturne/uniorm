@@ -450,6 +450,75 @@ void test_registry_keys_uri_strings_apart() {
   CHECK(bool(other));
 }
 
+// The key reads a string's place from its ;DSN= and UID= tokens. Two strings
+// whose DSN differs only inside a braced value, and two that name their
+// server in a token the parse never looks at, are four different
+// destinations: none of them may share a pool. The fake backend takes any
+// tail at all, so these carry the ODBC tokens under a scheme it owns.
+void test_registry_keys_driver_strings_apart() {
+  uniorm::connection_pool_registry& registry =
+    uniorm::connection_pool_registry::instance();
+  uniorm::pool_options opts = pool_options_for();
+  opts.size = 1;
+
+  // A semicolon inside braces belongs to the value, not to the string: cut
+  // at it, both of these DSN values read the same up to that semicolon and
+  // the two destinations collapse onto one key.
+  std::string const braced_first = "poolfake://x;DSN={shared;one};UID=alice";
+  std::string const braced_second = "poolfake://x;DSN={shared;two};UID=alice";
+  registry.configure(braced_first, opts);
+  registry.configure(braced_second, opts);
+  uniorm::pooled_connection first = registry.acquire(braced_first);
+  CHECK(bool(first));
+  // Sharing one pool would park here for the whole acquire_timeout and come
+  // back empty.
+  uniorm::pooled_connection second = registry.acquire(braced_second);
+  CHECK(bool(second));
+
+  // A string with no DSN= token names its server where this parse does not
+  // look: keying it by the UID alone would give two servers one pool.
+  std::string const host_first =
+    "poolfake://x;DRIVER={pg};SERVERNAME=host1;UID=alice";
+  std::string const host_second =
+    "poolfake://x;DRIVER={pg};SERVERNAME=host2;UID=alice";
+  registry.configure(host_first, opts);
+  registry.configure(host_second, opts);
+  uniorm::pooled_connection one = registry.acquire(host_first);
+  CHECK(bool(one));
+  uniorm::pooled_connection other = registry.acquire(host_second);
+  CHECK(bool(other));
+}
+
+// Two spellings of one destination are one pool: the key folds the token
+// names and their spacing, so writing the same place differently must not
+// open a second set of connections. The plain spelling is taken first and
+// given back; the spaced one has to find that same connection idle.
+void test_registry_keys_one_destination_shared() {
+  uniorm::connection_pool_registry& registry =
+    uniorm::connection_pool_registry::instance();
+  std::string const plain = "poolfake://x;DSN=sharedone;UID=alice";
+  std::string const spaced = "poolfake://x;dsn = sharedone ; uid=alice";
+  uniorm::pool_options opts = pool_options_for();
+  registry.configure(plain, opts);
+  registry.configure(spaced, opts);
+
+  int const before = fake_created;
+  {
+    uniorm::pooled_connection held = registry.acquire(plain);
+    CHECK(bool(held));
+    CHECK(fake_created == before + 1);
+  }
+  uniorm::backend::connection_iface* opened = current;
+  int const opened_count = fake_created;
+
+  uniorm::pooled_connection again = registry.acquire(spaced);
+  CHECK(bool(again));
+  // A second open, or a different connection object, is the two spellings
+  // keying apart.
+  CHECK(fake_created == opened_count);
+  CHECK(current == opened);
+}
+
 // A pool of four under eight callers: nothing may be in two hands at once, no
 // fifth connection may open, and no lease may go missing on the way back. The
 // two ends of a hold are the calls the lease itself drives -- a caller taking
@@ -618,6 +687,8 @@ void test_pool() {
   test_spec_pool_refills_from_the_spec();
   test_registry_waiter_does_not_stall_other_keys();
   test_registry_keys_uri_strings_apart();
+  test_registry_keys_driver_strings_apart();
+  test_registry_keys_one_destination_shared();
   test_pool_holds_its_size_under_threads();
   test_registration_meets_the_maintainer();
 }

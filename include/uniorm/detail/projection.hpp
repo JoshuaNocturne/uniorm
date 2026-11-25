@@ -154,8 +154,10 @@ public:
       *reinterpret_cast<std::string*>(static_cast<char*>(entity) + offset_);
     std::size_t offset = row_index * slot_size_;
     std::int64_t ind = ind_[row_index];
-    if (ind == backend::no_total ||
-        ind > static_cast<std::int64_t>(slot_size_) - 1) {
+    // A negative indicator is no length at all -- SQL_NO_TOTAL, SQL_NTS,
+    // whatever a driver writes there in place of one -- and casting one to
+    // size_t would read far past the staging slot.
+    if (ind < 0 || ind > static_cast<std::int64_t>(slot_size_) - 1) {
       // Full value from the backend; replaces the partial bound buffer.
       target = stmt_->read_long_text(column_, row_index);
     } else {
@@ -201,8 +203,8 @@ public:
       static_cast<char*>(entity) + offset_);
     std::size_t offset = row_index * slot_size_;
     std::int64_t ind = ind_[row_index];
-    bool truncated =
-      ind == backend::no_total || ind > static_cast<std::int64_t>(slot_size_);
+    // No usable length, or a value past the slot: see string_binding::write.
+    bool truncated = ind < 0 || ind > static_cast<std::int64_t>(slot_size_);
     if (truncated) {
       target = stmt_->read_long_bytes(column_, row_index);  // full value
     } else {

@@ -38,6 +38,22 @@ void test_odbc_batch_types() {
       odbc::check_batch_column_types(rows), uniorm::backend::backend_error);
   }
 
+  // Rows of different widths are no batch at all: one paramset binds one
+  // column count, so the wider row would lose its extra values to silence and
+  // the narrower would be indexed past its end.
+  {
+    std::vector<params> rows{ params(std::int32_t(1), std::int32_t(2)),
+      params(std::int32_t(3), std::int32_t(4), std::int32_t(5)) };
+    CHECK_THROWS(
+      odbc::check_batch_column_types(rows), uniorm::backend::backend_error);
+  }
+  {
+    std::vector<params> rows{ params(std::int32_t(1), std::int32_t(2)),
+      params(std::int32_t(3)) };
+    CHECK_THROWS(
+      odbc::check_batch_column_types(rows), uniorm::backend::backend_error);
+  }
+
   // A column that never leaves NULL has no shape to disagree with.
   {
     std::vector<params> rows{ params(std::monostate{}),

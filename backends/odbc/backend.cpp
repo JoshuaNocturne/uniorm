@@ -105,7 +105,9 @@ std::vector<std::byte> get_data_binary(
   odbc::statement& stmt, SQLUSMALLINT column) {
   std::vector<std::byte> out;
   for (;;) {
-    std::byte chunk[4096];
+    // A driver that reports truncation but fills less than the buffer would
+    // otherwise hand us the untouched tail as value bytes.
+    std::byte chunk[4096]{};
     SQLLEN chunk_ind = 0;
     SQLRETURN rc = SQLGetData(
       stmt.native(), column, SQL_C_BINARY, chunk, sizeof(chunk), &chunk_ind);
@@ -114,12 +116,22 @@ std::vector<std::byte> get_data_binary(
     }
     odbc::throw_if_error(
       rc, SQL_HANDLE_STMT, stmt.native(), "read long binary data");
-    std::size_t take;
-    if (rc == SQL_SUCCESS_WITH_INFO || chunk_ind == SQL_NO_TOTAL) {
-      take = sizeof(chunk);
-    } else {
-      take = std::min<SQLLEN>(chunk_ind, static_cast<SQLLEN>(sizeof(chunk)));
+    if (chunk_ind < 0 && chunk_ind != SQL_NO_TOTAL &&
+        rc != SQL_SUCCESS_WITH_INFO) {
+      // The value lies whole in the buffer and the driver will not say how
+      // much of it: SQL_NTS and whatever else a driver writes there instead of
+      // a length. Taking the buffer is guessing, taking nothing is a silently
+      // short value, so this arrives as an error.
+      throw backend::backend_error(
+        "odbc", "SQLGetData gave no length for long binary data", {});
     }
+    // A truncation fills the buffer, and a total the driver will not commit to
+    // is read the same way; every other answer carries its own length.
+    std::size_t const take =
+      rc == SQL_SUCCESS_WITH_INFO || chunk_ind == SQL_NO_TOTAL
+        ? sizeof(chunk)
+        : static_cast<std::size_t>(
+            std::min<SQLLEN>(chunk_ind, static_cast<SQLLEN>(sizeof(chunk))));
     out.insert(out.end(), chunk, chunk + take);
     if (rc != SQL_SUCCESS_WITH_INFO) {
       return out;
@@ -287,7 +299,8 @@ void backend_statement::bind_column(
                               : static_cast<std::size_t>(display_size);
     // SQLGetData reads only the driver's current row and not every driver
     // honours SQLSetPos inside a block, so an overflow-prone column is fetched
-    // one row at a time.
+    // one row at a time. The declared width is trusted: a driver that reports
+    // it narrow and truncates anyway is beyond what this gate can answer.
     if (unbounded || max_bytes >= buffer.capacity) {
       row_by_row_ = true;
       row_array_size_ = 1;
@@ -302,6 +315,19 @@ void backend_statement::bind_column(
 void check_batch_column_types(std::vector<params> const& rows) {
   if (rows.empty()) {
     return;
+  }
+  // One paramset binds one column count for every row, and the walk below is
+  // bounded by the first row's width: a longer row would lose its extra
+  // values to silence, a shorter one would be indexed past its end.
+  std::size_t const width = rows[0].size();
+  for (std::size_t row = 1; row < rows.size(); ++row) {
+    if (rows[row].size() != width) {
+      throw backend::backend_error("odbc",
+        "batch row " + std::to_string(row + 1) + " carries " +
+          std::to_string(rows[row].size()) + " values where row 1 carries " +
+          std::to_string(width),
+        {});
+    }
   }
   for (std::size_t column = 0; column < rows[0].size(); ++column) {
     std::size_t shape = std::variant_npos;

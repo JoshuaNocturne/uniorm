@@ -182,10 +182,12 @@ uniorm::orm db("DSN=mydb;UID=user;PWD=secret");
 // build with the ODBC backend off throws unknown_scheme.
 //
 // The string is also a pool key: this constructor leases from a process-wide
-// pool keyed on DSN and UID. A bare URI carrying neither token (e.g.
-// "postgresql://user:pwd@host/db") keys on the whole string, so distinct
-// databases never collapse into one pool. Pass a connection_pool of your own
-// to choose the size, timeouts and maintainer instead.
+// pool keyed on DSN and UID. A string this parse reads no DSN from keys on
+// the whole string instead -- a bare URI ("postgresql://user:pwd@host/db"),
+// or a DSN-less one naming its server in DRIVER=/SERVERNAME= -- so distinct
+// databases never collapse into one pool; a semicolon inside braces belongs
+// to the value. Pass a connection_pool of your own to choose the size,
+// timeouts and maintainer instead.
 
 // The same database, without writing one backend's string:
 uniorm::orm pieces(uniorm::connection_spec{
@@ -538,7 +540,8 @@ retires it rather than handing out a dirty handle. The pool must outlive every
 connection still checked out from it.
 
 `orm("DSN=…")` needs no pool of yours: it leases from a process-wide registry
-keyed on DSN and UID, each built with default `pool_options`. Call
+keyed on DSN and UID -- on the whole string when no DSN token can be read out
+of it -- each built with default `pool_options`. Call
 `connection_pool_registry::configure()` for that connection string to change
 them.
 

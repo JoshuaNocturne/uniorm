@@ -157,8 +157,10 @@ uniorm::orm db("DSN=mydb;UID=user;PWD=secret");
 // 会抛 unknown_scheme。
 //
 // 这个串同时是池的键：该构造器从一个以 DSN + UID 为键的进程级池里借连接。
-// 两个 token 都没有的裸 URI（如 "postgresql://user:pwd@host/db"）以整串为键，
-// 不同的库不会塌成同一池。想自选容量、超时与维护线程，就传入你自己的
+// 读不出 DSN 的串一律以整串为键——两个 token 都没有的裸 URI（如
+// "postgresql://user:pwd@host/db"）、把服务端写在不被读的键里的无 DSN 串
+// （`DRIVER={…};SERVERNAME=…`）都是；花括号里的分号算值不算分隔。不同的库
+// 因此不会塌成同一池。想自选容量、超时与维护线程，就传入你自己的
 // connection_pool。
 
 // 同一个库，不必写某一家的串：
@@ -459,7 +461,8 @@ libpq 那一家的 `commit()` 读会话状态，不认 `COMMIT` 的答话：Post
 先被重置，重置失败就直接退休。池必须活得比所有还没归还的连接久。
 
 `orm("DSN=…")` 不需要你自备池：它从一个以 DSN + UID 为键的进程级注册表里借
-（解析不出 DSN/UID 的裸 URI 以整串为键，不同的库各成一池），每个池按默认
+（读不出 DSN token 的串——裸 URI、`DRIVER={…};SERVERNAME=…` 这类无 DSN 串——以整串
+为键，花括号里的分号算值不算分隔，不同的库各成一池），每个池按默认
 `pool_options` 建立。想改这些默认值，就对该连接串调用
 `connection_pool_registry::configure()`。
 

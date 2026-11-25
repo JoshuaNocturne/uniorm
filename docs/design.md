@@ -352,14 +352,21 @@ OCI 插件取 `OCIServerVersion` banner 里 "Release " 之后那个数），
 - indicator buffer 一律用 `SQLLEN`，规避 32/64 位截断问题；
 - 字符串列与参数一律按窄字符绑定（`SQL_C_CHAR` / `SQL_VARCHAR`），库内不做编码
   转换；WVARCHAR 等宽 SQL 类型能取到值，是驱动自己做了字符集转换（策略见 §4.2）；
-- 长数据（长 VARCHAR / BLOB）v1 策略：绑定固定缓冲，截断（indicator 为负——`SQL_NO_TOTAL` 或 `SQL_NTS`——或超出缓冲）时经 `SQLGetData` 循环重取**完整值**整体替换——MariaDB Connector/ODBC 在截断续读时返回的是全量值而非剩余部分，追加式拼接会重复计数据；续读块里可用的部分是第一个 NUL 之前，驱动把剩余恰填满一整块时可以不再写结尾 NUL，故取用按缓冲宽度界定，不拿 `strlen` 当断点；`SQL_SUCCESS_WITH_INFO` 而这一块没交出新字节即抛（驱动不再推进，原地循环等不到尽头）。带内嵌 NUL 的文本值只要走上这条续读通道就断在第一个 NUL；整值落在缓冲内、驱动又给出正长度的，照 indicator 原样取回，NUL 也算数据；
+- 长数据（长 VARCHAR / BLOB）v1 策略：绑定固定缓冲，截断（indicator 为负——`SQL_NO_TOTAL` 或 `SQL_NTS`——或超出缓冲）时经 `SQLGetData` 循环重取**完整值**整体替换——MariaDB Connector/ODBC 在截断续读时返回的是全量值而非剩余部分，追加式拼接会重复计数据；续读块里可用的部分是第一个 NUL 之前，驱动把剩余恰填满一整块时可以不再写结尾 NUL，故取用按缓冲宽度界定，不拿 `strlen` 当断点；`SQL_SUCCESS_WITH_INFO` 而这一块没交出新字节即抛（驱动不再推进，原地循环等不到尽头）。带内嵌 NUL 的文本值只要走上这条续读通道就断在第一个 NUL；整值落在缓冲内、驱动又给出正长度的，照 indicator 原样取回，NUL 也算数据。
+  `SQL_C_BINARY` 那条续读按同一判据收口，只是没有「第一个 NUL」可当断点：报截断或
+  `SQL_NO_TOTAL` 都按整块取用，因而每一趟都在推进；带 `SQL_SUCCESS` 回来却是负的
+  indicator——`SQL_NTS` 这一类说的都是「整值在缓冲里，长度不给」——既不猜缓冲的尾巴，
+  也不交回一个悄悄短了的值，直接抛；
 - 块取行下 `SQLGetData` 只读驱动当前行，而并非每家驱动都认块内 `SQLSetPos`
   （MariaDB Connector/ODBC 返回成功却不定位，块内非首行的长值会读成首行的）。故凡
   声明宽度可能超出绑定槽的变长列——字符列 `display_size × 4`、二进制列
   `display_size` 大于等于槽宽，或宽度未知（`display_size` 为 0）/长类型——
   `bind_column` 把整条语句降为逐行取（`SQL_ATTR_ROW_ARRAY_SIZE=1`），使
   `SQLGetData` 的当前行恒为所求行；核心按 `rows_fetched()` 推进，自然跟着逐行。
-  不含这类列的语句仍按块取；
+  不含这类列的语句仍按块取。这条闸的前提是 `SQLDescribeCol` 报回的宽度可信：一家
+  把宽度报窄、又把值截断的驱动，块内非首行的长值仍会读成首行的——接住它要么让含变长
+  列的语句永远逐行（把块取的收益整笔交出去），要么靠块内 `SQLSetPos`（上面刚说过并非
+  每家都认），两样都不划算，故这条按前提收口，谎报宽度的驱动不在考虑之列；
 - 实际设置的 ODBC 属性全集：`SQL_ATTR_ODBC_VERSION`（先试 `SQL_OV_ODBC3_80`，
   失败回退 `SQL_OV_ODBC3`）、`SQL_ATTR_AUTOCOMMIT`、`SQL_ATTR_ROW_ARRAY_SIZE`、
   `SQL_ATTR_ROWS_FETCHED_PTR`（构造语句时一次性绑定，故 `fetch()` 后直接读计数）、
@@ -745,8 +752,10 @@ std::size_t r = db.remove(people);   // 同上；无键列可推断且未给 whe
     数组，逐块重绑。转置前逐列先核一遍形状：这条通道按每列第一个非 NULL 值定缓冲
     类型，其后各行只按那一种取值，换了形状的值会取空、留在预置的 NULL indicator 上
     悄悄写成 NULL，所以一条列里出现两种非 NULL 形状即在绑定前抛 `backend_error`
-    （带列号与行号）；NULL 行是本通道缺值的写法，不算换形状。实体入口每列类型由
-    成员定，天然均匀，这条闸拦的是直接用 backend 接口的批量；
+    （带列号与行号）；NULL 行是本通道缺值的写法，不算换形状。行宽也必须一致：一条
+    paramset 只绑一个列数：比首行宽的行，多出来的值静默丢掉；比首行窄的行，按下标
+    读到越界。故宽度不齐同样在绑定前抛 `backend_error`。实体入口每列类型由
+    成员定，天然均匀，这两条闸拦的是直接用 backend 接口的批量；
 - 顺序上先写缓冲后绑定：部分驱动（MariaDB ODBC）在 `SQLBindParameter` 时就会读缓冲内容
 - `orm::auto_commit()`（默认 true）就是**连接的 autocommit 属性**，管住这个 orm 的
   所有写：开着时单实体 `update`/`remove`、`execute`/`execute_update` 与批量都是
@@ -754,7 +763,9 @@ std::size_t r = db.remove(people);   // 同上；无键列可推断且未给 whe
   三类写一律挂起，直到调用方 `commit()`。把提交粒度放进连接而不是批量入口，正是为了让
   单行与批量对外行为一致（见 §4.9）。调用方自己 `begin()` 时批量并入外层事务，
   由外层决定提交还是回滚
-- 空容器直接返回 0，不取语句；`std::optional` 空值写 indicator =
+- 空容器直接返回 0，不取语句（`test_fold_batch.cpp` 里钉着：insert / update /
+  remove 各交回 0，且一次 execute 都不发——退化成"跑一轮空的 chunk"就会把一条
+  空行源送到服务端）；`std::optional` 空值写 indicator =
   `backend::null_indicator`（行式通道把整段 indicator 预置为 NULL，只覆写非空行）
 - 行数语义按写的人分，不按通道分：`insert()` 两条通道都统计**提交**的行数——数组
   插入没有"没命中"这一说，驱动报回来的行数在这里没有信息量，因此它的分批粒度不归
@@ -837,10 +848,10 @@ std::size_t r = db.remove(people);   // 同上；无键列可推断且未给 whe
   `dialect::fold_parameter_ceiling` 管：一行的代价是 key 列加 set 列，chunk 取
   `paramset_size` 与「上限 / 每行参数」的较小值（VALUES 省的只是文本，参数仍是一行
   一组，照被这条上限切）。数组形状的参数个数与行数无关，chunk 就是 `paramset_size`，
-  这条上限管不着它。前两家的 4000、Oracle 的 3000、SQL Server 的 2000 都读自服务端——
-  psqlODBC 到 6000 参数
-  还答得准、9000 就把连接丢了；Oracle 的 ODBC 驱动在 ~64 KB 文本之后回截断的语句；
-  SQL Server 本身一条语句上限 2100 参数。MySQL 线那个 4000 没在服务端读过：这条线
+  这条上限管不着它。四个数的来处不同：PostgreSQL 的 4000 与 Oracle 的 3000 是驱动侧
+  实测——psqlODBC 到 6000 参数还答得准、9000 就把连接丢了，Oracle 的 ODBC 驱动在
+  ~64 KB 文本之后回截断的语句；SQL Server 的 2000 读自服务端本身一条语句 2100 参数的
+  上限。MySQL 线那个 4000 没在服务端读过：这条线
   至今没有一条腿真跑过它这一家的折叠形状，未实测的驱动版本落回 insert-only 先验，
   而那先验下的批量 update / delete 恰恰仍走折叠——第一个读数就该从这种腿取，取到
   就该替换掉这个数。
@@ -850,7 +861,8 @@ std::size_t r = db.remove(people);   // 同上；无键列可推断且未给 whe
   调用方点名别的列时匹配列就不是主键——把最后一行的值放进首次出现的槽位，
   那正是逐条写留下的值。计数因此按行而不是按元组：同一个 key 写两遍只记
   一遍。去重比的是实体里值的完整字节（浮点匹配列保留 double 的八字节、不宽化成
-  整数，1.5 与 1.9 因此是两个 key），不在服务端眼里比：两行在核心看来不同、服务端
+  整数，1.5 与 1.9 因此是两个 key；零先去掉符号，`-0.0` 与 `0.0` 在服务端本是一个
+  值，两个都送就是把一个 key 点名两次），不在服务端眼里比：两行在核心看来不同、服务端
   按自己的排序规则或类型补全看成一个 key（大小写不敏感的排序规则、
   `CHAR(n)` 补空格、`citext` 这一类），去重就拦不住，最终值由服务端挑；
   逐条写在这种输入上顺序恰好确定，也并没有说清要哪一组值
@@ -1495,9 +1507,11 @@ public:
 
 `orm` 的连接路径：`orm(connection_string)` / `orm::connect(...)` 走注册表
 （key 为解析出的 `dsn=` + `uid=`（含 `user=`/`username=` 别名），大小写与空白
-归一后取 `dsn=<值>|uid=<值>`；解析不出任何 `dsn`/`uid` token 的串——如裸 URI
-`postgresql://…`——改以整串为 key（`str=<串>`），免得不同的库塌成同一池；首次见到
-的那串完整连接字符串成为该池的建连串），
+归一后取 `dsn=<值>|uid=<值>`；分号只在花括号之外才算分隔，`DSN={a;b}` 是一个值。
+读不出 `dsn` token 的串一律以整串为 key（`str=<串>`）——裸 URI `postgresql://…`、
+把目标写在本表不读的键里的 `DRIVER={…};SERVERNAME=…` 这类无 DSN 串、花括号没闭合
+的串都走这条路，免得不同的库塌成同一池；首次见到的那串完整连接字符串成为该池的
+建连串），
 缺省参数即上面的 `pool_options` 默认值；`orm(connection_spec)` /
 `orm::connect(spec)` 也走注册表，key 取 `spec=<scheme>|target=<值>|user=<值>`，
 password 与字符串路线一样不入 key（同一个地方、同一个用户共用一池）。**两种写法
@@ -1539,7 +1553,8 @@ password 与字符串路线一样不入 key（同一个地方、同一个用户�
 ODBC 读 `SQL_ATTR_CONNECTION_DEAD`（驱动一旦在某次调用上失败就知道连接死了；
 不支持该属性的驱动退回 open 标志，不谎报死亡），libpq 读 `PQstatus`。OCI 没有
 廉价的本地探针，`is_open()` 只看 open 标志——这是它的局限，静默死亡由心跳那次
-`OCIPing` 往返兜底。所以本地检查抓的是驱动已经察觉的死亡，两次心跳之间服务端
+`heartbeat_sql`（默认 `SELECT 1`）那次往返兜底，心跳跑的不是 `OCIPing`。所以本地
+检查抓的是驱动已经察觉的死亡，两次心跳之间服务端
 悄悄重启这类要靠心跳发现。退役在锁外断开，因为 `SQLDisconnect` 可能阻塞在服务端上。
 
 v1 不做：动态伸缩。池须比所有借出的连接长寿。
@@ -2200,8 +2215,11 @@ update/delete 两位的折叠路。
 N=2..1000 全 pass、集成走数组 UPDATE/DELETE 路绿）、`maodbc 3.1.23`（CI MariaDB
 11.8.9）、`myodbc 26.10.0`（CI MySQL 8.4.13），后两者探针全 pass、整组计数，CI 集成
 走数组 UPDATE/DELETE 路亦绿。其余
-maodbc/myodbc 版本未实测，留先验 `insert✓/update✗/delete✗/totals✓`（3.2 线数组
-INSERT 会 OOM，更不放开）。psqlODBC `insert✓/update✓/delete✓/totals✗`（CI 17.0.7
+maodbc/myodbc 版本未实测，留先验 `insert✓/update✗/delete✗/totals✓`；这条先验只把
+UPDATE/DELETE 按住不放开，并不因 §8 的 CI 账里记下的一次 OOM（tag 构建的 `3.2.9` 对数组绑定的
+六参数 INSERT 回 `(2008) Client run out of memory`，同族 `3.2.4` 本地实测正常）而
+收窄。族先验行覆盖整族，未实测的版本因此落不到探针上：3.2 线那条 INSERT 授权是先验
+而非实测，要把它钉成 deny 得先有实测。psqlODBC `insert✓/update✓/delete✓/totals✗`（CI 17.0.7
 实测确认短计数）。Oracle 按 DBMS 名键控（驱动自报不可信、服务端名可靠）保守
 `全✗/totals✓`：现代 Oracle 23ai/SQORA 21.13 在探针的 int32 形状上实测可执行，但授权
 要等版本钉死 + int64 形状 + 集成确认，故 deny 不动。`array_rowcount_totals` 折进表作

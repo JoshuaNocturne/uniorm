@@ -497,6 +497,17 @@ void test_fold_batch() {
     CHECK(folded_sets(session.state->executes.front().text) == 1);
     std::vector<std::string> const deduped{ "1:1.500000", "2:last" };
     CHECK(session.state->executes.front().binds == deduped);
+
+    // The two signed zeroes are one key: a server reads -0.0 and 0.0 as the
+    // same value, so a fold carrying both would name one key twice and the
+    // write would be rejected as a duplicate.
+    session.state->executes.clear();
+    std::vector<measure_row> const signed_zero{ { -0.0, "first" },
+      { 0.0, "last" } };
+    CHECK(session.database.update(signed_zero) == session.state->report);
+    CHECK(folded_sets(session.state->executes.front().text) == 1);
+    std::vector<std::string> const zeroed{ "1:0.000000", "2:last" };
+    CHECK(session.state->executes.front().binds == zeroed);
   }
 
   // The MySQL-wire update: the written-to column is qualified, because an
@@ -1064,5 +1075,17 @@ void test_fold_batch() {
     fold_session session{ "foldcurrentguard" };
     result_set rows = session.database.execute("SELECT 1");
     CHECK_THROWS(rows.current(), uniorm_error);
+  }
+
+  // An empty batch is a caller asking for nothing, and the answer is 0 with
+  // not one statement sent: a chunk loop that ran once over nothing bound
+  // would reach the server with an empty row source.
+  {
+    fold_session session{ "foldemptybatch" };
+    std::vector<account> const none;
+    CHECK(session.database.insert(none) == 0);
+    CHECK(session.database.update(none) == 0);
+    CHECK(session.database.remove(none) == 0);
+    CHECK(session.state->executes.empty());
   }
 }
